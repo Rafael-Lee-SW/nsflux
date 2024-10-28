@@ -19,13 +19,13 @@ def generate_answer(model,tokenizer,embed_model,embed_tokenizer,data,query,confi
         # SQL
         SQL_results = generate_sql(QU, model, tokenizer, config)
         answer = generate(SQL_results,query, model, tokenizer, config)
-        return answer
+        return answer, None
     else:
         # RAG
         data = sort_by_time(TI, data)
-        docs = retrieve(QU, data, config.N, embed_model, embed_tokenizer)
+        docs, docs_list = retrieve(QU, data, config.N, embed_model, embed_tokenizer)
         answer = generate(docs, query, model, tokenizer, config)
-        return answer
+        return answer, docs_list
 
 def query_sort(model,tokenizer,query, config):
     PROMPT =\
@@ -127,13 +127,16 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
     score = (scaled_sim_score + scaled_bm25_score) / 2
     top_k = score[:,0,0].argsort()[-N:][::-1]
 
+    ## documents string 버전, dictionary 버전 둘 다 필요.
     documents = ""
+    documents_list = []
     for i,index in enumerate(top_k):
         documents += f'{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}\n'
+        documents_list.append(data['출력자료'][index])
         print(f'\n{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}')
         print('\n'+beep)
     
-    return documents
+    return documents, documents_list
 
 def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
     query_V = embed(query, embed_model, embed_tokenizer)
