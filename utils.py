@@ -85,3 +85,42 @@ def random_seed(seed):
     # Enable deterministic algorithms
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+def process_to_format(qry_contents, type):
+    # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
+    # 예제 응답 형식
+    ### rsp_type : RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
+    if type == "RA":
+        tmp_format = {
+            "rsp_type": "RA", "rsp_tit": "남성 내부 데이터", "rsp_data": []
+            }
+        for i, form in qry_contents:
+            tmp_format_ = {
+                "rsp_tit": f"{i+1}번째 검색데이터", "rsp_data": form
+                }
+            tmp_format['rsp_data'].append(tmp_format_)
+
+    elif type == "AT":
+        tmp_format = {
+            "rsp_type": "AT", "rsp_tit": "답변", "rsp_data": qry_contents
+            }
+    else:
+        print("Error! Type Not supported!")
+
+    return tmp_format
+
+def process_format_to_response(*formats):
+    # Get multiple formats to tuple
+
+    ans_format = {
+        "status_code": 200,
+        "result": "OK",
+        "detail": "",
+        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+        "data_list": []
+    }
+
+    for format in formats:
+        ans_format['data_list'].append(format)
+
+    return ans_format
