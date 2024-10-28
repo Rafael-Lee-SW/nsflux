@@ -91,8 +91,10 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
     # 시간이 all 이면 전체에서 검색.
     if TI == "all":
         TI = "1900-01-01:2030-01-01"
-
+    print(f'사용자 질문:{query}')
+    print(beep)
     print(f'구체화 질문:{QU}, 테이블 필요 유무:{TA}, 시간:{TI}')
+    print(beep)
 
     return QU, TA, TI
 

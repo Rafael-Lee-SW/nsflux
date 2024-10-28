@@ -16,7 +16,7 @@ cache_dir : "/media/user/7340afbb-e4ce-4a38-8210-c6362e85eae7/RAG/RAG_applicatio
 # cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
-data_path : 'data/DB_pptx_date.json' # VectorDB Path
+data_path : 'data/1028NS_DB.json' # VectorDB Path
 metadata_path : 'data/Metadata.json' # Metadata.json Path
 sql_data_path : 'data/poc.db'        # SQLite 데이터베이스 Path
 

@@ -54,7 +54,7 @@
             .then(response => response.json())
             .then(data => {
                 // 서버의 응답을 화면에 표시
-                document.getElementById('output').innerText = 'Output: ' + data.output;
+                document.getElementById('output').innerText = 'Output: ' + JSON.stringify(data.output, null, 2);
             })
             .catch(error => {
                 console.error('Error:', error);
