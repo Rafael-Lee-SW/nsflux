@@ -52,7 +52,7 @@ def load_data(data_path):
             file_names.append(file['file_name'])
             vectors.append(np.array(chunk['vector']))
             titles.append(chunk['title'])
-            if chunk["date"] != "":
+            if chunk["date"] != None:
                 times.append(datetime.strptime(chunk["date"],"%Y-%m-%d"))
             else:
                 times.append("all")
