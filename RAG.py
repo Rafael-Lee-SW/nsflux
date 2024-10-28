@@ -131,9 +131,9 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
     documents = ""
     documents_list = []
     for i,index in enumerate(top_k):
-        documents += f'{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}\n'
+        documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}\n"
         documents_list.append(data['출력자료'][index])
-        print(f'\n{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}')
+        print(f"\n{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}")
         print('\n'+beep)
     
     return documents, documents_list
