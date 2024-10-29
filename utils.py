@@ -66,6 +66,7 @@ def load_data(data_path):
             'vectors':vectors,
             'texts':texts,
             'texts_short':texts_short}
+    print(f"Data Loaded! Full length:{len(titles)}")
     return data_
 
 def random_seed(seed):
@@ -89,7 +90,7 @@ def random_seed(seed):
 def process_to_format(qry_contents, type):
     # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
     # 예제 응답 형식
-    ### rsp_type : RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
+    ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
     if type == "RA":
         tmp_format = {
             "rsp_type": "RA", "rsp_tit": "남성 내부 데이터", "rsp_data": []
