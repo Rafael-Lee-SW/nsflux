@@ -49,7 +49,7 @@
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ input: userInput })
+                body: JSON.stringify({ qry_contents: userInput })
             })
             .then(response => response.json())
             .then(data => {

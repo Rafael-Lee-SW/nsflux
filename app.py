@@ -30,14 +30,14 @@ def index():
 @app.route('/query', methods=['POST'])
 def query():
     http_query = request.json  # JSON 형식으로 query를 받음
-    user_input = http_query.get('input', '')
+    user_input = http_query.get('qry_contents', '')
     
     # 기존 RAG 시스템을 이용해 답변 생성
     output, docs_list = generate_answer(model, tokenizer, embed_model, embed_tokenizer, data, user_input, config)
     
     # 답변 포맷 후처리
-    docs = process_to_format(docs_list, type="RA")
-    output = process_to_format(output, type="AT")
+    docs = process_to_format(docs_list, type="R")
+    output = process_to_format([output], type="A")
     outputs = process_format_to_response(docs,output)
 
     # 결과를 JSON 형식으로 반환

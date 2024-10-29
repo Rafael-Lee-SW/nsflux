@@ -109,7 +109,7 @@ def sort_by_time(time_bound, data):
                         ]
 
 
-    data['file_names'], data['titles'], data['times'], data['vectors'], data['texts'], data['texts_short'] = ([lst[i] for i in matching_indices] for lst in (data['file_names'], data['titles'], data['times'], data['vectors'], data['texts'], data['texts_short']))
+    data['file_names'], data['titles'], data['times'], data['vectors'], data['texts'], data['texts_short'], data['texts_vis'] = ([lst[i] for i in matching_indices] for lst in (data['file_names'], data['titles'], data['times'], data['vectors'], data['texts'], data['texts_short'], data['texts_vis']))
     return data
 
 def retrieve(query, data, N, embed_model, embed_tokenizer):
@@ -132,7 +132,7 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
     documents_list = []
     for i,index in enumerate(top_k):
         documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}\n"
-        documents_list.append(data['출력자료'][index])
+        documents_list.append(data['texts_vis'][index])
         print(f"\n{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}")
         print('\n'+beep)
     

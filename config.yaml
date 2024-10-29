@@ -3,7 +3,7 @@
 ### Model
 model_id : 'google/gemma-2-27b-it'
 model:
-  quantization : True # Quantize 4-bit
+  quantization : False # Quantize 4-bit
   max_new_tokens : 2500      # 생성할 최대 토큰 수
 
   do_sample : False # True 일때만 아래가 적용
@@ -16,12 +16,12 @@ embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
 cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
-data_path : 'data/1028NS_DB.json' # VectorDB Path
+data_path : 'data/1029_NS_DB.json' # VectorDB Path
 metadata_path : 'data/Metadata.json' # Metadata.json Path
 sql_data_path : 'data/poc.db'        # SQLite 데이터베이스 Path
 
 ### Retrieve
-N : 2 # Retrieve top N chunks
+N : 4 # Retrieve top N chunks
 
 ### Others
 beep : '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'

@@ -47,17 +47,21 @@ def load_data(data_path):
     vectors = []
     texts = []
     texts_short = []
+    texts_vis = []
+    tmp = 0
     for file in data:
         for chunk in file['chunks']:
             file_names.append(file['file_name'])
             vectors.append(np.array(chunk['vector']))
             titles.append(chunk['title'])
             if chunk["date"] != None:
+                tmp += 1
                 times.append(datetime.strptime(chunk["date"],"%Y-%m-%d"))
             else:
                 times.append("all")
             texts.append(chunk['text'])
             texts_short.append(chunk['text_short'])
+            texts_vis.append(chunk['text_vis'])
     vectors = np.array(vectors)
     vectors = torch.from_numpy(vectors).to(torch.float32)
     data_ = {'file_names':file_names,
@@ -65,8 +69,9 @@ def load_data(data_path):
             'times':times,
             'vectors':vectors,
             'texts':texts,
-            'texts_short':texts_short}
-    print(f"Data Loaded! Full length:{len(titles)}")
+            'texts_short':texts_short,
+            'texts_vis':texts_vis}
+    print(f"Data Loaded! Full length:{len(titles)}, Time Missing:{tmp}")
     return data_
 
 def random_seed(seed):
@@ -91,24 +96,31 @@ def process_to_format(qry_contents, type):
     # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
     # 예제 응답 형식
     ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
-    if type == "RA":
+    if type == "R":
         tmp_format = {
-            "rsp_type": "RA", "rsp_tit": "남성 내부 데이터", "rsp_data": []
+            "rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []
             }
-        for i, form in qry_contents:
+        for i, form in enumerate(qry_contents):
             tmp_format_ = {
                 "rsp_tit": f"{i+1}번째 검색데이터", "rsp_data": form
                 }
             tmp_format['rsp_data'].append(tmp_format_)
+        return tmp_format
 
-    elif type == "AT":
+    elif type == "A":
         tmp_format = {
-            "rsp_type": "AT", "rsp_tit": "답변", "rsp_data": qry_contents
+            "rsp_type": "A", "rsp_tit": "답변", "rsp_data": []
             }
+        for i,form in enumerate(qry_contents):
+            tmp_format_ = {
+                "rsp_type": "TT", "rsp_data": form
+                }
+            tmp_format['rsp_data'].append(tmp_format_)
+        return tmp_format
+
     else:
         print("Error! Type Not supported!")
-
-    return tmp_format
+        return None
 
 def process_format_to_response(*formats):
     # Get multiple formats to tuple
