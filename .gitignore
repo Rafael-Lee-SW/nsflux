@@ -1,2 +1,3 @@
 huggingface/
 data/
+__pycache__/
