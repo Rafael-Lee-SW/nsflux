@@ -55,9 +55,9 @@ def load_data(data_path):
             vectors.append(np.array(chunk['vector']))
             titles.append(chunk['title'])
             if chunk["date"] != None:
-                tmp += 1
                 times.append(datetime.strptime(chunk["date"],"%Y-%m-%d"))
             else:
+                tmp += 1
                 times.append("all")
             texts.append(chunk['text'])
             texts_short.append(chunk['text_short'])
