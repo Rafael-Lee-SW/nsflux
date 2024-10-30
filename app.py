@@ -38,10 +38,11 @@ def query():
     # 답변 포맷 후처리
     docs = process_to_format(docs_list, type="R")
     output = process_to_format([output], type="A")
+    
     outputs = process_format_to_response(docs,output)
 
     # 결과를 JSON 형식으로 반환
-    response = json.dumps({'output': outputs}, ensure_ascii=False)
+    response = json.dumps(outputs, ensure_ascii=False)
     response = Response(response, content_type='application/json; charset=utf-8')
     return response
 
