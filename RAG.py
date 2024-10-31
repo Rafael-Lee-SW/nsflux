@@ -11,23 +11,41 @@ from sql import generate_sql
 global beep
 beep = '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 
-def generate_answer(model,tokenizer,embed_model,embed_tokenizer,data,query,config):
-
-    QU,TA,TI = query_sort(model,tokenizer,query, config) # 구체화 질문, 테이블 유무, 시간 범위
+def execute_rag(QU,KE,TA,TI, **kwargs):
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    embed_model = kwargs.get("embed_model")
+    embed_tokenizer = kwargs.get("embed_tokenizer")
+    data = kwargs.get("data")
+    config = kwargs.get("config")
 
     if TA == "yes": # Table 이 필요하면
         # SQL
         SQL_results = generate_sql(QU, model, tokenizer, config)
-        answer = generate(SQL_results,query, model, tokenizer, config)
-        return answer, None
+        # answer = generate(SQL_results,query, model, tokenizer, config)
+        return SQL_results, None
+
     else:
         # RAG
         data = sort_by_time(TI, data)
-        docs, docs_list = retrieve(QU, data, config.N, embed_model, embed_tokenizer)
-        answer = generate(docs, query, model, tokenizer, config)
-        return answer, docs_list
+        docs, docs_list = retrieve(KE, data, config.N, embed_model, embed_tokenizer)
+        # answer = generate(docs, QU, model, tokenizer, config)
+        return docs, docs_list
 
-def query_sort(model,tokenizer,query, config):
+def generate_answer(query, docs, **kwargs):
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    config = kwargs.get("config")
+
+    answer = generate(docs, query, model, tokenizer, config)
+    return answer
+    
+
+def query_sort(query, **kwargs):
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    config = kwargs.get("config")
+
     PROMPT =\
 f'''\
 <bos><start_of_turn>user

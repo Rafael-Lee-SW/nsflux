@@ -96,25 +96,40 @@ def process_to_format(qry_contents, type):
     # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
     # 예제 응답 형식
     ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
-    if type == "R":
+    if type == "Retrieval":
         tmp_format = {
             "rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []
-            }
+        }
         for i, form in enumerate(qry_contents):
             tmp_format_ = {
                 "rsp_tit": f"{i+1}번째 검색데이터", "rsp_data": form
-                }
+            }
+            tmp_format['rsp_data'].append(tmp_format_)
+        return tmp_format
+    
+    elif type == "SQL":
+        tmp_format = {
+            "rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []
+        }
+        for i,form in enumerate(qry_contents):
+            tmp_format_ = {
+                "rsp_tit": "SQL 추출 내부 정형데이터", "rsp_data":[
+                    {
+                        "rsp_type":"TT", "rsp_data":form
+                    }
+                ]
+            }
             tmp_format['rsp_data'].append(tmp_format_)
         return tmp_format
 
-    elif type == "A":
+    elif type == "Answer":
         tmp_format = {
             "rsp_type": "A", "rsp_tit": "답변", "rsp_data": []
-            }
+        }
         for i,form in enumerate(qry_contents):
             tmp_format_ = {
                 "rsp_type": "TT", "rsp_data": form
-                }
+            }
             tmp_format['rsp_data'].append(tmp_format_)
         return tmp_format
 
