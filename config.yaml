@@ -3,7 +3,8 @@
 ### Model
 model_id : 'google/gemma-2-27b-it'
 model:
-  quantization : True # Quantize 4-bit
+  quantization_4bit : True # Quantize 4-bit
+  quantization_8bit : False # Quantize 8-bit
   max_new_tokens : 2500      # 생성할 최대 토큰 수
 
   do_sample : False # True 일때만 아래가 적용
@@ -12,8 +13,8 @@ model:
   top_p : 1.0                # top-p 샘플링: 누적 확률을 기준으로 후보 토큰을 선택 (1.0 보다 낮을수록 창의력 증가)
   repetition_penalty : 1.0   # 같은 단어를 반복해서 출력하지 않도록 패널티를 부여 (1.0 보다 클수록 페널티 증가)
 embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
-cache_dir : "/media/user/7340afbb-e4ce-4a38-8210-c6362e85eae7/RAG/RAG_application/huggingface" # Local
-# cache_dir : "/workspace/huggingface"  # Docker
+# cache_dir : "/media/user/7340afbb-e4ce-4a38-8210-c6362e85eae7/RAG/RAG_application/huggingface" # Local
+cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
 data_path : 'data/1029_NS_DB.json' # VectorDB Path
@@ -21,9 +22,9 @@ metadata_path : 'data/Metadata.json' # Metadata.json Path
 sql_data_path : 'data/poc.db'        # SQLite 데이터베이스 Path
 
 ### Retrieve
-N : 2 # Retrieve top N chunks
+N : 3 # Retrieve top N chunks
 
 ### Others
 beep : '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
-seed : 47                     # Radom Seed
+seed : 4734                     # Radom Seed
 k : 10                        # SQL Max Rows (None=MAX)

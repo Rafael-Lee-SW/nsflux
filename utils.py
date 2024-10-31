@@ -14,7 +14,7 @@ def load_model(config):
 
     ### LLM 모델 ###
     tokenizer = AutoTokenizer.from_pretrained(config.model_id, cache_dir = config.cache_dir)
-    if config.model.quantization == True:
+    if config.model.quantization_4bit == True:
         # bnb_config = BitsAndBytesConfig(
         #         load_in_4bit=True
         #         )
@@ -25,12 +25,16 @@ def load_model(config):
                 bnb_4bit_quant_type="nf4"
                 )
 
+    elif config.model.quantization_8bit == True:
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+
     else:
         bnb_config = None
+
     model = AutoModelForCausalLM.from_pretrained(
         config.model_id,
         device_map="auto",
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
         cache_dir = config.cache_dir,
         quantization_config = bnb_config
         )
