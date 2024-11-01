@@ -106,7 +106,7 @@ def process_to_format(qry_contents, type):
         }
         for i, form in enumerate(qry_contents):
             tmp_format_ = {
-                "rsp_tit": f"{i+1}번째 검색데이터", "rsp_data": form
+                "rsp_tit": f"{i+1}번째 검색데이터: {form['title']}      출처:{form['file_name']}", "rsp_data": form["contents"]
             }
             tmp_format['rsp_data'].append(tmp_format_)
         return tmp_format
@@ -116,10 +116,15 @@ def process_to_format(qry_contents, type):
             "rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []
         }
         tmp_format_sql = {
-            "rsp_type": "TB", "rsp_tit": f"SQL 추출 데이터", "rsp_data": qry_contents[0]
+            "rsp_type": "TB", "rsp_tit": qry_contents[0]["title"], "rsp_data": qry_contents[0]["data"]
         }
         tmp_format_chart = {
-            "rsp_type": "CT", "rsp_tit": f"시각화 차트", "rsp_data": qry_contents[1]
+            "rsp_type": "CT", 
+            "rsp_tit": qry_contents[0]["title"], 
+            "rsp_data": [{
+                "chart_type":"BAR",
+                "chart_data":qry_contents[0]["data"]
+                }]
         }
         tmp_format['rsp_data'].append(tmp_format_sql)
         tmp_format['rsp_data'].append(tmp_format_chart)
@@ -155,3 +160,12 @@ def process_format_to_response(*formats):
         ans_format['data_list'].append(format)
 
     return ans_format
+
+def error_format(message, status):
+    ans_format = {
+        "status_code": status,
+        "result": message,
+        "detail": "",
+        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    }
+    return json.dumps(ans_format)

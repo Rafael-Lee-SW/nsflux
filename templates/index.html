@@ -28,8 +28,15 @@
 
         .output {
             margin-top: 20px;
-            font-size: 18px;
+            font-size: 16px;
             color: #333;
+            text-align: left;
+            word-wrap: break-word;
+        }
+
+        .output pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
     </style>
 </head>
@@ -53,13 +60,30 @@
             })
             .then(response => response.json())
             .then(data => {
-                // 서버의 응답을 화면에 표시
-                document.getElementById('output').innerText = 'Output: ' + JSON.stringify(data.output, null, 2);
+                // 서버의 응답을 포맷하여 보기 좋게 화면에 표시
+                document.getElementById('output').innerHTML = formatJsonOutput(data);
             })
             .catch(error => {
                 console.error('Error:', error);
                 document.getElementById('output').innerText = 'An error occurred';
             });
+        }
+
+        function formatJsonOutput(data) {
+            // JSON을 계층적 구조로 변환하여 보기 좋게 출력
+            let formattedOutput = `
+                <strong>Status Code:</strong> ${data.status_code} <br>
+                <strong>Result:</strong> ${data.result} <br>
+                <strong>Detail:</strong> ${data.detail} <br>
+                <strong>Event Time:</strong> ${data.evt_time} <br>
+                <strong>Data List:</strong><br>
+                <ul>
+            `;
+            data.data_list.forEach((item, index) => {
+                formattedOutput += `<li><pre>${JSON.stringify(item, null, 4)}</pre></li>`;
+            });
+            formattedOutput += '</ul>';
+            return formattedOutput;
         }
     </script>
 </body>
