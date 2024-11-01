@@ -49,14 +49,16 @@ def query():
         
         # 기존 RAG 시스템을 이용해 답변 생성
         QU,KE,TA,TI = query_sort(user_input, **kwargs) # 구체화 질문, 키워드, 테이블 유무, 시간 범위
-        docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # RAG 나 SQL 실행
-        output = generate_answer(QU, docs, **kwargs)
-        
-        # 답변 포맷 후처리
-        if docs_list is not None:
+
+        if TA == "yes": # SQL 실행
+            docs, chart = execute_rag(QU,KE,TA,TI, **kwargs) 
+            retrieval = process_to_format([docs, chart], type="SQL")
+            docs = str(docs)
+        elif TA == "no": # RAG 실행
+            docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # RAG  실행
             retrieval = process_to_format(docs_list, type="Retrieval")
-        else:
-            retrieval = process_to_format([docs], type="SQL")
+
+        output = generate_answer(QU, docs, **kwargs)
 
         answer = process_to_format([output], type="Answer")
         

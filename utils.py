@@ -20,7 +20,7 @@ def load_model(config):
         #         )
         bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_compute_dtype=torch.bfloat16,
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type="nf4"
                 )
@@ -34,7 +34,7 @@ def load_model(config):
     model = AutoModelForCausalLM.from_pretrained(
         config.model_id,
         device_map="auto",
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         cache_dir = config.cache_dir,
         quantization_config = bnb_config
         )
@@ -115,15 +115,14 @@ def process_to_format(qry_contents, type):
         tmp_format = {
             "rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []
         }
-        for i,form in enumerate(qry_contents):
-            tmp_format_ = {
-                "rsp_tit": "SQL 추출 내부 정형데이터", "rsp_data":[
-                    {
-                        "rsp_type":"TT", "rsp_data":form
-                    }
-                ]
-            }
-            tmp_format['rsp_data'].append(tmp_format_)
+        tmp_format_sql = {
+            "rsp_type": "TB", "rsp_tit": f"SQL 추출 데이터", "rsp_data": qry_contents[0]
+        }
+        tmp_format_chart = {
+            "rsp_type": "CT", "rsp_tit": f"시각화 차트", "rsp_data": qry_contents[1]
+        }
+        tmp_format['rsp_data'].append(tmp_format_sql)
+        tmp_format['rsp_data'].append(tmp_format_chart)
         return tmp_format
 
     elif type == "Answer":

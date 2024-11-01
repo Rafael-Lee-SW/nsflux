@@ -21,9 +21,9 @@ def execute_rag(QU,KE,TA,TI, **kwargs):
 
     if TA == "yes": # Table 이 필요하면
         # SQL
-        SQL_results = generate_sql(QU, model, tokenizer, config)
+        SQL_results, chart_results = generate_sql(QU, model, tokenizer, config)
         # answer = generate(SQL_results,query, model, tokenizer, config)
-        return SQL_results, None
+        return SQL_results, chart_results
 
     else:
         # RAG
