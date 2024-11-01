@@ -165,7 +165,7 @@ def execute_sql_query(sql_query, config):
         cursor = conn.cursor()
 
         if config.k is not None:
-            sql_query = sql_query[:-1]
+            sql_query = sql_query.split(";")[0].strip()
             sql_query += f"\nLIMIT {config.k};"
         else:
             sql_query += ";"

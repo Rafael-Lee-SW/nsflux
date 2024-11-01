@@ -3,7 +3,7 @@ from RAG import generate_answer, execute_rag, query_sort  # 기존에 만든 RAG
 import json
 import yaml
 from box import Box
-from utils import load_model, load_data, random_seed, process_format_to_response, process_to_format
+from utils import load_model, load_data, random_seed, process_format_to_response, process_to_format, error_format
 import threading
 
 # Configuration
@@ -30,6 +30,7 @@ kwargs = {
 ########## FLASK APP ##########
 app = Flask(__name__)
 lock = threading.Lock()  # 전역 잠금 객체 생성
+content_type='application/json; charset=utf-8'
 
 # 기본 페이지를 불러오는 라우트
 @app.route('/')
@@ -40,8 +41,8 @@ def index():
 def query():
     # 잠금을 사용하여 동시에 하나의 요청만 처리
     if not lock.acquire(blocking=False):
-        return Response(json.dumps({"error": "현재 앱이 사용중입니다. 잠시 후에 시도해주세요."}),
-                        content_type='application/json; charset=utf-8', status=553)
+        return Response(error_format( "현재 앱이 사용중입니다. 잠시 후에 시도해주세요.", 550),
+                        content_type=content_type)
 
     try:
         http_query = request.json  # JSON 형식으로 query를 받음
@@ -51,12 +52,22 @@ def query():
         QU,KE,TA,TI = query_sort(user_input, **kwargs) # 구체화 질문, 키워드, 테이블 유무, 시간 범위
 
         if TA == "yes": # SQL 실행
-            docs, chart = execute_rag(QU,KE,TA,TI, **kwargs) 
-            retrieval = process_to_format([docs, chart], type="SQL")
-            docs = str(docs)
+            try:
+                docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # docs 는 LLM 의 다음 input, docs_list 는 보여줄 정보들
+                retrieval = process_to_format(docs_list, type="SQL")
+            except Exception as e:
+                lock.release()
+                return Response(error_format(f"내부 Excel 에 해당 자료가 없습니다.", 551),
+                                content_type=content_type)
+
         elif TA == "no": # RAG 실행
-            docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # RAG  실행
-            retrieval = process_to_format(docs_list, type="Retrieval")
+            try:
+                docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # RAG  실행
+                retrieval = process_to_format(docs_list, type="Retrieval")
+            except Exception as e:
+                lock.release()
+                return Response(error_format(f"내부 PPT에 해당 자료가 없습니다.", 552),
+                                content_type=content_type)
 
         output = generate_answer(QU, docs, **kwargs)
 
@@ -66,7 +77,7 @@ def query():
 
         # 결과를 JSON 형식으로 반환
         response = json.dumps(outputs, ensure_ascii=False)
-        response = Response(response, content_type='application/json; charset=utf-8')
+        response = Response(response, content_type=content_type)
         return response
     
     finally:

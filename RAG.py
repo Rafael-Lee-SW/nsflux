@@ -21,15 +21,33 @@ def execute_rag(QU,KE,TA,TI, **kwargs):
 
     if TA == "yes": # Table 이 필요하면
         # SQL
-        SQL_results, chart_results = generate_sql(QU, model, tokenizer, config)
-        # answer = generate(SQL_results,query, model, tokenizer, config)
-        return SQL_results, chart_results
+        final_sql_query, title, explain, table_json, chart_json = generate_sql(QU, model, tokenizer, config)
+
+        # docs : 다음 LLM Input 으로 만들것 (String)
+        PROMPT = \
+f'''\
+다음은 SQL 추출에 사용된 쿼리문이야 : {final_sql_query}. \
+추가 설명 : {explain}. \
+실제 SQL 추출된 데이터 : {str(table_json)}. \
+'''
+        # docs_list : 사용자들에게 보여줄 정보 (List)
+        docs_list = [
+            {
+                "title":title,
+                "data":table_json
+            },
+            {
+                "title":"시각화 차트",
+                "data":chart_json
+            }
+        ]
+
+        return PROMPT, docs_list
 
     else:
         # RAG
         data = sort_by_time(TI, data)
         docs, docs_list = retrieve(KE, data, config.N, embed_model, embed_tokenizer)
-        # answer = generate(docs, QU, model, tokenizer, config)
         return docs, docs_list
 
 def generate_answer(query, docs, **kwargs):
@@ -149,7 +167,7 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
     sim_score = cal_sim_score(query, data['vectors'], embed_model, embed_tokenizer)
 
     # BM25 Score
-    bm25_score = cal_bm25_score(query, data['texts'], embed_tokenizer)
+    bm25_score = cal_bm25_score(query, data['texts_short'], embed_tokenizer)
 
     # Scaling Scores
     scaled_sim_score = min_max_scaling(sim_score)
@@ -164,8 +182,14 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
     documents_list = []
     for i,index in enumerate(top_k):
         documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}\n"
-        documents_list.append(data['texts_vis'][index])
-        print(f"\n{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index-1]}{data['texts_short'][index]}{data['texts_short'][index+1]}")
+        documents_list.append(
+            {
+                "file_name":data['file_names'][index],
+                "title":data['titles'][index],
+                "contents":data['texts_vis'][index]
+                }
+            )
+        print(documents)
         print('\n'+beep)
     
     return documents, documents_list
