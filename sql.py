@@ -9,13 +9,20 @@ def generate_sql(query, model, tokenizer, config):
 
     # first_LLM
     outputs_1, filter_conditions, aggregations, orders, sql_query, parsed_columns = first_llm(model, tokenizer, column_usage, query, config)
-    
+    print(f'FirstLLM\n필터:{filter_conditions}\n집계:{aggregations}\n정렬:{orders}\nSQL:{sql_query}\n컬럼:{parsed_columns}')
+    print(config.beep)
+
     relevant_metadata = extract_relevant_metadata(parsed_columns, column_usage) # 추출된 컬럼에 해당하는 메타데이터 가져오기
     retrival_metadata = parse_and_augment_filter_conditions(filter_conditions, Metadata)   # Metadata와 매핑하여 구체화된 필터 조건 찾기
-
+    print(f'MetaData\n관련:{relevant_metadata}\n검색:{retrival_metadata}')
+    print(config.beep)
     # second_LLM
     final_sql_query, title, explain, outputs_2 = second_llm(model, tokenizer, relevant_metadata, sql_query, query, retrival_metadata, config)
+    print(f'SecondLLM\n제목:{title}\n설명:{explain}\nSQL:{final_sql_query}')
+    print(config.beep)
     columns, results = execute_sql_query(final_sql_query, config)   # SQL 쿼리 실행 (데이터 조회)
+    print(f'Result\n컬럼:{columns}\n결과:{results}')
+    print(config.beep)
 
     # result -> json
     table_json = create_table_json(columns, results)
@@ -80,8 +87,7 @@ def first_llm(model, tokenizer, column_usage, user_query, config):
     aggregations = re.search(aggregation_pattern, outputs_result, re.DOTALL).group(1)
     orders = re.search(order_pattern, outputs_result, re.DOTALL).group(1)
     sql_queries = re.search(sql_pattern, outputs_result, re.DOTALL).group(1)
-    parsed_columns = re.search(columns_pattern, outputs_result, re.DOTALL).group(1).split(",")
-
+    parsed_columns = [col.strip() for col in re.search(columns_pattern, outputs_result, re.DOTALL).group(1).split(",")]
     return outputs_result, filter_conditions, aggregations, orders, sql_queries, parsed_columns
 
 # 추출된 컬럼에 해당하는 메타데이터만 가져오는 함수
@@ -92,20 +98,56 @@ def extract_relevant_metadata(columns, metadata):
             relevant_metadata[column] = metadata["column_usage"][column]
     return relevant_metadata
 
+# def parse_and_augment_filter_conditions(filter_conditions, Metadata):
+#     pattern = r"(\w+)\s*=\s*'([^']+)'"  # ex: OUTPOL = '부산' 과 같은 패턴 추출
+#     matches = re.findall(pattern, filter_conditions)
+    
+#     augmented_filters = []
+    
+#     for col, val in matches:
+#         if col == 'OUTPOL' or col == 'OUTPOD':
+#             location_code = Metadata['location_code']
+#             mapped_value = search_location_db(val, location_code)
+#             if mapped_value != "UNKNOWN":
+#                 augmented_filters.append(f"컬럼 {col}에 대한 값 '{val}' -> '{mapped_value}'로 매핑되었습니다.")
+#             else:
+#                 augmented_filters.append(f"컬럼 {col}의 값 '{val}'에 대한 매핑 정보를 찾을 수 없습니다.")
+#     return "\n".join(augmented_filters)
+
 def parse_and_augment_filter_conditions(filter_conditions, Metadata):
-    pattern = r"(\w+)\s*=\s*'([^']+)'"  # ex: OUTPOL = '부산' 과 같은 패턴 추출
+    # '컬럼명 = '값'' 또는 '컬럼명 IN ('값1', '값2', ...)' 패턴에 대응하는 정규식
+    pattern = r"(\w+)\s*=\s*'([^']+)'|\b(\w+)\s+IN\s+\(([^)]+)\)"
     matches = re.findall(pattern, filter_conditions)
     
     augmented_filters = []
-    
-    for col, val in matches:
-        if col == 'OUTPOL' or col == 'OUTPOD':
-            location_code = Metadata['location_code']
-            mapped_value = search_location_db(val, location_code)
-            if mapped_value != "UNKNOWN":
-                augmented_filters.append(f"컬럼 {col}에 대한 값 '{val}' -> '{mapped_value}'로 매핑되었습니다.")
-            else:
-                augmented_filters.append(f"컬럼 {col}의 값 '{val}'에 대한 매핑 정보를 찾을 수 없습니다.")
+    for match in matches:
+        # 매칭 결과에서 'IN' 조건과 '=' 조건을 구분하여 처리
+        if match[0]:  # '=' 조건
+            col, val = match[0], match[1]
+            if col == 'OUTPOL' or col == 'OUTPOD':
+                location_code = Metadata['location_code']
+                mapped_value = search_location_db(val, location_code)
+                if mapped_value != "UNKNOWN":
+                    augmented_filters.append(f"컬럼 {col}에 대한 값 '{val}' -> '{mapped_value}'로 매핑되었습니다.")
+                else:
+                    augmented_filters.append(f"컬럼 {col}의 값 '{val}'에 대한 매핑 정보를 찾을 수 없습니다.")
+                    
+        elif match[2]:  # 'IN' 조건
+            col, val_list = match[2], match[3]
+            if col == 'OUTPOL' or col == 'OUTPOD':
+                location_code = Metadata['location_code']
+                values = [val.strip().strip("'") for val in val_list.split(",")]
+                
+                mapped_values = []
+                for val in values:
+                    mapped_value = search_location_db(val, location_code)
+                    if mapped_value != "UNKNOWN":
+                        mapped_values.append(f"'{val}' -> '{mapped_value}'")
+                    else:
+                        mapped_values.append(f"'{val}' (매핑 정보 없음)")
+                
+                augmented_filters.append(f"컬럼 {col}에 대한 값들: {', '.join(mapped_values)}")
+
     return "\n".join(augmented_filters)
 
 # Location 검색 알고리즘 (매핑 정보 검색)
@@ -134,11 +176,15 @@ def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retri
     2. SQL가 조회하는 데이터 요약 (예: 부산발 중국착 매출 순위 (화주별))
     3. SQL 쿼리 설명
 
-    ### 출력 형식:
-    1. 정확한 SQL 쿼리: <sql_query/> <sql_query/>
-    2. SQL가 조회하는 데이터 요약: <title/> <title/>
-    3. SQL 쿼리 설명: <explain/> <explain/>
-        
+    ### 출력 형식(아래 출력 형식을 꼭 지켜야 해 시작부분에 / 이 들어가고 끝부분에는 없어):
+    1. 정확한 SQL 쿼리: <sql_query/>SQL 명령어<sql_query>
+    2. SQL가 조회하는 데이터 요약: <title/>데이터 설명문<title>
+    3. SQL 쿼리 설명: <explain/>SQL 설명문<explain>
+    
+    ### 참고자료
+    1. 만약 참고자료에 KR% 같은 조건이 있으면 LIKE 를, KRCRD 같은 정확한 정보는 = 를 사용.
+    2. 만약 여러개의 LIKE 조건이 있으면 (예시: WHERE OUTPOL LIKE 'KR%' OR OUTPOL LIKE 'CN%' OR OUTPOL LIKE 'JP%') 를 사용.
+    
     <end_of_turn>
     <start_of_turn>model
     '''
@@ -148,10 +194,10 @@ def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retri
     input_length = input_ids['input_ids'].shape[1]
     outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
     outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-    
-    sql_pattern = r'<sql_query/>(.*?)<sql_query/>'
-    title_pattern = r'<title/>(.*?)<title/>'
-    explain_pattern = r'<explain/>(.*?)<explain/>'
+    print(f'2번째 LLM Output:{outputs_result}')
+    sql_pattern = r'<sql_query/>(.*?)<sql_query>'
+    title_pattern = r'<title/>(.*?)<title>'
+    explain_pattern = r'<explain/>(.*?)<explain>'
     
     sql_queries = re.search(sql_pattern, outputs_result, re.DOTALL).group(1)
     title = re.search(title_pattern, outputs_result, re.DOTALL).group(1)
@@ -167,8 +213,6 @@ def execute_sql_query(sql_query, config):
         if config.k is not None:
             sql_query = sql_query.split(";")[0].strip()
             sql_query += f"\nLIMIT {config.k};"
-        else:
-            sql_query += ";"
                  
         cursor.execute(sql_query)        # SQL 쿼리 실행
         

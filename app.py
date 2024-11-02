@@ -44,6 +44,8 @@ def query():
         return Response(error_format( "현재 앱이 사용중입니다. 잠시 후에 시도해주세요.", 550),
                         content_type=content_type)
 
+    lock_acquired = True
+
     try:
         http_query = request.json  # JSON 형식으로 query를 받음
         user_input = http_query.get('qry_contents', '')
@@ -56,18 +58,22 @@ def query():
                 docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # docs 는 LLM 의 다음 input, docs_list 는 보여줄 정보들
                 retrieval = process_to_format(docs_list, type="SQL")
             except Exception as e:
-                lock.release()
                 return Response(error_format(f"내부 Excel 에 해당 자료가 없습니다.", 551),
                                 content_type=content_type)
+            finally:
+                lock.release()
+                lock_acquired = False
 
         elif TA == "no": # RAG 실행
             try:
                 docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # RAG  실행
                 retrieval = process_to_format(docs_list, type="Retrieval")
             except Exception as e:
-                lock.release()
                 return Response(error_format(f"내부 PPT에 해당 자료가 없습니다.", 552),
                                 content_type=content_type)
+            finally:
+                lock.release()
+                lock_acquired = False
 
         output = generate_answer(QU, docs, **kwargs)
 
@@ -81,7 +87,8 @@ def query():
         return response
     
     finally:
-        lock.release()
+        if lock_acquired:
+            lock.release()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug = False)  # 서버 실행
