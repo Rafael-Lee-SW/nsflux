@@ -17,7 +17,7 @@ def generate_sql(query, model, tokenizer, config):
     print(f'MetaData\n관련:{relevant_metadata}\n검색:{retrival_metadata}')
     print(config.beep)
     # second_LLM
-    final_sql_query, title, explain, outputs_2 = second_llm(model, tokenizer, relevant_metadata, sql_query, query, retrival_metadata, config)
+    final_sql_query, title, explain, outputs_2 = second_llm(model, tokenizer, relevant_metadata, sql_query, query, retrival_metadata, parsed_columns, config)
     print(f'SecondLLM\n제목:{title}\n설명:{explain}\nSQL:{final_sql_query}')
     print(config.beep)
     columns, results = execute_sql_query(final_sql_query, config)   # SQL 쿼리 실행 (데이터 조회)
@@ -154,7 +154,7 @@ def parse_and_augment_filter_conditions(filter_conditions, Metadata):
 def search_location_db(location, location_code):
     return location_code.get(location, "Mapping error")
 
-def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retrival_metadata, config):
+def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retrival_metadata, parsed_columns, config):
     PROMPT =\
     f'''
     <bos><start_of_turn>user
@@ -175,6 +175,20 @@ def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retri
     1. 정확한 SQL 쿼리 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE WHERE OUTPOL = \'KRPUS\' AND OUTPOD LIKE \'CN%\' AND OUTOBD >= \'20230101\'\n    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
     2. SQL가 조회하는 데이터 요약 (예: 부산발 중국착 매출 순위 (화주별))
     3. SQL 쿼리 설명
+    4. SELECT 문에는 다음 {parsed_columns} column 들을 모두 사용해주고 LIKE 로 들어간 컬럼들은 다음과 같이 보기좋게 해줘.
+    SELECT 
+        CASE 
+            WHEN OUTPOL LIKE 'KR%' THEN '한국'
+            WHEN OUTPOL LIKE 'JP%' THEN '일본'
+            WHEN OUTPOL LIKE 'CN%' THEN '중국'
+            ELSE '기타' 
+        END AS 국가,
+        SUM(OUTSTL) AS TotalRevenue
+    FROM revenue
+    WHERE OUTPOL LIKE 'KR%' OR OUTPOL LIKE 'JP%' OR OUTPOL LIKE 'CN%'
+    GROUP BY 국가
+    ORDER BY 국가;  -- 필요에 따라 정렬
+ 
 
     ### 출력 형식(아래 출력 형식을 꼭 지켜야 해 시작부분에 / 이 들어가고 끝부분에는 없어):
     1. 정확한 SQL 쿼리: <sql_query/>SQL 명령어<sql_query>
@@ -210,7 +224,7 @@ def execute_sql_query(sql_query, config):
         conn = sqlite3.connect(config.sql_data_path)        # SQLite 데이터베이스에 연결
         cursor = conn.cursor()
 
-        if config.k is not None:
+        if (config.k is not None) and ("LIMIT" not in sql_query):
             sql_query = sql_query.split(";")[0].strip()
             sql_query += f"\nLIMIT {config.k};"
                  
@@ -229,15 +243,14 @@ def execute_sql_query(sql_query, config):
         return None, None
 
 def create_table_json(columns, results):
-    head = "||".join(columns)    
-    body = "^ ".join("||".join(map(str, row)) for row in results)    
-    table_json = json.dumps({"head": head, "body": body})
-    return table_json
+    head = "||".join(columns)
+    body = "^ ".join("||".join(map(str, row)) for row in results)
+    table = {"head": head, "body": body}
+    return table
 
 def create_chart_json(columns, results):
-    chart_data = [
-        {"series": f"s{i+1}", "data": [{"x": str(row[0]), "y": str(row[1])}]}
+    chart = [
+        {"series": f"s{i+1}", "data": [{"x": str(row[-2]), "y": str(row[-1])}]}
         for i, row in enumerate(results)
     ]
-    chart_json = json.dumps(chart_data)
-    return chart_json
+    return chart
