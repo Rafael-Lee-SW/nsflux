@@ -62,7 +62,7 @@ def load_data(data_path):
                 times.append(datetime.strptime(chunk["date"],"%Y-%m-%d"))
             else:
                 tmp += 1
-                times.append("all")
+                times.append(datetime.strptime("2023-10-31","%Y-%m-%d"))
             texts.append(chunk['text'])
             texts_short.append(chunk['text_short'])
             texts_vis.append(chunk['text_vis'])
@@ -76,6 +76,7 @@ def load_data(data_path):
             'texts_short':texts_short,
             'texts_vis':texts_vis}
     print(f"Data Loaded! Full length:{len(titles)}, Time Missing:{tmp}")
+    print(f"Time Max:{max(times)}, Time Min:{min(times)}")
     return data_
 
 def random_seed(seed):
@@ -106,7 +107,7 @@ def process_to_format(qry_contents, type):
         }
         for i, form in enumerate(qry_contents):
             tmp_format_ = {
-                "rsp_tit": f"{i+1}번째 검색데이터: {form['title']}      출처:{form['file_name']}", "rsp_data": form["contents"]
+                "rsp_tit": f"{i+1}번째 검색데이터: {form['title']} (출처:{form['file_name']})", "rsp_data": form["contents"]
             }
             tmp_format['rsp_data'].append(tmp_format_)
         return tmp_format
@@ -120,11 +121,11 @@ def process_to_format(qry_contents, type):
         }
         tmp_format_chart = {
             "rsp_type": "CT", 
-            "rsp_tit": qry_contents[0]["title"], 
-            "rsp_data": [{
-                "chart_type":"BAR",
-                "chart_data":qry_contents[0]["data"]
-                }]
+            "rsp_tit": qry_contents[1]["title"], 
+            "rsp_data": {
+                "chart_tp":"BAR",
+                "chart_data":qry_contents[1]["data"]
+                }
         }
         tmp_format['rsp_data'].append(tmp_format_sql)
         tmp_format['rsp_data'].append(tmp_format_chart)
