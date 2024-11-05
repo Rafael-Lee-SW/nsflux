@@ -128,18 +128,24 @@ def process_to_format(qry_contents, type):
                 }
         }
         tmp_format['rsp_data'].append(tmp_format_sql)
-        tmp_format['rsp_data'].append(tmp_format_chart)
-        return tmp_format
+        # tmp_format['rsp_data'].append(tmp_format_chart)
+        return tmp_format, tmp_format_chart
 
     elif type == "Answer":
         tmp_format = {
             "rsp_type": "A", "rsp_tit": "답변", "rsp_data": []
         }
         for i,form in enumerate(qry_contents):
-            tmp_format_ = {
-                "rsp_type": "TT", "rsp_data": form
-            }
-            tmp_format['rsp_data'].append(tmp_format_)
+            if i == 0:
+                tmp_format_ = {
+                    "rsp_type": "TT", "rsp_data": form
+                }
+                tmp_format['rsp_data'].append(tmp_format_)
+            elif i == 1:
+                tmp_format['rsp_data'].append(form)
+            else:
+                None
+            
         return tmp_format
 
     else:

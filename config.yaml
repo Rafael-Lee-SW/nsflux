@@ -17,7 +17,7 @@ embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
 cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
-data_path : 'data/1104_NS_DB_re.json' # VectorDB Path
+data_path : 'data/1104_NS_DB_old.json' # VectorDB Path
 metadata_path : 'data/Metadata.json' # Metadata.json Path
 sql_data_path : 'data/poc.db'        # SQLite 데이터베이스 Path
 
@@ -27,4 +27,4 @@ N : 4 # Retrieve top N chunks
 ### Others
 beep : '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 seed : 4734                     # Radom Seed
-k : 30                        # SQL Max Rows (None=MAX)
+k : 15                        # SQL Max Rows (None=MAX)
