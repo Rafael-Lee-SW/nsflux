@@ -114,7 +114,12 @@ def process_to_format(qry_contents, type):
     
     elif type == "SQL":
         tmp_format = {
-            "rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []
+            "rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": [
+                {
+                    "rsp_tit":"SQL Query 결과표",
+                    "rsp_data":[]
+                }
+            ]
         }
         tmp_format_sql = {
             "rsp_type": "TB", "rsp_tit": qry_contents[0]["title"], "rsp_data": qry_contents[0]["data"]
@@ -127,7 +132,7 @@ def process_to_format(qry_contents, type):
                 "chart_data":qry_contents[1]["data"]
                 }
         }
-        tmp_format['rsp_data'].append(tmp_format_sql)
+        tmp_format['rsp_data'][0]["rsp_data"].append(tmp_format_sql)
         # tmp_format['rsp_data'].append(tmp_format_chart)
         return tmp_format, tmp_format_chart
 
