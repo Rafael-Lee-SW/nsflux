@@ -72,7 +72,7 @@ query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가
 keyword는 질문의 키워드를 뽑는거야. \
 table은 질문에 대한 답을 할때 표형식 데이터가 필요한지 여부야, 현재는 매출액 관련 질문만 대응 가능하니 이때만 yes로 답해줘.\
 time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는{datetime.today().year}년 {datetime.today().month}월 {datetime.today().day}일). 시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) \
-또한, '최근'이라는 말이 들어가면 2024-08-01:{datetime.today().year}-{datetime.today().month}-{datetime.today().day}로 설정해줘.\
+또한, '최근'이라는 말이 들어가면 2024-06-01:{datetime.today().year}-{datetime.today().month}-{datetime.today().day}로 설정해줘.\
 
 내가 먼저 예시를 줄게
 
@@ -127,10 +127,10 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
     answer = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
 
     # Regular expression to extract content between <query/> and <query>
-    query_pattern = r'<query/>(.*?)<query>'
-    keyword_pattern = r'<keyword/>(.*?)<keyword>'
-    table_pattern = r'<table/>(.*?)<table>'
-    time_pattern = r'<time/>(.*?)<time>'
+    query_pattern = r'<query.*?>(.*?)<query.*?>'
+    keyword_pattern = r'<keyword.*?>(.*?)<keyword.*?>'
+    table_pattern = r'<table.*?>(.*?)<table.*?>'
+    time_pattern = r'<time.*?>(.*?)<time.*?>'
 
     QU = re.search(query_pattern, answer, re.DOTALL).group(1)
     KE = re.search(keyword_pattern, answer, re.DOTALL).group(1)
