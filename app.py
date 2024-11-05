@@ -56,7 +56,11 @@ def query():
         if TA == "yes": # SQL 실행
             try:
                 docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # docs 는 LLM 의 다음 input, docs_list 는 보여줄 정보들
-                retrieval = process_to_format(docs_list, type="SQL")
+                retrieval, chart = process_to_format(docs_list, type="SQL")
+
+                output = generate_answer(QU, docs, **kwargs)
+                answer = process_to_format([output, chart], type="Answer")
+                outputs = process_format_to_response(retrieval, answer)
             except Exception as e:
                 return Response(error_format(f"내부 Excel 에 해당 자료가 없습니다.", 551),
                                 content_type=content_type)
@@ -68,18 +72,16 @@ def query():
             try:
                 docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # RAG  실행
                 retrieval = process_to_format(docs_list, type="Retrieval")
+                
+                output = generate_answer(QU, docs, **kwargs)
+                answer = process_to_format([output], type="Answer")
+                outputs = process_format_to_response(retrieval, answer)
             except Exception as e:
                 return Response(error_format(f"내부 PPT에 해당 자료가 없습니다.", 552),
                                 content_type=content_type)
             finally:
                 lock.release()
                 lock_acquired = False
-
-        output = generate_answer(QU, docs, **kwargs)
-
-        answer = process_to_format([output], type="Answer")
-        
-        outputs = process_format_to_response(retrieval, answer)
 
         # 결과를 JSON 형식으로 반환
         response = json.dumps(outputs, ensure_ascii=False)
