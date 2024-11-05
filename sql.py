@@ -42,7 +42,7 @@ def first_llm(model, tokenizer, column_usage, user_query, config):
     PROMPT =\
     f'''
     <bos><start_of_turn>user
-    너는 해운 회사의 데이터로 SQL 쿼리를 작성하는 데 도움을 주는 시스템이야. 사용자로부터 받은 질문을 분석하여, 필터 조건, 집계 함수, 정렬 조건, SQL 쿼리 초안, SQL 쿼리에 사용된 모든 컬럼을 추출해줘.
+    너는 남성 해운 회사의 데이터로 SQL 쿼리를 작성하는 데 도움을 주는 시스템이야. 사용자로부터 받은 질문을 분석하여, 필터 조건, 집계 함수, 정렬 조건, SQL 쿼리 초안, SQL 쿼리에 사용된 모든 컬럼을 추출해줘.
     
     ### 참고 사항:
     1. 다음은 해운 회사 데이터의 메타데이터야. 테이블은 "revenue" 하나뿐이야.: 
@@ -77,11 +77,11 @@ def first_llm(model, tokenizer, column_usage, user_query, config):
     outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
 
     # Regular expression to extract content between <query/> and <query>
-    filter_pattern = r'<filter/>(.*?)<filter/>'
-    aggregation_pattern = r'<aggregation/>(.*?)<aggregation/>'
-    order_pattern = r'<order/>(.*?)<order/>'
-    sql_pattern = r'<sql_query/>(.*?)<sql_query/>'
-    columns_pattern = r'<columns/>(.*?)<columns/>'
+    filter_pattern = r'<filter.*?>(.*?)<filter.*?>'
+    aggregation_pattern = r'<aggregation.*?>(.*?)<aggregation.*?>'
+    order_pattern = r'<order.*?>(.*?)<order.*?>'
+    sql_pattern = r'<sql_query.*?>(.*?)<sql_query.*?>'
+    columns_pattern = r'<columns.*?>(.*?)<columns.*?>'
     
     filter_conditions = re.search(filter_pattern, outputs_result, re.DOTALL).group(1)
     aggregations = re.search(aggregation_pattern, outputs_result, re.DOTALL).group(1)
@@ -158,7 +158,7 @@ def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retri
     PROMPT =\
     f'''
     <bos><start_of_turn>user
-    너는 해운 회사의 데이터로 정확한 SQL 쿼리를 작성해주는 시스템이야. 너가 참고해야 할 정보가 있는 경우에는 이를 참고해서 SQL 쿼리 초안을 구체화해서 정확한 SQL 쿼리를 만들어줘. 그리고 이 SQL 쿼리가 어떤 정보를 추출해주는지 짧게 제목을 짓고, 어떻게 사용자의 질문에 답할 수 있는 정보를 추출하는지 설명해줘. 참고해야 할 정보가 없고 SQL 쿼리 초안이 이미 정확하다면, 그대로 출력해줘.
+    너는 남성 해운 회사의 데이터로 정확한 SQL 쿼리를 작성해주는 시스템이야. 너가 참고해야 할 정보가 있는 경우에는 이를 참고해서 SQL 쿼리 초안을 구체화해서 정확한 SQL 쿼리를 만들어줘. 그리고 이 SQL 쿼리가 어떤 정보를 추출해주는지 짧게 제목을 짓고, 어떻게 사용자의 질문에 답할 수 있는 정보를 추출하는지 설명해줘. 참고해야 할 정보가 없고 SQL 쿼리 초안이 이미 정확하다면, 그대로 출력해줘.
 
     ### 참고 사항:
     1. 다음은 너가 참고해야 할 정보야:
@@ -175,20 +175,6 @@ def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retri
     1. 정확한 SQL 쿼리 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE WHERE OUTPOL = \'KRPUS\' AND OUTPOD LIKE \'CN%\' AND OUTOBD >= \'20230101\'\n    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
     2. SQL가 조회하는 데이터 요약 (예: 부산발 중국착 매출 순위 (화주별))
     3. SQL 쿼리 설명
-    4. SELECT 문에는 다음 {parsed_columns} column 들을 모두 사용해주고 LIKE 로 들어간 컬럼들은 다음과 같이 보기좋게 해줘.
-    SELECT 
-        CASE 
-            WHEN OUTPOL LIKE 'KR%' THEN '한국'
-            WHEN OUTPOL LIKE 'JP%' THEN '일본'
-            WHEN OUTPOL LIKE 'CN%' THEN '중국'
-            ELSE '기타' 
-        END AS 국가,
-        SUM(OUTSTL) AS TotalRevenue
-    FROM revenue
-    WHERE OUTPOL LIKE 'KR%' OR OUTPOL LIKE 'JP%' OR OUTPOL LIKE 'CN%'
-    GROUP BY 국가
-    ORDER BY 국가;  -- 필요에 따라 정렬
- 
 
     ### 출력 형식(아래 출력 형식을 꼭 지켜야 해 시작부분에 / 이 들어가고 끝부분에는 없어):
     1. 정확한 SQL 쿼리: <sql_query/>SQL 명령어<sql_query>
@@ -198,7 +184,17 @@ def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retri
     ### 참고자료
     1. 만약 참고자료에 KR% 같은 조건이 있으면 LIKE 를, KRCRD 같은 정확한 정보는 = 를 사용.
     2. 만약 여러개의 LIKE 조건이 있으면 (예시: WHERE OUTPOL LIKE 'KR%' OR OUTPOL LIKE 'CN%' OR OUTPOL LIKE 'JP%') 를 사용.
-    
+    3. LIKE 로 들어간 컬럼들은 다음과 같이 보기좋게 해줘.
+    예시 : 
+    SELECT 
+        CASE 
+            WHEN OUTPOL LIKE 'KR%' THEN '한국'
+            WHEN OUTPOL LIKE 'JP%' THEN '일본'
+            WHEN OUTPOL LIKE 'CN%' THEN '중국'
+            ELSE '기타' 
+        END AS 국가,
+        SUM(OUTSTL) AS TotalRevenue
+
     <end_of_turn>
     <start_of_turn>model
     '''
@@ -209,9 +205,9 @@ def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retri
     outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
     outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
     print(f'2번째 LLM Output:{outputs_result}')
-    sql_pattern = r'<sql_query/>(.*?)<sql_query>'
-    title_pattern = r'<title/>(.*?)<title>'
-    explain_pattern = r'<explain/>(.*?)<explain>'
+    sql_pattern = r'<sql_query.*?>(.*?)<sql_query.*?>'
+    title_pattern = r'<title.*?>(.*?)<title.*?>'
+    explain_pattern = r'<explain.*?>(.*?)<explain.*?>'
     
     sql_queries = re.search(sql_pattern, outputs_result, re.DOTALL).group(1)
     title = re.search(title_pattern, outputs_result, re.DOTALL).group(1)
@@ -250,7 +246,7 @@ def create_table_json(columns, results):
 
 def create_chart_json(columns, results):
     chart = [
-        {"series": f"s{i+1}", "data": [{"x": str(row[-2]), "y": str(row[-1])}]}
+        {"label": f"{row[-2]}", "data": [{"x": "매출액", "y": str(row[-1])}]}
         for i, row in enumerate(results)
     ]
     return chart
