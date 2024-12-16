@@ -1,4 +1,4 @@
-huggingface/
-data/
+huggingface
+data
 __pycache__/
 YeoJun
