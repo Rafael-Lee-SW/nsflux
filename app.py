@@ -47,6 +47,18 @@ def query():
     lock_acquired = True
 
     try:
+        # RAG 실행 시 데이터 다시로드
+        data = load_data(config.data_path)
+
+        kwargs = {
+            "model": model,
+            "tokenizer": tokenizer,
+            "embed_model": embed_model,
+            "embed_tokenizer": embed_tokenizer,
+            "data": data,
+            "config": config,
+        }
+        
         http_query = request.json  # JSON 형식으로 query를 받음
         user_input = http_query.get('qry_contents', '')
         
@@ -69,20 +81,6 @@ def query():
             #     lock_acquired = False
 
         elif TA == "no": # RAG 실행
-
-            # RAG 실행 시 데이터 다시로드
-            # Load Data
-            data = load_data(config.data_path)
-
-            kwargs = {
-                "model": model,
-                "tokenizer": tokenizer,
-                "embed_model": embed_model,
-                "embed_tokenizer": embed_tokenizer,
-                "data": data,
-                "config": config,
-            }
-
             try:
                 docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # RAG  실행
                 retrieval = process_to_format(docs_list, type="Retrieval")
