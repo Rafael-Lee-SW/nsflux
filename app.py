@@ -64,11 +64,25 @@ def query():
             except Exception as e:
                 return Response(error_format(f"내부 Excel 에 해당 자료가 없습니다.", 551),
                                 content_type=content_type)
-            finally:
-                lock.release()
-                lock_acquired = False
+            # finally:
+            #     lock.release()
+            #     lock_acquired = False
 
         elif TA == "no": # RAG 실행
+
+            # RAG 실행 시 데이터 다시로드
+            # Load Data
+            data = load_data(config.data_path)
+
+            kwargs = {
+                "model": model,
+                "tokenizer": tokenizer,
+                "embed_model": embed_model,
+                "embed_tokenizer": embed_tokenizer,
+                "data": data,
+                "config": config,
+            }
+
             try:
                 docs, docs_list = execute_rag(QU,KE,TA,TI, **kwargs) # RAG  실행
                 retrieval = process_to_format(docs_list, type="Retrieval")
@@ -79,9 +93,9 @@ def query():
             except Exception as e:
                 return Response(error_format(f"내부 PPT에 해당 자료가 없습니다.", 552),
                                 content_type=content_type)
-            finally:
-                lock.release()
-                lock_acquired = False
+            # finally:
+            #     lock.release()
+            #     lock_acquired = False
 
         # 결과를 JSON 형식으로 반환
         response = json.dumps(outputs, ensure_ascii=False)
