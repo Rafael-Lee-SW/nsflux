@@ -56,7 +56,7 @@ def first_llm(model, tokenizer, column_usage, user_query, config):
     1. 필터 조건 (필요한 경우, 예: <filter/>OUTPOL = '부산', OUTPOD = '일본', OUTBOR = '2024-08-01 이후'<filter/>)
     2. 집계 함수 (필요한 경우, 예: <aggregation/>화주(고객)별 매출액의 합계<aggregation/>)
     3. 정렬 조건 (필요한 경우, 예: <order/>매출액 기준 내림차순<order/>)
-    4. SQL 쿼리 초안 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE OUTPOL = \'한국\' AND OUTPOD = \'베트남\' AND OUTOBD >= \'20230101\'    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
+    4. SQL 쿼리 초안 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE OUTPOL = \'한국\' AND OUTPOD = \'베트남\' AND OUTOBD >= \'2023-01-01\'    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
     5. SQL 쿼리에 사용된 모든 컬럼 (예: <columns/>OUTPOL,OUTPOD,OUTBOR,OUTSHC,OUTSTL<columns/>)
     
     ### 출력 형식:
@@ -65,6 +65,7 @@ def first_llm(model, tokenizer, column_usage, user_query, config):
     3. 정렬 조건:<order/><order/>
     4. SQL 쿼리 초안 : <sql_query/><sql_query/>
     5. SQL 쿼리에 사용된 모든 컬럼:<columns/><columns/>
+    6. 날짜는 YYYY-MM-DD 형식을 사용 (ex: "2023-05-01")
     
     <end_of_turn>
     <start_of_turn>model
@@ -172,7 +173,7 @@ def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retri
 
 
     ### 필요한 정보:
-    1. 정확한 SQL 쿼리 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE WHERE OUTPOL = \'KRPUS\' AND OUTPOD LIKE \'CN%\' AND OUTOBD >= \'20230101\'\n    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
+    1. 정확한 SQL 쿼리 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE WHERE OUTPOL = \'KRPUS\' AND OUTPOD LIKE \'CN%\' AND OUTOBD >= \'2023-01-01\'\n    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
     2. SQL가 조회하는 데이터 요약 (예: 부산발 중국착 매출 순위 (화주별))
     3. SQL 쿼리 설명
 
@@ -184,7 +185,8 @@ def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retri
     ### 참고자료
     1. 만약 참고자료에 KR% 같은 조건이 있으면 LIKE 를, KRCRD 같은 정확한 정보는 = 를 사용.
     2. 만약 여러개의 LIKE 조건이 있으면 (예시: WHERE OUTPOL LIKE 'KR%' OR OUTPOL LIKE 'CN%' OR OUTPOL LIKE 'JP%') 를 사용.
-    3. LIKE 로 들어간 컬럼들은 다음과 같이 보기좋게 해줘.
+    3. 날짜는 YYYY-MM-DD 형식을 사용 (ex: "2023-05-01")
+    4. LIKE 로 들어간 컬럼들은 다음과 같이 보기좋게 해줘.
     예시 : 
     SELECT 
         CASE 
