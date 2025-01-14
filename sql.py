@@ -48,6 +48,7 @@ def first_llm(model, tokenizer, column_usage, user_query, config):
     1. 다음은 해운 회사 데이터의 메타데이터야. 테이블은 "revenue" 하나뿐이야.: 
     "{column_usage}"
     2. 사용자가 입력한 질문을 분석하여 필요한 컬럼을 식별하고, SQL 쿼리에서 사용할 필터 조건, 집계 함수, 정렬 기준을 제공해줘.
+    3. 사용되는 프로그램은 SQLite 야. 이 프로그램에 맞는 언어를 사용해줘 (SQLite 날짜 형식 사용 예시 : strftime('%Y', OUTOBD) AS Year )
     
     ### 사용자가 입력한 질문:
     "{user_query}"
