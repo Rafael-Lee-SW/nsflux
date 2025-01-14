@@ -174,7 +174,8 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
     scaled_bm25_score = min_max_scaling(bm25_score)
 
     # Total Score
-    score = (scaled_sim_score + scaled_bm25_score) / 2
+    # score = (scaled_sim_score + scaled_bm25_score) / 2
+    score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
     top_k = score[:,0,0].argsort()[-N:][::-1]
 
     ## documents string 버전, dictionary 버전 둘 다 필요.
