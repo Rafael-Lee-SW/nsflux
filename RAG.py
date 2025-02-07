@@ -14,7 +14,6 @@ from tracking import time_tracker
 global beep
 beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
-
 @time_tracker
 def execute_rag(QU, KE, TA, TI, **kwargs):
     model = kwargs.get("model")
@@ -50,7 +49,6 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
         docs, docs_list = retrieve(KE, data, config.N, embed_model, embed_tokenizer)
         return docs, docs_list
 
-
 @time_tracker
 def generate_answer(query, docs, **kwargs):
     model = kwargs.get("model")
@@ -59,7 +57,6 @@ def generate_answer(query, docs, **kwargs):
 
     answer = generate(docs, query, model, tokenizer, config)
     return answer
-
 
 @time_tracker
 def query_sort(query, **kwargs):
@@ -112,8 +109,7 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
 답변: \
 """
     # Get Answer
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    input_ids = tokenizer(PROMPT, return_tensors="pt").to(device)
+    input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
     input_length = input_ids["input_ids"].shape[1]
     outputs = model.generate(
         **input_ids,
@@ -151,7 +147,6 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
 
     return QU, KE, TA, TI
 
-
 @time_tracker
 def sort_by_time(time_bound, data):
     date_format = "%Y-%m-%d"
@@ -185,7 +180,6 @@ def sort_by_time(time_bound, data):
         )
     )
     return data
-
 
 @time_tracker
 def retrieve(query, data, N, embed_model, embed_tokenizer):
@@ -223,7 +217,6 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
 
     return documents, documents_list
 
-
 @time_tracker
 def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
     query_V = embed(query, embed_model, embed_tokenizer)
@@ -242,59 +235,31 @@ def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
 
     return np.array(score)
 
-
-# @time_tracker
-# def cal_bm25_score(query, indexes, embed_tokenizer):
-#     tokenized_corpus = [
-#         embed_tokenizer(
-#             text,
-#             return_token_type_ids=False,
-#             return_attention_mask=False,
-#             return_offsets_mapping=False,
-#         )
-#         for text in indexes
-#     ]
-#     tokenized_corpus = [
-#         embed_tokenizer.convert_ids_to_tokens(corpus["input_ids"])
-#         for corpus in tokenized_corpus
-#     ]
-
-#     bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
-
-#     tokenized_query = embed_tokenizer(query)
-#     tokenized_query = embed_tokenizer.convert_ids_to_tokens(
-#         tokenized_query["input_ids"]
-#     )
-#     bm25_score = bm25.get_scores(tokenized_query)
-
-
-#     return np.array(bm25_score)
 @time_tracker
 def cal_bm25_score(query, indexes, embed_tokenizer):
-    tokenized_corpus = []
-    for text in indexes:
-        # Force truncation here to avoid warnings
-        corpus_enc = embed_tokenizer(
+    tokenized_corpus = [
+        embed_tokenizer(
             text,
             return_token_type_ids=False,
             return_attention_mask=False,
             return_offsets_mapping=False,
-            truncation=True,
-            max_length=512,
         )
-        tokens = embed_tokenizer.convert_ids_to_tokens(corpus_enc["input_ids"])
-        tokenized_corpus.append(tokens)
+        for text in indexes
+    ]
+    tokenized_corpus = [
+        embed_tokenizer.convert_ids_to_tokens(corpus["input_ids"])
+        for corpus in tokenized_corpus
+    ]
 
     bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
 
-    tokenized_query = embed_tokenizer(query, truncation=True, max_length=512)
+    tokenized_query = embed_tokenizer(query)
     tokenized_query = embed_tokenizer.convert_ids_to_tokens(
         tokenized_query["input_ids"]
     )
-
     bm25_score = bm25.get_scores(tokenized_query)
-    return np.array(bm25_score)
 
+    return np.array(bm25_score)
 
 @time_tracker
 def embed(query, embed_model, embed_tokenizer):
@@ -302,15 +267,12 @@ def embed(query, embed_model, embed_tokenizer):
     embeddings, _ = embed_model(**inputs, return_dict=False)
     return embeddings[0][0]
 
-
 @time_tracker
 def min_max_scaling(arr):
     return (arr - arr.min()) / (arr.max() - arr.min())
 
-
 @time_tracker
 def generate(docs, query, model, tokenizer, config):
-    print(f"TTTTTTTTTTTT")
     PROMPT = f"""
 <bos><start_of_turn>user
 너는 남성해운의 도움을 주는 데이터 분석가야.
@@ -321,46 +283,23 @@ def generate(docs, query, model, tokenizer, config):
 <start_of_turn>model
 답변: \
 """
+    input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
+    input_length = input_ids["input_ids"].shape[1]
+    print(f"전체 입력 토큰 수:{input_length}")
+    outputs = model.generate(
+        **input_ids,
+        max_new_tokens=config.model.max_new_tokens,  # 생성할 최대 토큰 수
+        do_sample=config.model.do_sample,
+        temperature=config.model.temperature,  # 텍스트 다양성 조정
+        top_k=config.model.top_k,  # top-k 샘플링
+        top_p=config.model.top_p,  # top-p(누적 확률) 샘플링
+        repetition_penalty=config.model.repetition_penalty,  # 반복 패턴 억제
+        eos_token_id=tokenizer.eos_token_id,  # 조기 종료 토큰 (EOS 토큰이 있을 경우 종료)
+        pad_token_id=tokenizer.eos_token_id,  # 패딩 시 EOS 토큰 사용
+    )
 
-    try:
-        print(">>> About to tokenize")
-        # Because my Local enviornment doesn't have the NVIDIA GPU
-        device = "cuda" if (torch.cuda.is_available()) else "cpu"
-        input_ids = tokenizer(
-            PROMPT, return_tensors="pt", truncation=True, max_length=4024
-        ).to(device)
-        print(">>> Finished tokenize")
-
-        token_count = input_ids["input_ids"].shape[1]
-        print(f">>> Input token count: {token_count}", flush=True)
-
-        # Possibly reduce the max_new_tokens for debugging
-        print(">>> About to call model.generate()")
-        outputs = model.generate(
-            **input_ids,
-            max_new_tokens=min(config.model.max_new_tokens, 1024),  # e.g. limit to 1024
-            do_sample=config.model.do_sample,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-        print(">>> Finished model.generate()")
-
-        generated_tokens = outputs[0].shape[0]
-        print(f">>> Generated token count: {generated_tokens}")
-
-        # decode
-        answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-        print(">>> decode done, returning answer")
-        return answer
-
-    except Exception as e:
-        print(f"!!! EXCEPTION in generate(): {e}", flush=True)
-        # Optionally re-raise or return an error string
-        raise
+    answer = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
+    return answer
 
 
 if __name__ == "__main__":
