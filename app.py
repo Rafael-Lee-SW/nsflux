@@ -7,7 +7,7 @@ from utils import load_model, load_data, random_seed, process_format_to_response
 import threading
 
 # Configuration
-with open('./config.yaml', 'r', encoding='utf-8') as f:
+with open('./config.yaml', 'r') as f:
     config_yaml = yaml.load(f, Loader=yaml.FullLoader)
     config = Box(config_yaml)
 random_seed(config.seed)

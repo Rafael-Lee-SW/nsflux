@@ -10,37 +10,21 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
-# Token 호출 from env 2025-02-06 soowan
-from dotenv import load_dotenv
-import os
-
-# .env 파일 로드 2025-02-06 soowan
-load_dotenv()
-
-# .env 파일에 저장된 토큰 불러오기 (환경변수 이름은 .env에 작성한 키와 동일하게) 2025-02-06 soowan
-huggingface_token = os.getenv("HUGGINGFACE_TOKEN")
-
 
 def load_model(config):
     ### 임베딩 모델 ###
     embed_model = AutoModel.from_pretrained(
-        config.embed_model_id, token=huggingface_token, cache_dir=config.cache_dir
+        config.embed_model_id, cache_dir=config.cache_dir
     )
     embed_tokenizer = AutoTokenizer.from_pretrained(
-        config.embed_model_id, token=huggingface_token, cache_dir=config.cache_dir
+        config.embed_model_id, cache_dir=config.cache_dir
     )
     embed_model.eval()
 
     ### LLM 모델 ###
     tokenizer = AutoTokenizer.from_pretrained(
-        config.model_id, token=huggingface_token, cache_dir=config.cache_dir
+        config.model_id, cache_dir=config.cache_dir
     )
-
-    # Debug: Check what the tokenizer thinks the maximum length is.
-    print("Tokenizer maximum length:", tokenizer.model_max_length)
-
-    # Optionally override it if you are sure the model supports 4024 tokens.
-    tokenizer.model_max_length = 4024
 
     if config.model.quantization_4bit == True:
         # bnb_config = BitsAndBytesConfig(
@@ -63,7 +47,6 @@ def load_model(config):
         config.model_id,
         device_map="auto",
         torch_dtype=torch.bfloat16,
-        token=huggingface_token,
         cache_dir=config.cache_dir,
         quantization_config=bnb_config,
     )
