@@ -34,7 +34,6 @@ if USE_VLLM:
 else:
     VLLMEngine = None  # 사용하지 않을 경우 None
 
-
 @ray.remote
 class RAGActor:
     def __init__(self, config):
