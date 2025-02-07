@@ -3,27 +3,55 @@ import numpy as np
 import torch
 import random
 from datetime import datetime, timedelta
-from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import (
+    AutoModel,
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
+)
+
+# Token 호출 from env 2025-02-06 soowan
+from dotenv import load_dotenv
+import os
+
+# .env 파일 로드 2025-02-06 soowan
+load_dotenv()
+
+# .env 파일에 저장된 토큰 불러오기 (환경변수 이름은 .env에 작성한 키와 동일하게) 2025-02-06 soowan
+huggingface_token = os.getenv("HUGGINGFACE_TOKEN")
 
 
 def load_model(config):
     ### 임베딩 모델 ###
-    embed_model = AutoModel.from_pretrained(config.embed_model_id, cache_dir = config.cache_dir)
-    embed_tokenizer = AutoTokenizer.from_pretrained(config.embed_model_id, cache_dir = config.cache_dir)
+    embed_model = AutoModel.from_pretrained(
+        config.embed_model_id, token=huggingface_token, cache_dir=config.cache_dir
+    )
+    embed_tokenizer = AutoTokenizer.from_pretrained(
+        config.embed_model_id, token=huggingface_token, cache_dir=config.cache_dir
+    )
     embed_model.eval()
 
     ### LLM 모델 ###
-    tokenizer = AutoTokenizer.from_pretrained(config.model_id, cache_dir = config.cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.model_id, token=huggingface_token, cache_dir=config.cache_dir
+    )
+
+    # Debug: Check what the tokenizer thinks the maximum length is.
+    print("Tokenizer maximum length:", tokenizer.model_max_length)
+
+    # Optionally override it if you are sure the model supports 4024 tokens.
+    tokenizer.model_max_length = 4024
+
     if config.model.quantization_4bit == True:
         # bnb_config = BitsAndBytesConfig(
         #         load_in_4bit=True
         #         )
         bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4"
-                )
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
 
     elif config.model.quantization_8bit == True:
         bnb_config = BitsAndBytesConfig(load_in_8bit=True)
@@ -35,15 +63,16 @@ def load_model(config):
         config.model_id,
         device_map="auto",
         torch_dtype=torch.bfloat16,
-        cache_dir = config.cache_dir,
-        quantization_config = bnb_config
-        )
+        token=huggingface_token,
+        cache_dir=config.cache_dir,
+        quantization_config=bnb_config,
+    )
     model.eval()
-    return model,tokenizer,embed_model,embed_tokenizer
+    return model, tokenizer, embed_model, embed_tokenizer
 
 
 def load_data(data_path):
-    with open(data_path, 'r') as json_file:
+    with open(data_path, "r", encoding="utf-8") as json_file:
         data = json.load(json_file)
     file_names = []
     titles = []
@@ -54,30 +83,33 @@ def load_data(data_path):
     texts_vis = []
     tmp = 0
     for file in data:
-        for chunk in file['chunks']:
-            file_names.append(file['file_name'])
-            vectors.append(np.array(chunk['vector']))
-            titles.append(chunk['title'])
+        for chunk in file["chunks"]:
+            file_names.append(file["file_name"])
+            vectors.append(np.array(chunk["vector"]))
+            titles.append(chunk["title"])
             if chunk["date"] != None:
-                times.append(datetime.strptime(chunk["date"],"%Y-%m-%d"))
+                times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
             else:
                 tmp += 1
-                times.append(datetime.strptime("2023-10-31","%Y-%m-%d"))
-            texts.append(chunk['text'])
-            texts_short.append(chunk['text_short'])
-            texts_vis.append(chunk['text_vis'])
+                times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+            texts.append(chunk["text"])
+            texts_short.append(chunk["text_short"])
+            texts_vis.append(chunk["text_vis"])
     vectors = np.array(vectors)
     vectors = torch.from_numpy(vectors).to(torch.float32)
-    data_ = {'file_names':file_names,
-            'titles':titles,
-            'times':times,
-            'vectors':vectors,
-            'texts':texts,
-            'texts_short':texts_short,
-            'texts_vis':texts_vis}
+    data_ = {
+        "file_names": file_names,
+        "titles": titles,
+        "times": times,
+        "vectors": vectors,
+        "texts": texts,
+        "texts_short": texts_short,
+        "texts_vis": texts_vis,
+    }
     print(f"Data Loaded! Full length:{len(titles)}, Time Missing:{tmp}")
     print(f"Time Max:{max(times)}, Time Min:{min(times)}")
     return data_
+
 
 def random_seed(seed):
     # Set random seed for Python's built-in random module
@@ -97,65 +129,58 @@ def random_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+
 def process_to_format(qry_contents, type):
     # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
     # 예제 응답 형식
     ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
     if type == "Retrieval":
-        tmp_format = {
-            "rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []
-        }
+        tmp_format = {"rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []}
         for i, form in enumerate(qry_contents):
             tmp_format_ = {
-                "rsp_tit": f"{i+1}번째 검색데이터: {form['title']} (출처:{form['file_name']})", "rsp_data": form["contents"]
+                "rsp_tit": f"{i+1}번째 검색데이터: {form['title']} (출처:{form['file_name']})",
+                "rsp_data": form["contents"],
             }
-            tmp_format['rsp_data'].append(tmp_format_)
+            tmp_format["rsp_data"].append(tmp_format_)
         return tmp_format
-    
+
     elif type == "SQL":
         tmp_format = {
-            "rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": [
-                {
-                    "rsp_tit":"SQL Query 결과표",
-                    "rsp_data":[]
-                }
-            ]
+            "rsp_type": "R",
+            "rsp_tit": "남성 내부 데이터",
+            "rsp_data": [{"rsp_tit": "SQL Query 결과표", "rsp_data": []}],
         }
         tmp_format_sql = {
-            "rsp_type": "TB", "rsp_tit": qry_contents[0]["title"], "rsp_data": qry_contents[0]["data"]
+            "rsp_type": "TB",
+            "rsp_tit": qry_contents[0]["title"],
+            "rsp_data": qry_contents[0]["data"],
         }
         tmp_format_chart = {
-            "rsp_type": "CT", 
-            "rsp_tit": qry_contents[1]["title"], 
-            "rsp_data": {
-                "chart_tp":"BAR",
-                "chart_data":qry_contents[1]["data"]
-                }
+            "rsp_type": "CT",
+            "rsp_tit": qry_contents[1]["title"],
+            "rsp_data": {"chart_tp": "BAR", "chart_data": qry_contents[1]["data"]},
         }
-        tmp_format['rsp_data'][0]["rsp_data"].append(tmp_format_sql)
+        tmp_format["rsp_data"][0]["rsp_data"].append(tmp_format_sql)
         # tmp_format['rsp_data'].append(tmp_format_chart)
         return tmp_format, tmp_format_chart
 
     elif type == "Answer":
-        tmp_format = {
-            "rsp_type": "A", "rsp_tit": "답변", "rsp_data": []
-        }
-        for i,form in enumerate(qry_contents):
+        tmp_format = {"rsp_type": "A", "rsp_tit": "답변", "rsp_data": []}
+        for i, form in enumerate(qry_contents):
             if i == 0:
-                tmp_format_ = {
-                    "rsp_type": "TT", "rsp_data": form
-                }
-                tmp_format['rsp_data'].append(tmp_format_)
+                tmp_format_ = {"rsp_type": "TT", "rsp_data": form}
+                tmp_format["rsp_data"].append(tmp_format_)
             elif i == 1:
-                tmp_format['rsp_data'].append(form)
+                tmp_format["rsp_data"].append(form)
             else:
                 None
-            
+
         return tmp_format
 
     else:
         print("Error! Type Not supported!")
         return None
+
 
 def process_format_to_response(*formats):
     # Get multiple formats to tuple
@@ -165,19 +190,20 @@ def process_format_to_response(*formats):
         "result": "OK",
         "detail": "",
         "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-        "data_list": []
+        "data_list": [],
     }
 
     for format in formats:
-        ans_format['data_list'].append(format)
+        ans_format["data_list"].append(format)
 
     return ans_format
+
 
 def error_format(message, status):
     ans_format = {
         "status_code": status,
         "result": message,
         "detail": "",
-        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
     }
     return json.dumps(ans_format)

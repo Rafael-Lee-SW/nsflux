@@ -2,19 +2,21 @@
 
 ### Model
 model_id : 'google/gemma-2-27b-it'
+# model_id : 'google/gemma-2-9b-it' # NS-Local test small model 2025-02-06
 model:
   quantization_4bit : False # Quantize 4-bit
   quantization_8bit : False # Quantize 8-bit
   max_new_tokens : 2500      # 생성할 최대 토큰 수
 
-  do_sample : False # True 일때만 아래가 적용
+  do_sample : True # True 일때만 아래가 적용
   temperature : 1.0          # 텍스트 다양성 조정: 높을수록 창의력 향상 (1.0)
   top_k : 30                 # top-k 샘플링: 상위 k개의 후보 토큰 중 하나를 선택 (50)
   top_p : 1.0                # top-p 샘플링: 누적 확률을 기준으로 후보 토큰을 선택 (1.0 보다 낮을수록 창의력 증가)
   repetition_penalty : 1.0   # 같은 단어를 반복해서 출력하지 않도록 패널티를 부여 (1.0 보다 클수록 페널티 증가)
 embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
+cache_dir : "D:/huggingface" # Windows Local
 # cache_dir : "/media/user/7340afbb-e4ce-4a38-8210-c6362e85eae7/RAG/RAG_application/huggingface" # Local
-cache_dir : "/workspace/huggingface"  # Docker
+# cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
 data_path : 'data/1104_NS_DB_old.json' # VectorDB Path

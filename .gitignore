@@ -1,4 +1,5 @@
 huggingface
 data
 __pycache__/
+.env
 YeoJun
