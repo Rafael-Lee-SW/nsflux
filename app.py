@@ -6,6 +6,9 @@ from box import Box
 from utils import load_model, load_data, random_seed, process_format_to_response, process_to_format, error_format
 import threading
 
+import ray
+from ray_setup import init_ray
+
 # Configuration
 with open('./config.yaml', 'r') as f:
     config_yaml = yaml.load(f, Loader=yaml.FullLoader)
@@ -26,6 +29,9 @@ kwargs = {
     "data": data,
     "config": config,
 }
+
+########## Ray Dashboard 8265 port ##########
+init_ray()
 
 ########## FLASK APP ##########
 app = Flask(__name__)
