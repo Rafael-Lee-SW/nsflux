@@ -10,7 +10,10 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
+# Tracking
+from tracking import time_tracker
 
+@time_tracker
 def load_model(config):
     ### 임베딩 모델 ###
     embed_model = AutoModel.from_pretrained(
@@ -53,7 +56,7 @@ def load_model(config):
     model.eval()
     return model, tokenizer, embed_model, embed_tokenizer
 
-
+@time_tracker
 def load_data(data_path):
     with open(data_path, "r", encoding="utf-8") as json_file:
         data = json.load(json_file)
@@ -93,7 +96,7 @@ def load_data(data_path):
     print(f"Time Max:{max(times)}, Time Min:{min(times)}")
     return data_
 
-
+@time_tracker
 def random_seed(seed):
     # Set random seed for Python's built-in random module
     random.seed(seed)
@@ -112,7 +115,7 @@ def random_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-
+@time_tracker
 def process_to_format(qry_contents, type):
     # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
     # 예제 응답 형식
@@ -164,7 +167,7 @@ def process_to_format(qry_contents, type):
         print("Error! Type Not supported!")
         return None
 
-
+@time_tracker
 def process_format_to_response(*formats):
     # Get multiple formats to tuple
 
@@ -181,7 +184,7 @@ def process_format_to_response(*formats):
 
     return ans_format
 
-
+@time_tracker
 def error_format(message, status):
     ans_format = {
         "status_code": status,
