@@ -24,10 +24,18 @@ def load_model(config):
     )
     embed_model.eval()
 
+    embed_tokenizer.model_max_length = 4096  # Embeded model 원하는 값으로 조정
+
     ### LLM 모델 ###
     tokenizer = AutoTokenizer.from_pretrained(
         config.model_id, cache_dir=config.cache_dir
     )
+
+    ### Check the max length of Tokenizer
+    print("Tokenizer MAXIMUM length:", tokenizer.model_max_length)
+
+    ### Set the Max length of token 4024(because Gemma2 support the 8048)
+    tokenizer.model_max_length = 4024
 
     if config.model.quantization_4bit == True:
         # bnb_config = BitsAndBytesConfig(
