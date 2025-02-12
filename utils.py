@@ -1,3 +1,4 @@
+# utils.py
 import json
 import numpy as np
 import torch
@@ -10,12 +11,19 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
+# vLLM 관련 임포트
+from vllm import LLM, EngineArgs
+
 # Tracking
 from tracking import time_tracker
 
+# Logging
+import logging
+
+
 @time_tracker
 def load_model(config):
-    ### 임베딩 모델 ###
+    ### 임베딩 모델 로드 (변경 없음) ###
     embed_model = AutoModel.from_pretrained(
         config.embed_model_id, cache_dir=config.cache_dir
     )
@@ -23,46 +31,73 @@ def load_model(config):
         config.embed_model_id, cache_dir=config.cache_dir
     )
     embed_model.eval()
+    embed_tokenizer.model_max_length = 4096
 
-    embed_tokenizer.model_max_length = 4096  # Embeded model 원하는 값으로 조정
+    ### LLM 모델 로드 ###
+    if config.use_vllm:
+        # vLLM 엔진을 사용하여 모델 로드
+        if config.model.quantization_4bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+        elif config.model.quantization_8bit:
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        else:
+            bnb_config = None
 
-    ### LLM 모델 ###
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.model_id, cache_dir=config.cache_dir
-    )
-
-    ### Check the max length of Tokenizer
-    print("Tokenizer MAXIMUM length:", tokenizer.model_max_length)
-
-    ### Set the Max length of token 4024(because Gemma2 support the 8048)
-    tokenizer.model_max_length = 4024
-
-    if config.model.quantization_4bit == True:
-        # bnb_config = BitsAndBytesConfig(
-        #         load_in_4bit=True
-        #         )
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
+        # # EngineArgs 객체 생성 (필요한 인자들은 vLLM 문서를 참고)
+        # engine_args = EngineArgs(
+        #     model=config.model_id,
+        #     tokenizer_mode="auto",
+        #     download_dir=config.cache_dir,
+        #     trust_remote_code=True,
+        #     # quantization 옵션이 EngineArgs에 포함되어 있다면 추가합니다.
+        #     # 예시: quantization_config=bnb_config
+        # )
+        # print(f"EngineArgs: {engine_args}")
+        # engine = LLMEngine.from_engine_args(engine_args)
+        engine = LLM(
+            model="/home/ubuntu/huggingface/models--google--gemma-2-27b-it/"
         )
+        print(f"After Engine : ", engine)
 
-    elif config.model.quantization_8bit == True:
-        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            config.model_id, cache_dir=config.cache_dir
+        )
+        tokenizer.model_max_length = 4024
 
+        return engine, tokenizer, embed_model, embed_tokenizer
     else:
-        bnb_config = None
+        # 기존 Hugging Face 방식
+        tokenizer = AutoTokenizer.from_pretrained(
+            config.model_id, cache_dir=config.cache_dir
+        )
+        tokenizer.model_max_length = 4024
+        if config.model.quantization_4bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+        elif config.model.quantization_8bit:
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        else:
+            bnb_config = None
 
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model_id,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-        cache_dir=config.cache_dir,
-        quantization_config=bnb_config,
-    )
-    model.eval()
-    return model, tokenizer, embed_model, embed_tokenizer
+        model = AutoModelForCausalLM.from_pretrained(
+            config.model_id,
+            device_map="auto",
+            torch_dtype=torch.bfloat16,
+            cache_dir=config.cache_dir,
+            quantization_config=bnb_config,
+        )
+        model.eval()
+        return model, tokenizer, embed_model, embed_tokenizer
+
 
 @time_tracker
 def load_data(data_path):
@@ -104,6 +139,7 @@ def load_data(data_path):
     print(f"Time Max:{max(times)}, Time Min:{min(times)}")
     return data_
 
+
 @time_tracker
 def random_seed(seed):
     # Set random seed for Python's built-in random module
@@ -122,6 +158,7 @@ def random_seed(seed):
     # Enable deterministic algorithms
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
 
 @time_tracker
 def process_to_format(qry_contents, type):
@@ -175,6 +212,7 @@ def process_to_format(qry_contents, type):
         print("Error! Type Not supported!")
         return None
 
+
 @time_tracker
 def process_format_to_response(*formats):
     # Get multiple formats to tuple
@@ -191,6 +229,7 @@ def process_format_to_response(*formats):
         ans_format["data_list"].append(format)
 
     return ans_format
+
 
 @time_tracker
 def error_format(message, status):
