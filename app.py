@@ -17,6 +17,7 @@ from utils import load_model, load_data, random_seed, process_format_to_response
 import ray
 from ray_setup import init_ray
 from ray_utils import InferenceActor
+from vllm import LLM, SamplingParams
 
 # Configuration
 with open('./config.yaml', 'r') as f:
