@@ -1,5 +1,5 @@
 # 베이스 이미지 선택
-FROM globeai/flux_ns:1.18
+FROM globeai/flux_ns:1.19
 
 # 작업 디렉토리 설정
 WORKDIR /workspace
@@ -15,6 +15,9 @@ COPY . /workspace
 
 # Flask 앱이 실행될 포트를 열어둠
 EXPOSE 5000
+
+# Ray Dashboard 포트 (8265)와 vLLM 관련 포트 필요 시 추가
+EXPOSE 8265
 
 # Flask 앱 실행 명령어
 CMD ["python", "app.py"]

@@ -2,7 +2,7 @@
 
 ### Model
 model_id : 'google/gemma-2-27b-it'
-# model_id : 'google/gemma-2-9b-it' # NS-Local test small model 2025-02-06
+use_vllm: True # vLLM 사용 여부
 model:
   quantization_4bit : False # Quantize 4-bit
   quantization_8bit : False # Quantize 8-bit

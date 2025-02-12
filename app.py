@@ -3,6 +3,9 @@ import os
 os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
 os.environ["HF_HOME"] = "/workspace/huggingface"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# For the Huggingface Token setting
+os.environ["HF_TOKEN"] = "/home/ubuntu/.cache/huggingface"
+os.environ['MKL_THREADING_LAYER']='GNU'
 
 from flask import Flask, request, jsonify, render_template, Response
 from RAG import generate_answer, execute_rag, query_sort  # 기존에 만든 RAG 시스템 불러오기

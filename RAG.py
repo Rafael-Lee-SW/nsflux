@@ -1,9 +1,8 @@
+# RAG.py
 import torch
 import re
 import numpy as np
 import rank_bm25
-import torch
-import numpy as np
 import random
 from datetime import datetime, timedelta
 from sql import generate_sql
@@ -13,6 +12,7 @@ from tracking import time_tracker
 
 global beep
 beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+
 
 @time_tracker
 def execute_rag(QU, KE, TA, TI, **kwargs):
@@ -49,6 +49,7 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
         docs, docs_list = retrieve(KE, data, config.N, embed_model, embed_tokenizer)
         return docs, docs_list
 
+
 @time_tracker
 def generate_answer(query, docs, **kwargs):
     model = kwargs.get("model")
@@ -57,6 +58,7 @@ def generate_answer(query, docs, **kwargs):
 
     answer = generate(docs, query, model, tokenizer, config)
     return answer
+
 
 @time_tracker
 def query_sort(query, **kwargs):
@@ -110,7 +112,9 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
 """
     # Get Answer
     print("Token Problem")
-    input_ids = tokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
+    input_ids = tokenizer(
+        PROMPT, return_tensors="pt", truncation=True, max_length=4024
+    ).to("cuda")
     input_length = input_ids["input_ids"].shape[1]
     outputs = model.generate(
         **input_ids,
@@ -148,6 +152,7 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
 
     return QU, KE, TA, TI
 
+
 @time_tracker
 def sort_by_time(time_bound, data):
     date_format = "%Y-%m-%d"
@@ -181,6 +186,7 @@ def sort_by_time(time_bound, data):
         )
     )
     return data
+
 
 @time_tracker
 def retrieve(query, data, N, embed_model, embed_tokenizer):
@@ -218,6 +224,7 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
 
     return documents, documents_list
 
+
 @time_tracker
 def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
     query_V = embed(query, embed_model, embed_tokenizer)
@@ -235,6 +242,7 @@ def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
         score.append(tmp.detach())
 
     return np.array(score)
+
 
 @time_tracker
 def cal_bm25_score(query, indexes, embed_tokenizer):
@@ -262,15 +270,18 @@ def cal_bm25_score(query, indexes, embed_tokenizer):
 
     return np.array(bm25_score)
 
+
 @time_tracker
 def embed(query, embed_model, embed_tokenizer):
     inputs = embed_tokenizer(query, padding=True, truncation=True, return_tensors="pt")
     embeddings, _ = embed_model(**inputs, return_dict=False)
     return embeddings[0][0]
 
+
 @time_tracker
 def min_max_scaling(arr):
     return (arr - arr.min()) / (arr.max() - arr.min())
+
 
 @time_tracker
 def generate(docs, query, model, tokenizer, config):
@@ -285,41 +296,63 @@ def generate(docs, query, model, tokenizer, config):
 답변: \
 """
     try:
-        print(">>> About to Tokenizer")
-        input_ids = tokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
-        print(">>> Finished tokenize")
+        # vLLM 엔진 사용 시 (vLLM 엔진은 generate 메서드를 제공합니다)
+        if hasattr(model, "generate"):
+            # vLLM의 샘플링 파라미터를 설정합니다.
+            from vllm import SamplingParams
+            sampling_params = SamplingParams(
+                max_tokens=min(config.model.max_new_tokens, 1024),
+                do_sample=config.model.do_sample,
+                temperature=config.model.temperature,
+                top_k=config.model.top_k,
+                top_p=config.model.top_p,
+                repetition_penalty=config.model.repetition_penalty,
+            )
+            # vLLM 엔진의 generate()를 호출하면 결과 객체가 반환됩니다.
+            result = model.generate(PROMPT, sampling_params=sampling_params)
+            # 보통 첫 번째 출력 결과의 텍스트를 사용합니다.
+            answer = result.outputs[0].text
+        else:
+            print(">>> About to Tokenizer")
+            input_ids = tokenizer(
+                PROMPT, return_tensors="pt", truncation=True, max_length=4024
+            ).to("cuda")
+            print(">>> Finished tokenize")
 
-        token_count = input_ids["input_ids"].shape[1]
-        print(f">>> Input token count: {token_count}", flush=True)
+            token_count = input_ids["input_ids"].shape[1]
+            print(f">>> Input token count: {token_count}", flush=True)
 
-        # Possibly reduce the max_new_tokens for debugging
-        print(">>> About to call model.generate()")
-        outputs = model.generate(
-            **input_ids,
-            max_new_tokens=min(config.model.max_new_tokens, 1024),  # e.g. limit to 1024
-            do_sample=config.model.do_sample,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-        print(">>> Finished model.generate()")
+            # Possibly reduce the max_new_tokens for debugging
+            print(">>> About to call model.generate()")
+            outputs = model.generate(
+                **input_ids,
+                max_new_tokens=config.model.max_new_tokens,
+                do_sample=config.model.do_sample,
+                temperature=config.model.temperature,
+                top_k=config.model.top_k,
+                top_p=config.model.top_p,
+                repetition_penalty=config.model.repetition_penalty,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+            print(">>> Finished model.generate()")
 
-        generated_tokens = outputs[0].shape[0]
-        print(f">>> Generated token count: {generated_tokens}")
+            generated_tokens = outputs[0].shape[0]
+            print(f">>> Generated token count: {generated_tokens}")
 
-        # decode
-        answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-        print(answer)
-        print(">>> decode done, returning answer")
+            # decode
+            answer = tokenizer.decode(
+                outputs[0][token_count:], skip_special_tokens=True
+            )
+            print(answer)
+            print(">>> decode done, returning answer")
         return answer
 
     except Exception as e:
         print(f"!!! EXCEPTION in generate(): {e}", flush=True)
         # Optionally re-raise or return an error string
         raise
+
 
 if __name__ == "__main__":
     status = True
