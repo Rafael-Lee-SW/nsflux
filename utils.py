@@ -11,8 +11,11 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
+import os
+
 # vLLM 관련 임포트
-from vllm import LLM, EngineArgs
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
 
 # Tracking
 from tracking import time_tracker
@@ -48,20 +51,25 @@ def load_model(config):
         else:
             bnb_config = None
 
-        # # EngineArgs 객체 생성 (필요한 인자들은 vLLM 문서를 참고)
-        # engine_args = EngineArgs(
-        #     model=config.model_id,
-        #     tokenizer_mode="auto",
-        #     download_dir=config.cache_dir,
-        #     trust_remote_code=True,
-        #     # quantization 옵션이 EngineArgs에 포함되어 있다면 추가합니다.
-        #     # 예시: quantization_config=bnb_config
-        # )
-        # print(f"EngineArgs: {engine_args}")
-        # engine = LLMEngine.from_engine_args(engine_args)
-        engine = LLM(
-            model="/home/ubuntu/huggingface/models--google--gemma-2-27b-it/"
+        # 로컬 모델 경로 구성: Hugging Face 캐시 폴더 내에 다운로드된 모델 경로
+        local_model_path = os.path.join(
+            config.cache_dir, "models--" + config.model_id.replace("/", "--")
         )
+        local_model_path = os.path.abspath(local_model_path)  # 절대 경로로 변환
+        logging.info(f"Using local model path for vLLM: {local_model_path}")
+
+        # EngineArgs 객체 생성 시 로컬 모델 경로 사용
+        engine_args = AsyncEngineArgs(
+            model=local_model_path,
+            download_dir=config.cache_dir,
+            trust_remote_code=True,  # 필요 시 True로 설정 (Gemma-2와 같은 커스텀 모델)
+            # 추가적으로 필요한 인자(예: trust_remote_code) 필요 시 설정
+        )
+        logging.info(f"EngineArgs: {engine_args}")
+
+        # vLLM 엔진 생성
+        engine = AsyncLLMEngine.from_engine_args(engine_args)
+        logging.info(f"After Engine creation: {engine}")
         print(f"After Engine : ", engine)
 
         tokenizer = AutoTokenizer.from_pretrained(
