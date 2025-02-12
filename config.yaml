@@ -6,7 +6,7 @@ model_id : 'google/gemma-2-27b-it'
 model:
   quantization_4bit : False # Quantize 4-bit
   quantization_8bit : False # Quantize 8-bit
-  max_new_tokens : 2500      # 생성할 최대 토큰 수
+  max_new_tokens : 4096      # 생성할 최대 토큰 수
 
   do_sample : True # True 일때만 아래가 적용
   temperature : 1.0          # 텍스트 다양성 조정: 높을수록 창의력 향상 (1.0)

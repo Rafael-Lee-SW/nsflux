@@ -109,7 +109,8 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
 답변: \
 """
     # Get Answer
-    input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
+    print("Token Problem")
+    input_ids = tokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
     input_length = input_ids["input_ids"].shape[1]
     outputs = model.generate(
         **input_ids,
@@ -283,24 +284,42 @@ def generate(docs, query, model, tokenizer, config):
 <start_of_turn>model
 답변: \
 """
-    input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
-    input_length = input_ids["input_ids"].shape[1]
-    print(f"전체 입력 토큰 수:{input_length}")
-    outputs = model.generate(
-        **input_ids,
-        max_new_tokens=config.model.max_new_tokens,  # 생성할 최대 토큰 수
-        do_sample=config.model.do_sample,
-        temperature=config.model.temperature,  # 텍스트 다양성 조정
-        top_k=config.model.top_k,  # top-k 샘플링
-        top_p=config.model.top_p,  # top-p(누적 확률) 샘플링
-        repetition_penalty=config.model.repetition_penalty,  # 반복 패턴 억제
-        eos_token_id=tokenizer.eos_token_id,  # 조기 종료 토큰 (EOS 토큰이 있을 경우 종료)
-        pad_token_id=tokenizer.eos_token_id,  # 패딩 시 EOS 토큰 사용
-    )
+    try:
+        print(">>> About to Tokenizer")
+        input_ids = tokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
+        print(">>> Finished tokenize")
 
-    answer = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-    return answer
+        token_count = input_ids["input_ids"].shape[1]
+        print(f">>> Input token count: {token_count}", flush=True)
 
+        # Possibly reduce the max_new_tokens for debugging
+        print(">>> About to call model.generate()")
+        outputs = model.generate(
+            **input_ids,
+            max_new_tokens=min(config.model.max_new_tokens, 1024),  # e.g. limit to 1024
+            do_sample=config.model.do_sample,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        print(">>> Finished model.generate()")
+
+        generated_tokens = outputs[0].shape[0]
+        print(f">>> Generated token count: {generated_tokens}")
+
+        # decode
+        answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
+        print(answer)
+        print(">>> decode done, returning answer")
+        return answer
+
+    except Exception as e:
+        print(f"!!! EXCEPTION in generate(): {e}", flush=True)
+        # Optionally re-raise or return an error string
+        raise
 
 if __name__ == "__main__":
     status = True

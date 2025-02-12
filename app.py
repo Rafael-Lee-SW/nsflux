@@ -1,3 +1,9 @@
+import os
+# Setting environment variable
+os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
+os.environ["HF_HOME"] = "/workspace/huggingface"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 from flask import Flask, request, jsonify, render_template, Response
 from RAG import generate_answer, execute_rag, query_sort  # 기존에 만든 RAG 시스템 불러오기
 import json
@@ -15,26 +21,28 @@ with open('./config.yaml', 'r') as f:
     config = Box(config_yaml)
 random_seed(config.seed)
 
+# Didn't load the model and data at first anymore - 2025-02-11. 16:19
+
 # Load Model
-model, tokenizer, embed_model, embed_tokenizer = load_model(config)
+# model, tokenizer, embed_model, embed_tokenizer = load_model(config)
 
 # Load Data
-data = load_data(config.data_path)
+# data = load_data(config.data_path)
 
-kwargs = {
-    "model": model,
-    "tokenizer": tokenizer,
-    "embed_model": embed_model,
-    "embed_tokenizer": embed_tokenizer,
-    "data": data,
-    "config": config,
-}
+# kwargs = {
+#    "model": model,
+#    "tokenizer": tokenizer,
+#    "embed_model": embed_model,
+#    "embed_tokenizer": embed_tokenizer,
+#    "data": data,
+#    "config": config,
+# }
 
 ########## Ray Dashboard 8265 port ##########
 init_ray()
 
-########## Create the Ray Actors calling only one GPU ##########
-inference_actor = InferenceActor.remote(kwargs)
+########## Create the single  Ray Actors above  only one GPU - later on, Create more actors on serveral Multi GPU ##########
+inference_actor = InferenceActor.remote(config)
 
 ########## FLASK APP ##########
 app = Flask(__name__)
@@ -47,12 +55,16 @@ def index():
 
 # Query Endpoint 
 @app.route('/query', methods=['POST'])
-def query():
+async def query():
     try:
         http_query = request.json # JSON Request From Client
         # call the process_query method to do async
         future = inference_actor.process_query.remote(http_query)
-        response = ray.get(future)
+        response = await future
+        if isinstance(response, dict):
+            response = json.dumps(response, ensure_ascii=False)
+        print("APP.py - Future: ", future)
+        print("APP.py - response: ", response)
         return Response(response, content_type=content_type)
     except Exception as e:
         error_resp = error_format(f"서버 처리 중 오류 발생: {str(e)}", 500)
