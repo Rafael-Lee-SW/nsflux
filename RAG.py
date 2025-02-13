@@ -118,10 +118,9 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
 답변: \
 """
     # Get Answer
-    print("Token Problem")
+    print("##### query_sort is starting #####")
     if config.use_vllm:
         from vllm import SamplingParams
-
         sampling_params = SamplingParams(
             max_tokens=config.model.max_new_tokens,
             temperature=config.model.temperature,

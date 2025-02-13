@@ -15,20 +15,27 @@ from transformers import (
 
 import os
 
-# vLLM 관련 임포트
+# Import vLLM utilities
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 
-# 최소 유효 파일 크기 (예: 10MB)
+# Define the minimum valid file size (e.g., 10MB)
 MIN_WEIGHT_SIZE = 10 * 1024 * 1024
 
-# Tracking
+# For tracking execution time of functions
 from tracking import time_tracker
 
 # Logging
 import logging
 logging.basicConfig(level=logging.DEBUG)
 
+# -------------------------------------------------
+# Function: find_weight_directory
+# -------------------------------------------------
+# Recursively searches for weight files (safetensors or pytorch_model.bin) in a given base path.
+# This method Find the files searching the whole directory
+# Because, vLLM not automatically find out the model files.
+# -------------------------------------------------
 @time_tracker
 def find_weight_directory(base_path):
     for root, dirs, files in os.walk(base_path):
@@ -44,6 +51,10 @@ def find_weight_directory(base_path):
                     logging.debug(f"파일 크기 확인 실패: {file_path} - {ex}")
     return None, None
 
+# -------------------------------------------------
+# Function: load_model
+# -------------------------------------------------
+# Loads the embedding model and the main LLM model (using vLLM if specified in the config).
 @time_tracker
 def load_model(config):
     # -------------------------------
@@ -59,14 +70,14 @@ def load_model(config):
         cache_dir=config.cache_dir,
         trust_remote_code=True
     )
-    embed_model.eval()
+    embed_model.eval() # Set the embedding model to evaluation mode.
     embed_tokenizer.model_max_length = 4096
 
     # -------------------------------
-    # vLLM을 사용하여 메인 LLM 모델 로드
+    # Load the main LLM model via vLLM.
     # -------------------------------
     if config.use_vllm:
-        # 필요한 경우 양자화 구성 설정.
+        # Set up quantization if enabled.
         if config.model.quantization_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -78,7 +89,8 @@ def load_model(config):
             bnb_config = BitsAndBytesConfig(load_in_8bit=True)
         else:
             bnb_config = None
-
+        
+        # Construct the local model path from the cache directory.
         # 캐시 디렉터리 내의 로컬 모델 경로 생성.
         # 참고: 컨테이너는 /home/ubuntu/huggingface를 /workspace/huggingface로 마운트합니다.
         local_model_path = os.path.join(config.cache_dir, "models--" + config.model_id.replace("/", "--"))
@@ -88,7 +100,9 @@ def load_model(config):
         # config.json 파일 경로 정의 및 필요시 패치.
         config_file = os.path.join(local_model_path, "config.json")
         need_patch = False
-
+        
+        #### Patching is starting ####
+        # If config.json is not exited, patching via under process
         if not os.path.exists(config_file):
             os.makedirs(local_model_path, exist_ok=True)
             hf_config = AutoConfig.from_pretrained(
@@ -114,7 +128,9 @@ def load_model(config):
                 with open(config_file, "w", encoding="utf-8") as f:
                     json.dump(config_dict, f)
                 logging.info("기존 config 파일 패치됨: %s", config_file)
-
+        #### Patching is done ####
+        
+        # Recursively search for weight files in the local model directory.
         # 재귀적으로 하위 디렉터리에서 weight 파일 검색.
         weight_dir, weight_format = find_weight_directory(local_model_path)
         if weight_dir is None:
@@ -128,6 +144,10 @@ def load_model(config):
             shutil.copy(config_file, snapshot_config)
             logging.info("루트 config.json 파일을 snapshot 디렉터리로 복사함: %s", snapshot_config)
 
+        # -------------------------------
+        # vLLM Engine
+        # -------------------------------
+        
         # EngineArgs 생성.
         # IMPORTANT: tokenizer 필드를 원본 모델 ID로 지정.
         engine_args = AsyncEngineArgs(
@@ -176,7 +196,7 @@ def load_model(config):
             trust_remote_code=True
         )
         tokenizer.model_max_length = 4024
-
+        #### Return
         return engine, tokenizer, embed_model, embed_tokenizer
 
     else:
