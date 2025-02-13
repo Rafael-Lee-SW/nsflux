@@ -1,17 +1,19 @@
-import ray
+import ray  # Ray library
 import json
-import asyncio
+import asyncio  # async I/O process module
+
+# From RAG, import the method fo create the answer
 from RAG import query_sort, execute_rag, generate_answer
 from utils import (
-    load_model,
-    load_data,
-    process_format_to_response,
-    process_to_format,
+    load_model,  # Load Model, Tokenizer, Embedding Model
+    load_data,  # Load DataSet
+    process_format_to_response,  # Change the format to Final response
+    process_to_format,  #
     error_format,
 )
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=1)  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
     async def __init__(self, config):
         self.config = config
@@ -23,34 +25,44 @@ class InferenceActor:
         self.data = load_data(config.data_path)
         # 비동기 큐와 배치 처리 설정 (마이크로배칭)
         self.request_queue = asyncio.Queue()
-        self.batch_size = 4
-        self.batch_delay = 0.05
+        self.batch_size = 4  # 최대 배치 수
+        self.batch_delay = 0.05  # 배치당 처리 시간
         asyncio.create_task(self._batch_processor())
 
     async def process_query(self, http_query):
+        # Receives an HTTP query (as a dictionary) and returns the processed result.
+        # It puts the query and a future into the request queue and waits for the future to be set.
         loop = asyncio.get_event_loop()
         future = loop.create_future()
         await self.request_queue.put((http_query, future))
         return await future
 
     async def _batch_processor(self):
+        # Continuously processes queued requests in batches (micro-batching).
+        # It waits until enough requests have accumulated or a timeout occurs, then processes each query.
         while True:
             batch = []
+            # Get the first request from the queue (this call will block if the queue is empty)
             item = await self.request_queue.get()
             batch.append(item)
             try:
+                # Try to fill the batch until batch_size is reached or timeout occurs
                 while len(batch) < self.batch_size:
                     item = await asyncio.wait_for(
                         self.request_queue.get(), timeout=self.batch_delay
                     )
                     batch.append(item)
             except asyncio.TimeoutError:
+                # Timeout reached; process the batch collected so far
                 pass
+            # Process each query in the batch individually
             for http_query, future in batch:
                 try:
+                    # User로부터 Query 추출
                     user_input = http_query.get("qry_contents", "")
                     # 필요 시 최신 데이터 재로드 (옵션)
                     self.data = load_data(self.config.data_path)
+                    # query_sort를 통해 질문 분류(분기 처리)
                     QU, KE, TA, TI = query_sort(
                         user_input,
                         model=self.model,

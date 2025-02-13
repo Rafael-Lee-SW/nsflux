@@ -1,5 +1,4 @@
 # ray_setup.py
-
 import ray
 
 def init_ray():
@@ -10,4 +9,4 @@ def init_ray():
         dashboard_host="0.0.0.0" # External IP accessable
         # dashboard_port=8265
     )
-    print("Ray initialized. DashBoard running at http://209.20.158.139:6460")
+    print("Ray initialized. DashBoard running at http://209.20.158.139:8265")
