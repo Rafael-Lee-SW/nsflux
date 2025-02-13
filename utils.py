@@ -3,12 +3,14 @@ import json
 import numpy as np
 import torch
 import random
+import shutil
 from datetime import datetime, timedelta
 from transformers import (
     AutoModel,
     AutoTokenizer,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
+    AutoConfig,
 )
 
 import os
@@ -17,28 +19,54 @@ import os
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 
+# 최소 유효 파일 크기 (예: 10MB)
+MIN_WEIGHT_SIZE = 10 * 1024 * 1024
+
 # Tracking
 from tracking import time_tracker
 
 # Logging
 import logging
+logging.basicConfig(level=logging.DEBUG)
 
+@time_tracker
+def find_weight_directory(base_path):
+    for root, dirs, files in os.walk(base_path):
+        for file in files:
+            if (".safetensors" in file or "pytorch_model.bin" in file):
+                file_path = os.path.join(root, file)
+                try:
+                    if os.path.getsize(file_path) >= MIN_WEIGHT_SIZE:
+                        return root, "safetensors" if ".safetensors" in file else "pt"
+                    else:
+                        logging.debug(f"파일 {file_path}의 크기가 너무 작음: {os.path.getsize(file_path)} bytes")
+                except Exception as ex:
+                    logging.debug(f"파일 크기 확인 실패: {file_path} - {ex}")
+    return None, None
 
 @time_tracker
 def load_model(config):
-    ### 임베딩 모델 로드 (변경 없음) ###
+    # -------------------------------
+    # 임베딩 모델 로드
+    # -------------------------------
     embed_model = AutoModel.from_pretrained(
-        config.embed_model_id, cache_dir=config.cache_dir
+        config.embed_model_id,
+        cache_dir=config.cache_dir,
+        trust_remote_code=True
     )
     embed_tokenizer = AutoTokenizer.from_pretrained(
-        config.embed_model_id, cache_dir=config.cache_dir
+        config.embed_model_id,
+        cache_dir=config.cache_dir,
+        trust_remote_code=True
     )
     embed_model.eval()
     embed_tokenizer.model_max_length = 4096
 
-    ### LLM 모델 로드 ###
+    # -------------------------------
+    # vLLM을 사용하여 메인 LLM 모델 로드
+    # -------------------------------
     if config.use_vllm:
-        # vLLM 엔진을 사용하여 모델 로드
+        # 필요한 경우 양자화 구성 설정.
         if config.model.quantization_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -51,61 +79,124 @@ def load_model(config):
         else:
             bnb_config = None
 
-        # 로컬 모델 경로 구성: Hugging Face 캐시 폴더 내에 다운로드된 모델 경로
-        local_model_path = os.path.join(
-            config.cache_dir, "models--" + config.model_id.replace("/", "--")
-        )
-        local_model_path = os.path.abspath(local_model_path)  # 절대 경로로 변환
-        logging.info(f"Using local model path for vLLM: {local_model_path}")
+        # 캐시 디렉터리 내의 로컬 모델 경로 생성.
+        # 참고: 컨테이너는 /home/ubuntu/huggingface를 /workspace/huggingface로 마운트합니다.
+        local_model_path = os.path.join(config.cache_dir, "models--" + config.model_id.replace("/", "--"))
+        local_model_path = os.path.abspath(local_model_path)
+        logging.info(f"vLLM용 로컬 모델 경로: {local_model_path}")
 
-        # EngineArgs 객체 생성 시 로컬 모델 경로 사용
+        # config.json 파일 경로 정의 및 필요시 패치.
+        config_file = os.path.join(local_model_path, "config.json")
+        need_patch = False
+
+        if not os.path.exists(config_file):
+            os.makedirs(local_model_path, exist_ok=True)
+            hf_config = AutoConfig.from_pretrained(
+                config.model_id,
+                cache_dir=config.cache_dir,
+                trust_remote_code=True
+            )
+            config_dict = hf_config.to_dict()
+            if not config_dict.get("architectures"):
+                config_dict["architectures"] = ["Gemma2ForCausalLM"]
+                need_patch = True
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump(config_dict, f)
+            if need_patch:
+                logging.info("패치된 config 파일 저장됨: %s", config_file)
+            else:
+                logging.info("config 파일 저장됨: %s", config_file)
+        else:
+            with open(config_file, "r", encoding="utf-8") as f:
+                config_dict = json.load(f)
+            if not config_dict.get("architectures"):
+                config_dict["architectures"] = ["Gemma2ForCausalLM"]
+                with open(config_file, "w", encoding="utf-8") as f:
+                    json.dump(config_dict, f)
+                logging.info("기존 config 파일 패치됨: %s", config_file)
+
+        # 재귀적으로 하위 디렉터리에서 weight 파일 검색.
+        weight_dir, weight_format = find_weight_directory(local_model_path)
+        if weight_dir is None:
+            raise RuntimeError(f"{local_model_path} 내에서 모델 weight 파일을 찾을 수 없습니다.")
+        else:
+            logging.info(f"Weight 파일이 {weight_dir}에서 발견됨. load_format: {weight_format}")
+
+        # snapshot 디렉터리에 config.json 파일이 없는 경우, 루트 config.json 복사.
+        snapshot_config = os.path.join(weight_dir, "config.json")
+        if not os.path.exists(snapshot_config):
+            shutil.copy(config_file, snapshot_config)
+            logging.info("루트 config.json 파일을 snapshot 디렉터리로 복사함: %s", snapshot_config)
+
+        # EngineArgs 생성.
+        # IMPORTANT: tokenizer 필드를 원본 모델 ID로 지정.
         engine_args = AsyncEngineArgs(
-            model=local_model_path,
+            model=weight_dir,  # weight 파일이 존재하는 디렉터리 (예: snapshot 폴더)
+            tokenizer=config.model_id,
             download_dir=config.cache_dir,
-            trust_remote_code=True,  # 필요 시 True로 설정 (Gemma-2와 같은 커스텀 모델)
-            # 추가적으로 필요한 인자(예: trust_remote_code) 필요 시 설정
+            trust_remote_code=True,
+            config_format="hf",
+            load_format=weight_format
         )
         logging.info(f"EngineArgs: {engine_args}")
 
-        # vLLM 엔진 생성
-        engine = AsyncLLMEngine.from_engine_args(engine_args)
-        logging.info(f"After Engine creation: {engine}")
-        print(f"After Engine : ", engine)
+        # AsyncLLMEngine 생성 시도.
+        try:
+            engine = AsyncLLMEngine.from_engine_args(engine_args)
+        except Exception as e:
+            if "HeaderTooSmall" in str(e):
+                logging.info("Safetensors 로드 오류 감지됨. PyTorch weight로 fallback 시도합니다.")
+                # 재검색: pytorch_model.bin이 포함된 weight directory 재검색.
+                fallback_dir = None
+                for root, dirs, files in os.walk(local_model_path):
+                    for file in files:
+                        if "pytorch_model.bin" in file and os.path.getsize(os.path.join(root, file)) >= MIN_WEIGHT_SIZE:
+                            fallback_dir = root
+                            break
+                    if fallback_dir:
+                        break
+                if fallback_dir is None:
+                    logging.error("PyTorch weight 파일도 찾을 수 없습니다.")
+                    raise e
+                engine_args.load_format = "pt"
+                engine_args.model = fallback_dir
+                logging.info(f"새로운 EngineArgs (fallback): {engine_args}")
+                engine = AsyncLLMEngine.from_engine_args(engine_args)
+            else:
+                logging.error("엔진 로드 실패: %s", e)
+                raise e
+       
+        # vLLM 엔진에는 사용자 정의 속성 추가
+        engine.is_vllm = True
 
+        # 메인 LLM 토크나이저 별도로 로드.
         tokenizer = AutoTokenizer.from_pretrained(
-            config.model_id, cache_dir=config.cache_dir
+            config.model_id,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True
         )
         tokenizer.model_max_length = 4024
 
         return engine, tokenizer, embed_model, embed_tokenizer
+
     else:
-        # 기존 Hugging Face 방식
+        # vLLM을 사용하지 않을 경우, 기본 Hugging Face 방식으로 로드.
         tokenizer = AutoTokenizer.from_pretrained(
-            config.model_id, cache_dir=config.cache_dir
+            config.model_id,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True
         )
         tokenizer.model_max_length = 4024
-        if config.model.quantization_4bit:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
-        elif config.model.quantization_8bit:
-            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-        else:
-            bnb_config = None
-
         model = AutoModelForCausalLM.from_pretrained(
             config.model_id,
             device_map="auto",
             torch_dtype=torch.bfloat16,
             cache_dir=config.cache_dir,
             quantization_config=bnb_config,
+            trust_remote_code=True
         )
         model.eval()
         return model, tokenizer, embed_model, embed_tokenizer
-
 
 @time_tracker
 def load_data(data_path):
