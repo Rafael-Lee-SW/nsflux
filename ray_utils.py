@@ -1,3 +1,4 @@
+# ray_utils.py
 import ray  # Ray library
 import json
 import asyncio  # async I/O process module
@@ -48,23 +49,35 @@ class InferenceActor:
             try:
                 # Try to fill the batch until batch_size is reached or timeout occurs
                 while len(batch) < self.batch_size:
-                    item = await asyncio.wait_for(
-                        self.request_queue.get(), timeout=self.batch_delay
-                    )
+                    item = await asyncio.wait_for(self.request_queue.get(), timeout=self.batch_delay)
                     batch.append(item)
             except asyncio.TimeoutError:
                 # Timeout reached; process the batch collected so far
                 pass
-            # Process each query in the batch individually
-            for http_query, future in batch:
+            # Process each request in the batch concurrently
+            await asyncio.gather(*(self._process_single_query(http_query, future) for http_query, future in batch))
+
+
+    async def _process_single_query(self, http_query, future):
+        try:
+            # User로부터 Query 추출
+            user_input = http_query.get("qry_contents", "")
+            # 필요 시 최신 데이터 재로드 (옵션)
+            self.data = load_data(self.config.data_path)
+            # query_sort를 통해 질문 분류(분기 처리)
+            QU, KE, TA, TI = await query_sort(
+                user_input,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                embed_model=self.embed_model,
+                embed_tokenizer=self.embed_tokenizer,
+                data=self.data,
+                config=self.config,
+            )
+            if TA == "yes":
                 try:
-                    # User로부터 Query 추출
-                    user_input = http_query.get("qry_contents", "")
-                    # 필요 시 최신 데이터 재로드 (옵션)
-                    self.data = load_data(self.config.data_path)
-                    # query_sort를 통해 질문 분류(분기 처리)
-                    QU, KE, TA, TI = query_sort(
-                        user_input,
+                    docs, docs_list = execute_rag(
+                        QU, KE, TA, TI,
                         model=self.model,
                         tokenizer=self.tokenizer,
                         embed_model=self.embed_model,
@@ -72,64 +85,41 @@ class InferenceActor:
                         data=self.data,
                         config=self.config,
                     )
-                    if TA == "yes":
-                        try:
-                            docs, docs_list = execute_rag(
-                                QU,
-                                KE,
-                                TA,
-                                TI,
-                                model=self.model,
-                                tokenizer=self.tokenizer,
-                                embed_model=self.embed_model,
-                                embed_tokenizer=self.embed_tokenizer,
-                                data=self.data,
-                                config=self.config,
-                            )
-                            retrieval, chart = process_to_format(docs_list, type="SQL")
-                            output = generate_answer(
-                                QU,
-                                docs,
-                                model=self.model,
-                                tokenizer=self.tokenizer,
-                                config=self.config,
-                            )
-                            answer = process_to_format([output, chart], type="Answer")
-                            outputs = process_format_to_response(retrieval, answer)
-                        except Exception as e:
-                            outputs = error_format(
-                                "내부 Excel 에 해당 자료가 없습니다.", 551
-                            )
-                    else:
-                        try:
-                            docs, docs_list = execute_rag(
-                                QU,
-                                KE,
-                                TA,
-                                TI,
-                                model=self.model,
-                                tokenizer=self.tokenizer,
-                                embed_model=self.embed_model,
-                                embed_tokenizer=self.embed_tokenizer,
-                                data=self.data,
-                                config=self.config,
-                            )
-                            retrieval = process_to_format(docs_list, type="Retrieval")
-                            output = generate_answer(
-                                QU,
-                                docs,
-                                model=self.model,
-                                tokenizer=self.tokenizer,
-                                config=self.config,
-                            )
-                            print("process_to_format 이후에 OUTPUT:", output)
-                            answer = process_to_format([output], type="Answer")
-                            print("process_to_format 이후에 ANSWER:", answer)
-                            outputs = process_format_to_response(retrieval, answer)
-                        except Exception as e:
-                            outputs = error_format(
-                                "내부 PPT에 해당 자료가 없습니다.", 552
-                            )
-                    future.set_result(outputs)
+                    retrieval, chart = process_to_format(docs_list, type="SQL")
+                    output = await generate_answer(
+                        QU, docs,
+                        model=self.model,
+                        tokenizer=self.tokenizer,
+                        config=self.config,
+                    )
+                    answer = process_to_format([output, chart], type="Answer")
+                    outputs = process_format_to_response(retrieval, answer)
                 except Exception as e:
-                    future.set_result(error_format(f"처리 중 오류 발생: {str(e)}", 500))
+                    outputs = error_format("내부 Excel 에 해당 자료가 없습니다.", 551)
+            else:
+                try:
+                    docs, docs_list = execute_rag(
+                        QU, KE, TA, TI,
+                        model=self.model,
+                        tokenizer=self.tokenizer,
+                        embed_model=self.embed_model,
+                        embed_tokenizer=self.embed_tokenizer,
+                        data=self.data,
+                        config=self.config,
+                    )
+                    retrieval = process_to_format(docs_list, type="Retrieval")
+                    output = await generate_answer(
+                        QU, docs,
+                        model=self.model,
+                        tokenizer=self.tokenizer,
+                        config=self.config,
+                    )
+                    print("process_to_format 이후에 OUTPUT:", output)
+                    answer = process_to_format([output], type="Answer")
+                    print("process_to_format 이후에 ANSWER:", answer)
+                    outputs = process_format_to_response(retrieval, answer)
+                except Exception as e:
+                    outputs = error_format("내부 PPT에 해당 자료가 없습니다.", 552)
+            future.set_result(outputs)
+        except Exception as e:
+            future.set_result(error_format(f"처리 중 오류 발생: {str(e)}", 500))

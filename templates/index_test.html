@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Simple RAG Query Interface - Test</title>
+  <style>
+    /* Basic styling */
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 20px auto;
+      padding: 20px;
+      background: #f9f9f9;
+      color: #333;
+    }
+    h1, h2 {
+      text-align: center;
+    }
+    input[type="text"] {
+      width: 80%;
+      padding: 10px;
+      margin-bottom: 20px;
+      font-size: 16px;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      margin: 5px;
+    }
+    .output {
+      margin-top: 20px;
+      font-size: 16px;
+      color: #333;
+      text-align: left;
+      word-wrap: break-word;
+      background: #fff;
+      padding: 15px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+    }
+    .output pre {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      background: #eee;
+      padding: 10px;
+      border-radius: 3px;
+    }
+    /* Test section styling */
+    .test-section {
+      margin-top: 40px;
+      padding: 20px;
+      background: #eef;
+      border: 1px solid #99c;
+      border-radius: 5px;
+    }
+    .test-section h2 {
+      margin-bottom: 20px;
+    }
+    .test-summary table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 20px;
+    }
+    .test-summary th,
+    .test-summary td {
+      border: 1px solid #ccc;
+      padding: 8px;
+      text-align: center;
+    }
+    .test-summary th {
+      background: #ddd;
+    }
+    .test-details .test-item {
+      margin-bottom: 20px;
+      padding: 10px;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+    .test-details .test-item h4 {
+      margin-top: 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Simple RAG Query Interface</h1>
+  <!-- Original Query Interface -->
+  <input type="text" id="userInput" placeholder="Type your query here..." />
+  <button onclick="sendQuery()">Submit</button>
+  <div class="output" id="output"></div>
+
+  <!-- Test Section -->
+  <div class="test-section">
+    <h2>Testing the 4 POST requests with 1ms delay each</h2>
+    <button style="font-size: 20px; padding: 15px 30px;" onclick="testQueries()">Test</button>
+    <div class="output" id="testResults"></div>
+  </div>
+
+  <script>
+    // Original query function with timing details.
+    function sendQuery() {
+      const userInput = document.getElementById("userInput").value;
+      const sendTime = new Date();
+      const sendTimeStr = sendTime.toLocaleTimeString() + "." + sendTime.getMilliseconds();
+      const startTimestamp = Date.now();
+
+      fetch("/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ qry_contents: userInput })
+      })
+      .then(response => {
+        const receiveTime = new Date();
+        const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
+        const elapsed = Date.now() - startTimestamp;
+        if (!response.ok) {
+          return response.json().then(errorData => { throw errorData; });
+        }
+        return response.json().then(data => {
+          document.getElementById("output").innerHTML =
+            formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
+        });
+      })
+      .catch(error => {
+        const receiveTime = new Date();
+        const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
+        const elapsed = Date.now() - startTimestamp;
+        console.error("Error:", error);
+        document.getElementById("output").innerHTML =
+          formatJsonOutput(error, sendTimeStr, receiveTimeStr, elapsed);
+      });
+    }
+
+    // Formatter for normal queries (includes timing info).
+    function formatJsonOutput(data, sendTime, receiveTime, elapsed) {
+      let formattedOutput = `
+        <strong>Send Time:</strong> ${sendTime} <br>
+        <strong>Receive Time:</strong> ${receiveTime} <br>
+        <strong>Elapsed Time:</strong> ${elapsed} ms <br>
+        <hr>
+        <strong>Status Code:</strong> ${data.status_code} <br>
+        <strong>Result:</strong> ${data.result} <br>
+        <strong>Detail:</strong> ${data.detail} <br>
+        <strong>Event Time:</strong> ${data.evt_time} <br>
+        <strong>Data List:</strong><br>
+        <ul>
+      `;
+      if (data.data_list) {
+        data.data_list.forEach(item => {
+          formattedOutput += `<li><pre>${JSON.stringify(item, null, 4)}</pre></li>`;
+        });
+      } else {
+        formattedOutput += "<li>No data available</li>";
+      }
+      formattedOutput += "</ul>";
+      return formattedOutput;
+    }
+
+    // Test function that sends each query with a 1ms delay between each.
+    function testQueries() {
+      const queries = [
+        { id: "ask1", text: "남성해운의 중국 시장 동향" },
+        { id: "ask2", text: "남성해운의 일본 시장 영업 전략" },
+        { id: "ask3", text: "남성해운의 동남아 시장 발전 가능성" },
+        { id: "ask4", text: "남성해운의 중국 시장 동향" },
+        { id: "ask5", text: "신입사원 인사 필수로 알아야 하는 것" },
+        { id: "ask6", text: "디지털화 근황" },
+        { id: "ask7", text: "IOT 컨테이너 사업에 대해서" },
+        { id: "ask8", text: "남성해운 운임 동향" },
+        { id: "ask9", text: "주간회의 특징 및 주요 말씀" },
+        { id: "ask10", text: "최근 해운업계 동향" }
+      ];
+
+      // Clear previous test results
+      document.getElementById("testResults").innerHTML = "Testing in progress...";
+      
+      // Store results and track completion.
+      const results = [];
+      let completed = 0;
+
+      queries.forEach((query, i) => {
+        // Schedule each request with a delay of i * 1ms.
+        setTimeout(() => {
+          const sendTime = new Date();
+          const sendTimeStr = sendTime.toLocaleTimeString() + "." + sendTime.getMilliseconds();
+          const startTimestamp = Date.now();
+
+          fetch("/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ qry_contents: query.text })
+          })
+          .then(response => {
+            const receiveTime = new Date();
+            const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
+            const elapsed = Date.now() - startTimestamp;
+            return response.json().then(data => {
+              results.push({
+                id: query.id,
+                text: query.text,
+                sendTime: sendTimeStr,
+                receiveTime: receiveTimeStr,
+                elapsed: elapsed,
+                status: response.status,
+                data: data
+              });
+              completed++;
+              if (completed === queries.length) {
+                document.getElementById("testResults").innerHTML = formatTestResults(results);
+              }
+            });
+          })
+          .catch(error => {
+            const receiveTime = new Date();
+            const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
+            const elapsed = Date.now() - startTimestamp;
+            results.push({
+              id: query.id,
+              text: query.text,
+              sendTime: sendTimeStr,
+              receiveTime: receiveTimeStr,
+              elapsed: elapsed,
+              status: "Error",
+              data: error
+            });
+            completed++;
+            if (completed === queries.length) {
+              document.getElementById("testResults").innerHTML = formatTestResults(results);
+            }
+          });
+        }, i * 1); // Delay each subsequent request by 1ms.
+      });
+    }
+
+    // Formatter for test results, showing a summary table and individual details.
+    function formatTestResults(results) {
+      let summaryHTML = `
+        <div class="test-summary">
+          <h3>Test Summary</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Test ID</th>
+                <th>Query</th>
+                <th>Send Time</th>
+                <th>Receive Time</th>
+                <th>Elapsed (ms)</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+      results.forEach(result => {
+        summaryHTML += `
+          <tr>
+            <td>${result.id}</td>
+            <td>${result.text}</td>
+            <td>${result.sendTime}</td>
+            <td>${result.receiveTime}</td>
+            <td>${result.elapsed}</td>
+            <td>${result.status}</td>
+          </tr>
+        `;
+      });
+      summaryHTML += `
+            </tbody>
+          </table>
+        </div>
+      `;
+
+      let detailsHTML = '<div class="test-details"><h3>Individual Test Details</h3>';
+      results.forEach(result => {
+        detailsHTML += `
+          <div class="test-item">
+            <h4>${result.id} - ${result.text}</h4>
+            <p><strong>Send Time:</strong> ${result.sendTime}</p>
+            <p><strong>Receive Time:</strong> ${result.receiveTime}</p>
+            <p><strong>Elapsed Time:</strong> ${result.elapsed} ms</p>
+            <p><strong>Status:</strong> ${result.status}</p>
+            <p><strong>Response Data:</strong></p>
+            <pre>${JSON.stringify(result.data, null, 4)}</pre>
+          </div>
+        `;
+      });
+      detailsHTML += "</div>";
+
+      return summaryHTML + detailsHTML;
+    }
+  </script>
+</body>
+</html>

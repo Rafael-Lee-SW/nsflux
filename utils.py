@@ -27,7 +27,9 @@ from tracking import time_tracker
 
 # Logging
 import logging
+
 logging.basicConfig(level=logging.DEBUG)
+
 
 # -------------------------------------------------
 # Function: find_weight_directory
@@ -40,16 +42,19 @@ logging.basicConfig(level=logging.DEBUG)
 def find_weight_directory(base_path):
     for root, dirs, files in os.walk(base_path):
         for file in files:
-            if (".safetensors" in file or "pytorch_model.bin" in file):
+            if ".safetensors" in file or "pytorch_model.bin" in file:
                 file_path = os.path.join(root, file)
                 try:
                     if os.path.getsize(file_path) >= MIN_WEIGHT_SIZE:
                         return root, "safetensors" if ".safetensors" in file else "pt"
                     else:
-                        logging.debug(f"파일 {file_path}의 크기가 너무 작음: {os.path.getsize(file_path)} bytes")
+                        logging.debug(
+                            f"파일 {file_path}의 크기가 너무 작음: {os.path.getsize(file_path)} bytes"
+                        )
                 except Exception as ex:
                     logging.debug(f"파일 크기 확인 실패: {file_path} - {ex}")
     return None, None
+
 
 # -------------------------------------------------
 # Function: load_model
@@ -61,16 +66,12 @@ def load_model(config):
     # 임베딩 모델 로드
     # -------------------------------
     embed_model = AutoModel.from_pretrained(
-        config.embed_model_id,
-        cache_dir=config.cache_dir,
-        trust_remote_code=True
+        config.embed_model_id, cache_dir=config.cache_dir, trust_remote_code=True
     )
     embed_tokenizer = AutoTokenizer.from_pretrained(
-        config.embed_model_id,
-        cache_dir=config.cache_dir,
-        trust_remote_code=True
+        config.embed_model_id, cache_dir=config.cache_dir, trust_remote_code=True
     )
-    embed_model.eval() # Set the embedding model to evaluation mode.
+    embed_model.eval()  # Set the embedding model to evaluation mode.
     embed_tokenizer.model_max_length = 4096
 
     # -------------------------------
@@ -89,26 +90,26 @@ def load_model(config):
             bnb_config = BitsAndBytesConfig(load_in_8bit=True)
         else:
             bnb_config = None
-        
+
         # Construct the local model path from the cache directory.
         # 캐시 디렉터리 내의 로컬 모델 경로 생성.
         # 참고: 컨테이너는 /home/ubuntu/huggingface를 /workspace/huggingface로 마운트합니다.
-        local_model_path = os.path.join(config.cache_dir, "models--" + config.model_id.replace("/", "--"))
+        local_model_path = os.path.join(
+            config.cache_dir, "models--" + config.model_id.replace("/", "--")
+        )
         local_model_path = os.path.abspath(local_model_path)
         logging.info(f"vLLM용 로컬 모델 경로: {local_model_path}")
 
         # config.json 파일 경로 정의 및 필요시 패치.
         config_file = os.path.join(local_model_path, "config.json")
         need_patch = False
-        
+
         #### Patching is starting ####
         # If config.json is not exited, patching via under process
         if not os.path.exists(config_file):
             os.makedirs(local_model_path, exist_ok=True)
             hf_config = AutoConfig.from_pretrained(
-                config.model_id,
-                cache_dir=config.cache_dir,
-                trust_remote_code=True
+                config.model_id, cache_dir=config.cache_dir, trust_remote_code=True
             )
             config_dict = hf_config.to_dict()
             if not config_dict.get("architectures"):
@@ -129,25 +130,32 @@ def load_model(config):
                     json.dump(config_dict, f)
                 logging.info("기존 config 파일 패치됨: %s", config_file)
         #### Patching is done ####
-        
+
         # Recursively search for weight files in the local model directory.
         # 재귀적으로 하위 디렉터리에서 weight 파일 검색.
         weight_dir, weight_format = find_weight_directory(local_model_path)
         if weight_dir is None:
-            raise RuntimeError(f"{local_model_path} 내에서 모델 weight 파일을 찾을 수 없습니다.")
+            raise RuntimeError(
+                f"{local_model_path} 내에서 모델 weight 파일을 찾을 수 없습니다."
+            )
         else:
-            logging.info(f"Weight 파일이 {weight_dir}에서 발견됨. load_format: {weight_format}")
+            logging.info(
+                f"Weight 파일이 {weight_dir}에서 발견됨. load_format: {weight_format}"
+            )
 
         # snapshot 디렉터리에 config.json 파일이 없는 경우, 루트 config.json 복사.
         snapshot_config = os.path.join(weight_dir, "config.json")
         if not os.path.exists(snapshot_config):
             shutil.copy(config_file, snapshot_config)
-            logging.info("루트 config.json 파일을 snapshot 디렉터리로 복사함: %s", snapshot_config)
+            logging.info(
+                "루트 config.json 파일을 snapshot 디렉터리로 복사함: %s",
+                snapshot_config,
+            )
 
         # -------------------------------
         # vLLM Engine
         # -------------------------------
-        
+
         # EngineArgs 생성.
         # IMPORTANT: tokenizer 필드를 원본 모델 ID로 지정.
         engine_args = AsyncEngineArgs(
@@ -156,8 +164,10 @@ def load_model(config):
             download_dir=config.cache_dir,
             trust_remote_code=True,
             config_format="hf",
-            load_format=weight_format
+            load_format=weight_format,
         )
+        # **Disable CUDA graph capture by enforcing eager mode**
+        # engine_args.enforce_eager = True
         logging.info(f"EngineArgs: {engine_args}")
 
         # AsyncLLMEngine 생성 시도.
@@ -165,12 +175,18 @@ def load_model(config):
             engine = AsyncLLMEngine.from_engine_args(engine_args)
         except Exception as e:
             if "HeaderTooSmall" in str(e):
-                logging.info("Safetensors 로드 오류 감지됨. PyTorch weight로 fallback 시도합니다.")
+                logging.info(
+                    "Safetensors 로드 오류 감지됨. PyTorch weight로 fallback 시도합니다."
+                )
                 # 재검색: pytorch_model.bin이 포함된 weight directory 재검색.
                 fallback_dir = None
                 for root, dirs, files in os.walk(local_model_path):
                     for file in files:
-                        if "pytorch_model.bin" in file and os.path.getsize(os.path.join(root, file)) >= MIN_WEIGHT_SIZE:
+                        if (
+                            "pytorch_model.bin" in file
+                            and os.path.getsize(os.path.join(root, file))
+                            >= MIN_WEIGHT_SIZE
+                        ):
                             fallback_dir = root
                             break
                     if fallback_dir:
@@ -185,15 +201,13 @@ def load_model(config):
             else:
                 logging.error("엔진 로드 실패: %s", e)
                 raise e
-       
+
         # vLLM 엔진에는 사용자 정의 속성 추가
         engine.is_vllm = True
 
         # 메인 LLM 토크나이저 별도로 로드.
         tokenizer = AutoTokenizer.from_pretrained(
-            config.model_id,
-            cache_dir=config.cache_dir,
-            trust_remote_code=True
+            config.model_id, cache_dir=config.cache_dir, trust_remote_code=True
         )
         tokenizer.model_max_length = 4024
         #### Return
@@ -202,9 +216,7 @@ def load_model(config):
     else:
         # vLLM을 사용하지 않을 경우, 기본 Hugging Face 방식으로 로드.
         tokenizer = AutoTokenizer.from_pretrained(
-            config.model_id,
-            cache_dir=config.cache_dir,
-            trust_remote_code=True
+            config.model_id, cache_dir=config.cache_dir, trust_remote_code=True
         )
         tokenizer.model_max_length = 4024
         model = AutoModelForCausalLM.from_pretrained(
@@ -213,10 +225,11 @@ def load_model(config):
             torch_dtype=torch.bfloat16,
             cache_dir=config.cache_dir,
             quantization_config=bnb_config,
-            trust_remote_code=True
+            trust_remote_code=True,
         )
         model.eval()
         return model, tokenizer, embed_model, embed_tokenizer
+
 
 @time_tracker
 def load_data(data_path):
