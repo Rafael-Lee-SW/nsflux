@@ -1,3 +1,4 @@
+# app.py
 import os
 # Setting environment variable
 os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
@@ -41,6 +42,11 @@ content_type='application/json; charset=utf-8'
 @app.route('/')
 def index():
     return render_template('index.html') # index.html을 렌더링
+
+# Test 페이지를 불러오는 라우트
+@app.route('/test')
+def test_page():
+    return render_template('index_test.html') # index.html을 렌더링
 
 # Query Endpoint
 @app.route('/query', methods=['POST'])
