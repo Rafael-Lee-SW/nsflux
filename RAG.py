@@ -129,7 +129,6 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
             repetition_penalty=config.model.repetition_penalty,
         )
         # request_id = 요청 주체를 구분하는 아이디, 유저별이 될 수도 있고, 대화별이 될 수도 있다.
-        # 같은 request_id에서 cache를 공유한다.
         accepted_request_id = str(uuid.uuid4())
 
         # vllm을 통해 Model을 구동하여 Text를 생성한다.
@@ -340,7 +339,6 @@ async def generate(docs, query, model, tokenizer, config):
             repetition_penalty=config.model.repetition_penalty,
         )
         # request_id = 요청 주체를 구분하는 아이디, 유저별이 될 수도 있고, 대화별이 될 수도 있다.
-        # 같은 request_id에서 cache를 공유한다.
         accepted_request_id = str(uuid.uuid4())
 
         # vllm을 통해 Model을 구동하여 Text를 생성한다.
