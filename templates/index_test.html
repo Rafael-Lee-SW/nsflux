@@ -93,7 +93,7 @@
 
   <!-- Test Section -->
   <div class="test-section">
-    <h2>Testing the 4 POST requests with 1ms delay each</h2>
+    <h2>Testing the POST requests concurrently (display results as they arrive)</h2>
     <button style="font-size: 20px; padding: 15px 30px;" onclick="testQueries()">Test</button>
     <div class="output" id="testResults"></div>
   </div>
@@ -158,7 +158,7 @@
       return formattedOutput;
     }
 
-    // Test function that sends each query with a 1ms delay between each.
+    // Test function that sends all queries concurrently.
     function testQueries() {
       const queries = [
         { id: "ask1", text: "남성해운의 중국 시장 동향" },
@@ -170,53 +170,59 @@
         { id: "ask7", text: "IOT 컨테이너 사업에 대해서" },
         { id: "ask8", text: "남성해운 운임 동향" },
         { id: "ask9", text: "주간회의 특징 및 주요 말씀" },
-        { id: "ask10", text: "최근 해운업계 동향" }
+        { id: "ask10", text: "최근 해운업계 동향" },
+        { id: "ask11", text: "디지털화 근황" },
+        { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
+        { id: "ask13", text: "남성해운 운임 동향" },
+        { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
+        { id: "ask15", text: "최근 해운업계 동향" },
+        { id: "ask16", text: "디지털화 근황" },
+        { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
+        { id: "ask18", text: "남성해운 운임 동향" },
+        { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
+        { id: "ask20", text: "최근 해운업계 동향" }
       ];
 
       // Clear previous test results
       document.getElementById("testResults").innerHTML = "Testing in progress...";
-      
-      // Store results and track completion.
+
+      // Array to hold results as they arrive.
       const results = [];
-      let completed = 0;
 
-      queries.forEach((query, i) => {
-        // Schedule each request with a delay of i * 1ms.
-        setTimeout(() => {
-          const sendTime = new Date();
-          const sendTimeStr = sendTime.toLocaleTimeString() + "." + sendTime.getMilliseconds();
-          const startTimestamp = Date.now();
+      // Fire off all queries concurrently.
+      queries.forEach(query => {
+        const sendTime = new Date();
+        const sendTimeStr = sendTime.toLocaleTimeString() + "." + sendTime.getMilliseconds();
+        const startTimestamp = Date.now();
 
-          fetch("/query", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ qry_contents: query.text })
-          })
-          .then(response => {
-            const receiveTime = new Date();
-            const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
-            const elapsed = Date.now() - startTimestamp;
-            return response.json().then(data => {
-              results.push({
-                id: query.id,
-                text: query.text,
-                sendTime: sendTimeStr,
-                receiveTime: receiveTimeStr,
-                elapsed: elapsed,
-                status: response.status,
-                data: data
-              });
-              completed++;
-              if (completed === queries.length) {
-                document.getElementById("testResults").innerHTML = formatTestResults(results);
-              }
-            });
-          })
-          .catch(error => {
-            const receiveTime = new Date();
-            const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
-            const elapsed = Date.now() - startTimestamp;
+        fetch("/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ qry_contents: query.text })
+        })
+        .then(response => {
+          const receiveTime = new Date();
+          const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
+          const elapsed = Date.now() - startTimestamp;
+          return response.json().then(data => {
             results.push({
+              id: query.id,
+              text: query.text,
+              sendTime: sendTimeStr,
+              receiveTime: receiveTimeStr,
+              elapsed: elapsed,
+              status: response.status,
+              data: data
+            });
+            // Update the test results display as soon as a response arrives.
+            updateTestResults(results);
+          });
+        })
+        .catch(error => {
+          const receiveTime = new Date();
+          const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
+          const elapsed = Date.now() - startTimestamp;
+          results.push({
               id: query.id,
               text: query.text,
               sendTime: sendTimeStr,
@@ -224,14 +230,15 @@
               elapsed: elapsed,
               status: "Error",
               data: error
-            });
-            completed++;
-            if (completed === queries.length) {
-              document.getElementById("testResults").innerHTML = formatTestResults(results);
-            }
           });
-        }, i * 1); // Delay each subsequent request by 1ms.
+          updateTestResults(results);
+        });
       });
+    }
+
+    // Update the test results display.
+    function updateTestResults(results) {
+      document.getElementById("testResults").innerHTML = formatTestResults(results);
     }
 
     // Formatter for test results, showing a summary table and individual details.
