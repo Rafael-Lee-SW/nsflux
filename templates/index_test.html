@@ -161,26 +161,26 @@
     // Test function that sends all queries concurrently.
     function testQueries() {
       const queries = [
-        { id: "ask1", text: "남성해운의 중국 시장 동향" },
-        { id: "ask2", text: "남성해운의 일본 시장 영업 전략" },
-        { id: "ask3", text: "남성해운의 동남아 시장 발전 가능성" },
-        { id: "ask4", text: "남성해운의 중국 시장 동향" },
-        { id: "ask5", text: "신입사원 인사 필수로 알아야 하는 것" },
-        { id: "ask6", text: "디지털화 근황" },
-        { id: "ask7", text: "IOT 컨테이너 사업에 대해서" },
-        { id: "ask8", text: "남성해운 운임 동향" },
-        { id: "ask9", text: "주간회의 특징 및 주요 말씀" },
-        { id: "ask10", text: "최근 해운업계 동향" },
-        { id: "ask11", text: "디지털화 근황" },
-        { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
-        { id: "ask13", text: "남성해운 운임 동향" },
-        { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
-        { id: "ask15", text: "최근 해운업계 동향" },
-        { id: "ask16", text: "디지털화 근황" },
-        { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
-        { id: "ask18", text: "남성해운 운임 동향" },
-        { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
-        { id: "ask20", text: "최근 해운업계 동향" }
+        { id: "same1-1", text: "신입사원 인사 필수로 알아야 하는 것" },
+        { id: "same1-2", text: "디지털화 근황" },
+        { id: "same1-3", text: "IOT 컨테이너 사업에 대해서" },
+        { id: "same1-4", text: "주간회의 특징 및 주요 말씀" },
+        { id: "same1-5", text: "해운업계의 경쟁 구도" },
+        { id: "same2-1", text: "신입사원 인사 필수로 알아야 하는 것" },
+        { id: "same2-2", text: "디지털화 근황" },
+        { id: "same2-3", text: "IOT 컨테이너 사업에 대해서" },
+        { id: "same2-4", text: "주간회의 특징 및 주요 말씀" },
+        { id: "same2-5", text: "해운업계의 경쟁 구도" },
+        { id: "same3-1", text: "신입사원 인사 필수로 알아야 하는 것" },
+        { id: "same3-2", text: "디지털화 근황" },
+        { id: "same3-3", text: "IOT 컨테이너 사업에 대해서" },
+        { id: "same3-4", text: "주간회의 특징 및 주요 말씀" },
+        { id: "same3-5", text: "해운업계의 경쟁 구도" },
+        { id: "same3-1", text: "신입사원 인사 필수로 알아야 하는 것" },
+        { id: "same3-2", text: "디지털화 근황" },
+        { id: "same3-3", text: "IOT 컨테이너 사업에 대해서" },
+        { id: "same3-4", text: "주간회의 특징 및 주요 말씀" },
+        { id: "same3-5", text: "해운업계의 경쟁 구도" },
       ];
 
       // Clear previous test results
@@ -188,6 +188,7 @@
 
       // Array to hold results as they arrive.
       const results = [];
+      let arrivalCounter = 0; // Counter for arrival order
 
       // Fire off all queries concurrently.
       queries.forEach(query => {
@@ -205,6 +206,7 @@
           const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
           const elapsed = Date.now() - startTimestamp;
           return response.json().then(data => {
+            arrivalCounter++; // Increment arrival counter
             results.push({
               id: query.id,
               text: query.text,
@@ -212,9 +214,9 @@
               receiveTime: receiveTimeStr,
               elapsed: elapsed,
               status: response.status,
-              data: data
+              data: data,
+              arrival: arrivalCounter
             });
-            // Update the test results display as soon as a response arrives.
             updateTestResults(results);
           });
         })
@@ -222,14 +224,16 @@
           const receiveTime = new Date();
           const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
           const elapsed = Date.now() - startTimestamp;
+          arrivalCounter++;
           results.push({
-              id: query.id,
-              text: query.text,
-              sendTime: sendTimeStr,
-              receiveTime: receiveTimeStr,
-              elapsed: elapsed,
-              status: "Error",
-              data: error
+            id: query.id,
+            text: query.text,
+            sendTime: sendTimeStr,
+            receiveTime: receiveTimeStr,
+            elapsed: elapsed,
+            status: "Error",
+            data: error,
+            arrival: arrivalCounter
           });
           updateTestResults(results);
         });
@@ -249,6 +253,7 @@
           <table>
             <thead>
               <tr>
+                <th>Arrival Order</th>
                 <th>Test ID</th>
                 <th>Query</th>
                 <th>Send Time</th>
@@ -262,6 +267,7 @@
       results.forEach(result => {
         summaryHTML += `
           <tr>
+            <td>${result.arrival}</td>
             <td>${result.id}</td>
             <td>${result.text}</td>
             <td>${result.sendTime}</td>
@@ -282,6 +288,7 @@
         detailsHTML += `
           <div class="test-item">
             <h4>${result.id} - ${result.text}</h4>
+            <p><strong>Arrival Order:</strong> ${result.arrival}</p>
             <p><strong>Send Time:</strong> ${result.sendTime}</p>
             <p><strong>Receive Time:</strong> ${result.receiveTime}</p>
             <p><strong>Elapsed Time:</strong> ${result.elapsed} ms</p>
