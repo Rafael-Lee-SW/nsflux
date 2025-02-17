@@ -26,8 +26,8 @@ class InferenceActor:
         self.data = load_data(config.data_path)
         # 비동기 큐와 배치 처리 설정 (마이크로배칭)
         self.request_queue = asyncio.Queue()
-        self.batch_size = 10  # 최대 배치 수
-        self.batch_delay = 1  # 배치당 처리 시간
+        self.batch_size = 20  # 최대 배치 수
+        self.batch_delay = 2  # 배치당 처리 시간
         asyncio.create_task(self._batch_processor())
 
     async def process_query(self, http_query):

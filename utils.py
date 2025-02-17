@@ -62,6 +62,17 @@ def find_weight_directory(base_path):
 # Loads the embedding model and the main LLM model (using vLLM if specified in the config).
 @time_tracker
 def load_model(config):
+    # Get the Huggingface auth token frm env
+    TK = os.getenv("HF_TOKEN")
+    print("------------TK PATH -------- : ", TK)
+    # If the token appears to be a file path, read the token from the file.
+    if TK is not None and os.path.exists(TK):
+        with open(TK, "r") as f:
+            TK = f.read().strip()
+    # If still no token, set token to None so that Hugging Face functions behave normally.
+    if TK is None or TK == "":
+        logging.warning("HF_TOKEN is not set. Access to gated models may fail.")
+        TK = None
     # -------------------------------
     # 임베딩 모델 로드
     # -------------------------------
@@ -109,7 +120,7 @@ def load_model(config):
         if not os.path.exists(config_file):
             os.makedirs(local_model_path, exist_ok=True)
             hf_config = AutoConfig.from_pretrained(
-                config.model_id, cache_dir=config.cache_dir, trust_remote_code=True
+                config.model_id, cache_dir=config.cache_dir, trust_remote_code=True, token=TK
             )
             config_dict = hf_config.to_dict()
             if not config_dict.get("architectures"):
@@ -175,6 +186,20 @@ def load_model(config):
         
         # APC: Automatic Prefix Caching
         engine_args.enable_prefix_caching=True
+        
+        # # ---- Trial for the Optimization But not working now GPU level ---
+        # # Max-request acceptancy increasing on 16
+        # engine_args.max_num_seqs=128
+        # # Max-batch token size increasing on 8192
+        engine_args.max_num_batched_tokens=8192
+        # # Maximize the block size and prepatch setting
+        engine_args.block_size=128 # Default is 128, but if i set this one, doesn't work.
+        # engine_args.scheduler_delay_factor=0.1
+        engine_args.enable_chunked_prefill=True
+        # GPU memory Utilization
+        engine_args.gpu_memory_utilization=0.95
+        
+        # # ----  ----
         
         logging.info(f"EngineArgs: {engine_args}")
         

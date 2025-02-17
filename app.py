@@ -5,7 +5,7 @@ os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
 os.environ["HF_HOME"] = "/workspace/huggingface"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # For the Huggingface Token setting
-os.environ["HF_TOKEN"] = "/home/ubuntu/.cache/huggingface"
+os.environ["HF_TOKEN"] = "/home/ubuntu/.cache/huggingface/token"
 # Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA),
 # and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
 # OpenMP: Open-Multi-Processing API
