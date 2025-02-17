@@ -26,8 +26,8 @@ class InferenceActor:
         self.data = load_data(config.data_path)
         # 비동기 큐와 배치 처리 설정 (마이크로배칭)
         self.request_queue = asyncio.Queue()
-        self.batch_size = 4  # 최대 배치 수
-        self.batch_delay = 0.05  # 배치당 처리 시간
+        self.batch_size = 10  # 최대 배치 수
+        self.batch_delay = 1  # 배치당 처리 시간
         asyncio.create_task(self._batch_processor())
 
     async def process_query(self, http_query):
@@ -54,6 +54,10 @@ class InferenceActor:
             except asyncio.TimeoutError:
                 # Timeout reached; process the batch collected so far
                 pass
+            
+            # Log the current batch contents before processing
+            print("Current batch contents:", batch)
+        
             # Process each request in the batch concurrently
             await asyncio.gather(*(self._process_single_query(http_query, future) for http_query, future in batch))
 

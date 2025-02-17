@@ -166,10 +166,18 @@ def load_model(config):
             config_format="hf",
             load_format=weight_format,
         )
-        # **Disable CUDA graph capture by enforcing eager mode**
+        # ------
+        # **pDisable CUDA graph cature by enforcing eager mode**
+        # True 시에 초기 로딩 속도 및 CUDA Graph를 호출하지 않음으로 오류는 제거되나, 성능저하가 심각(약 50% 성능으로 감소)하여 폐기
+        # CUDA graph 오류도 해결됨
         # engine_args.enforce_eager = True
+        # ------
+        
+        # APC: Automatic Prefix Caching
+        engine_args.enable_prefix_caching=True
+        
         logging.info(f"EngineArgs: {engine_args}")
-
+        
         # AsyncLLMEngine 생성 시도.
         try:
             engine = AsyncLLMEngine.from_engine_args(engine_args)
