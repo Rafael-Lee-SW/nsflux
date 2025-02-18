@@ -406,6 +406,7 @@ async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
     answer = "".join(
         [getattr(comp, "text", "") for comp in getattr(final_output, "outputs", [])]
     )
+    # print("collect_vllm_text : Answer : ", answer)
     return answer
 
 

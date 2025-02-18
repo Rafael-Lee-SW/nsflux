@@ -62,34 +62,77 @@ def find_weight_directory(base_path):
 # Loads the embedding model and the main LLM model (using vLLM if specified in the config).
 @time_tracker
 def load_model(config):
-    # Get the Huggingface auth token frm env
-    TK = os.getenv("HF_TOKEN")
-    print("------------TK PATH -------- : ", TK)
-    # If the token appears to be a file path, read the token from the file.
-    if TK is not None and os.path.exists(TK):
-        with open(TK, "r") as f:
-            TK = f.read().strip()
-    # If still no token, set token to None so that Hugging Face functions behave normally.
-    if TK is None or TK == "":
+    # Get the HF token from the environment variable.
+    token = os.getenv("HF_TOKEN_PATH")
+    print("DEBUG: Initial HF_TOKEN from env =", token)
+
+    # Check if token is likely a file path.
+    if token is not None and not token.startswith("hf_"):
+        print("DEBUG: HF_TOKEN does not start with 'hf_', treating it as a file path.")
+        if os.path.exists(token) and os.path.isfile(token):
+            try:
+                with open(token, "r") as f:
+                    token = f.read().strip()
+                print(
+                    "DEBUG: Token successfully reloaded from file. New token =", token
+                )
+            except Exception as e:
+                print("DEBUG: Exception while reading token file:", e)
+                logging.warning("Failed to read token from file: %s", e)
+                token = None
+        else:
+            print(
+                "DEBUG: The file path provided in HF_TOKEN does not exist or is not a file:",
+                token,
+            )
+            logging.warning("The HF_TOKEN path does not exist: %s", token)
+            token = None
+    else:
+        print("DEBUG: HF_TOKEN appears to be a token string; using it directly:", token)
+
+    if token is None or token == "":
         logging.warning("HF_TOKEN is not set. Access to gated models may fail.")
-        TK = None
+        print("DEBUG: Final token is None or empty.")
+        token = None
+    else:
+        print("DEBUG: Final token value =", token)
+
     # -------------------------------
-    # 임베딩 모델 로드
+    # Load the embedding model and tokenizer.
     # -------------------------------
-    embed_model = AutoModel.from_pretrained(
-        config.embed_model_id, cache_dir=config.cache_dir, trust_remote_code=True
-    )
-    embed_tokenizer = AutoTokenizer.from_pretrained(
-        config.embed_model_id, cache_dir=config.cache_dir, trust_remote_code=True
-    )
-    embed_model.eval()  # Set the embedding model to evaluation mode.
+    print("DEBUG: Loading embedding model for", config.embed_model_id)
+    try:
+        embed_model = AutoModel.from_pretrained(
+            config.embed_model_id,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True,
+            token=token,  # using 'token' parameter
+        )
+    except Exception as e:
+        print("DEBUG: Exception while loading embedding model:", e)
+        raise e
+    print("DEBUG: Embedding model loaded successfully.")
+
+    print("DEBUG: Loading embedding tokenizer for", config.embed_model_id)
+    try:
+        embed_tokenizer = AutoTokenizer.from_pretrained(
+            config.embed_model_id,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True,
+            token=token,
+        )
+    except Exception as e:
+        print("DEBUG: Exception while loading embedding tokenizer:", e)
+        raise e
+    print("DEBUG: Embedding tokenizer loaded successfully.")
+    embed_model.eval()
     embed_tokenizer.model_max_length = 4096
 
     # -------------------------------
     # Load the main LLM model via vLLM.
     # -------------------------------
     if config.use_vllm:
-        # Set up quantization if enabled.
+        print("DEBUG: vLLM mode enabled. Starting to load main LLM model via vLLM.")
         if config.model.quantization_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -97,121 +140,98 @@ def load_model(config):
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type="nf4",
             )
+            print("DEBUG: Using 4-bit quantization.")
         elif config.model.quantization_8bit:
             bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+            print("DEBUG: Using 8-bit quantization.")
         else:
             bnb_config = None
+            print("DEBUG: No quantization configuration provided.")
 
-        # Construct the local model path from the cache directory.
-        # 캐시 디렉터리 내의 로컬 모델 경로 생성.
-        # 참고: 컨테이너는 /home/ubuntu/huggingface를 /workspace/huggingface로 마운트합니다.
         local_model_path = os.path.join(
             config.cache_dir, "models--" + config.model_id.replace("/", "--")
         )
         local_model_path = os.path.abspath(local_model_path)
-        logging.info(f"vLLM용 로컬 모델 경로: {local_model_path}")
+        print("DEBUG: Local model path =", local_model_path)
 
-        # config.json 파일 경로 정의 및 필요시 패치.
         config_file = os.path.join(local_model_path, "config.json")
+        print("DEBUG: Config file path =", config_file)
         need_patch = False
 
-        #### Patching is starting ####
-        # If config.json is not exited, patching via under process
         if not os.path.exists(config_file):
-            os.makedirs(local_model_path, exist_ok=True)
-            hf_config = AutoConfig.from_pretrained(
-                config.model_id, cache_dir=config.cache_dir, trust_remote_code=True, token=TK
+            print(
+                "DEBUG: Config file does not exist. Creating directory and fetching config."
             )
+            os.makedirs(local_model_path, exist_ok=True)
+            try:
+                hf_config = AutoConfig.from_pretrained(
+                    config.model_id,
+                    cache_dir=config.cache_dir,
+                    trust_remote_code=True,
+                    token=token,
+                )
+            except Exception as e:
+                print("DEBUG: Exception fetching config:", e)
+                raise e
             config_dict = hf_config.to_dict()
             if not config_dict.get("architectures"):
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
                 need_patch = True
+                print("DEBUG: Architectures not set. Patching config_dict.")
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
             if need_patch:
-                logging.info("패치된 config 파일 저장됨: %s", config_file)
+                print("DEBUG: Patched config file saved at", config_file)
             else:
-                logging.info("config 파일 저장됨: %s", config_file)
+                print("DEBUG: Config file saved at", config_file)
         else:
+            print("DEBUG: Config file exists. Reading config file from", config_file)
             with open(config_file, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
             if not config_dict.get("architectures"):
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
                 with open(config_file, "w", encoding="utf-8") as f:
                     json.dump(config_dict, f)
-                logging.info("기존 config 파일 패치됨: %s", config_file)
-        #### Patching is done ####
+                print("DEBUG: Existing config file patched.")
 
-        # Recursively search for weight files in the local model directory.
-        # 재귀적으로 하위 디렉터리에서 weight 파일 검색.
         weight_dir, weight_format = find_weight_directory(local_model_path)
+        print("DEBUG: Weight directory =", weight_dir, "and format =", weight_format)
         if weight_dir is None:
-            raise RuntimeError(
-                f"{local_model_path} 내에서 모델 weight 파일을 찾을 수 없습니다."
-            )
+            raise RuntimeError(f"Unable to find model weights in {local_model_path}.")
         else:
-            logging.info(
-                f"Weight 파일이 {weight_dir}에서 발견됨. load_format: {weight_format}"
-            )
+            print("DEBUG: Model weights found at", weight_dir)
 
-        # snapshot 디렉터리에 config.json 파일이 없는 경우, 루트 config.json 복사.
         snapshot_config = os.path.join(weight_dir, "config.json")
+        print("DEBUG: Snapshot config file path =", snapshot_config)
         if not os.path.exists(snapshot_config):
             shutil.copy(config_file, snapshot_config)
-            logging.info(
-                "루트 config.json 파일을 snapshot 디렉터리로 복사함: %s",
-                snapshot_config,
-            )
+            print("DEBUG: Copied config file to snapshot directory.")
 
-        # -------------------------------
-        # vLLM Engine
-        # -------------------------------
-
-        # EngineArgs 생성.
-        # IMPORTANT: tokenizer 필드를 원본 모델 ID로 지정.
         engine_args = AsyncEngineArgs(
-            model=weight_dir,  # weight 파일이 존재하는 디렉터리 (예: snapshot 폴더)
+            model=weight_dir,
             tokenizer=config.model_id,
             download_dir=config.cache_dir,
             trust_remote_code=True,
             config_format="hf",
             load_format=weight_format,
         )
-        # ------
-        # **pDisable CUDA graph cature by enforcing eager mode**
-        # True 시에 초기 로딩 속도 및 CUDA Graph를 호출하지 않음으로 오류는 제거되나, 성능저하가 심각(약 50% 성능으로 감소)하여 폐기
-        # CUDA graph 오류도 해결됨
-        # engine_args.enforce_eager = True
-        # ------
-        
-        # APC: Automatic Prefix Caching
-        engine_args.enable_prefix_caching=True
-        
-        # # ---- Trial for the Optimization But not working now GPU level ---
-        # # Max-request acceptancy increasing on 16
-        # engine_args.max_num_seqs=128
-        # # Max-batch token size increasing on 8192
-        engine_args.max_num_batched_tokens=8192
-        # # Maximize the block size and prepatch setting
-        engine_args.block_size=128 # Default is 128, but if i set this one, doesn't work.
-        # engine_args.scheduler_delay_factor=0.1
-        engine_args.enable_chunked_prefill=True
-        # GPU memory Utilization
-        engine_args.gpu_memory_utilization=0.95
-        
-        # # ----  ----
-        
-        logging.info(f"EngineArgs: {engine_args}")
-        
-        # AsyncLLMEngine 생성 시도.
+        print("DEBUG: Created initial EngineArgs:", engine_args)
+        engine_args.enable_prefix_caching = True
+        engine_args.max_num_seqs = 128
+        engine_args.max_num_batched_tokens = 8192
+        engine_args.block_size = 128
+        engine_args.scheduler_delay_factor = 0.1
+        engine_args.enable_chunked_prefill = True
+        engine_args.gpu_memory_utilization = 0.95
+        print("DEBUG: Final EngineArgs:", engine_args)
+
         try:
             engine = AsyncLLMEngine.from_engine_args(engine_args)
+            print("DEBUG: vLLM engine successfully created.")
         except Exception as e:
+            print("DEBUG: Exception during engine creation:", e)
             if "HeaderTooSmall" in str(e):
-                logging.info(
-                    "Safetensors 로드 오류 감지됨. PyTorch weight로 fallback 시도합니다."
-                )
-                # 재검색: pytorch_model.bin이 포함된 weight directory 재검색.
+                print("DEBUG: Falling back to PyTorch weights.")
                 fallback_dir = None
                 for root, dirs, files in os.walk(local_model_path):
                     for file in files:
@@ -225,41 +245,62 @@ def load_model(config):
                     if fallback_dir:
                         break
                 if fallback_dir is None:
-                    logging.error("PyTorch weight 파일도 찾을 수 없습니다.")
+                    logging.error(
+                        "DEBUG: No PyTorch weight file found in", local_model_path
+                    )
                     raise e
                 engine_args.load_format = "pt"
                 engine_args.model = fallback_dir
-                logging.info(f"새로운 EngineArgs (fallback): {engine_args}")
+                print("DEBUG: New EngineArgs for fallback:", engine_args)
                 engine = AsyncLLMEngine.from_engine_args(engine_args)
+                print("DEBUG: vLLM engine created with PyTorch fallback.")
             else:
-                logging.error("엔진 로드 실패: %s", e)
+                logging.error("DEBUG: Engine creation failed:", e)
                 raise e
 
-        # vLLM 엔진에는 사용자 정의 속성 추가
         engine.is_vllm = True
 
-        # 메인 LLM 토크나이저 별도로 로드.
-        tokenizer = AutoTokenizer.from_pretrained(
-            config.model_id, cache_dir=config.cache_dir, trust_remote_code=True
-        )
+        print("DEBUG: Loading main LLM tokenizer with token authentication.")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                config.model_id,
+                cache_dir=config.cache_dir,
+                trust_remote_code=True,
+                token=token,
+                local_files_only=True  # Force loading from local cache to avoid hub requests
+            )
+        except Exception as e:
+            print("DEBUG: Exception loading main tokenizer:", e)
+            raise e
         tokenizer.model_max_length = 4024
-        #### Return
         return engine, tokenizer, embed_model, embed_tokenizer
 
     else:
-        # vLLM을 사용하지 않을 경우, 기본 Hugging Face 방식으로 로드.
-        tokenizer = AutoTokenizer.from_pretrained(
-            config.model_id, cache_dir=config.cache_dir, trust_remote_code=True
-        )
+        print("DEBUG: vLLM is not used. Loading model via standard HF method.")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                config.model_id,
+                cache_dir=config.cache_dir,
+                trust_remote_code=True,
+                token=token,
+            )
+        except Exception as e:
+            print("DEBUG: Exception loading tokenizer:", e)
+            raise e
         tokenizer.model_max_length = 4024
-        model = AutoModelForCausalLM.from_pretrained(
-            config.model_id,
-            device_map="auto",
-            torch_dtype=torch.bfloat16,
-            cache_dir=config.cache_dir,
-            quantization_config=bnb_config,
-            trust_remote_code=True,
-        )
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                config.model_id,
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+                cache_dir=config.cache_dir,
+                quantization_config=bnb_config,
+                trust_remote_code=True,
+                token=token,
+            )
+        except Exception as e:
+            print("DEBUG: Exception loading model:", e)
+            raise e
         model.eval()
         return model, tokenizer, embed_model, embed_tokenizer
 
