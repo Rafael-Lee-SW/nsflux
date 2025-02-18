@@ -5,11 +5,13 @@ os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
 os.environ["HF_HOME"] = "/workspace/huggingface"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # For the Huggingface Token setting
-os.environ["HF_TOKEN"] = "/home/ubuntu/.cache/huggingface/token"
+os.environ["HF_TOKEN_PATH"] = "/root/.cache/huggingface/token"
 # Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA),
 # and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
 # OpenMP: Open-Multi-Processing API
 os.environ['MKL_THREADING_LAYER']='GNU'
+# Increase download timeout (in seconds)
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
 
 from flask import Flask, request, jsonify, render_template, Response
 from RAG import generate_answer, execute_rag, query_sort  # 기존에 만든 RAG 시스템 불러오기
