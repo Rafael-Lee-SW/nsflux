@@ -40,6 +40,7 @@ logging.basicConfig(level=logging.DEBUG)
 # -------------------------------------------------
 @time_tracker
 def find_weight_directory(base_path):
+    # ---- Recursively searches for weight files in a given base path ----
     for root, dirs, files in os.walk(base_path):
         for file in files:
             if ".safetensors" in file or "pytorch_model.bin" in file:
@@ -59,48 +60,37 @@ def find_weight_directory(base_path):
 # -------------------------------------------------
 # Function: load_model
 # -------------------------------------------------
-# Loads the embedding model and the main LLM model (using vLLM if specified in the config).
 @time_tracker
 def load_model(config):
+    # Loads the embedding model and the main LLM model (using vLLM if specified in the config).
+    
     # Get the HF token from the environment variable.
+    logging.info("Starting model loading...")
     token = os.getenv("HF_TOKEN_PATH")
-    print("DEBUG: Initial HF_TOKEN from env =", token)
-
     # Check if token is likely a file path.
     if token is not None and not token.startswith("hf_"):
-        print("DEBUG: HF_TOKEN does not start with 'hf_', treating it as a file path.")
         if os.path.exists(token) and os.path.isfile(token):
             try:
                 with open(token, "r") as f:
                     token = f.read().strip()
-                print(
-                    "DEBUG: Token successfully reloaded from file. New token =", token
-                )
             except Exception as e:
                 print("DEBUG: Exception while reading token file:", e)
                 logging.warning("Failed to read token from file: %s", e)
                 token = None
         else:
-            print(
-                "DEBUG: The file path provided in HF_TOKEN does not exist or is not a file:",
-                token,
-            )
             logging.warning("The HF_TOKEN path does not exist: %s", token)
             token = None
     else:
-        print("DEBUG: HF_TOKEN appears to be a token string; using it directly:", token)
+        print("DEBUG: HF_TOKEN appears to be a token string; using it directly:")
 
     if token is None or token == "":
         logging.warning("HF_TOKEN is not set. Access to gated models may fail.")
-        print("DEBUG: Final token is None or empty.")
         token = None
-    else:
-        print("DEBUG: Final token value =", token)
 
     # -------------------------------
     # Load the embedding model and tokenizer.
     # -------------------------------
-    print("DEBUG: Loading embedding model for", config.embed_model_id)
+    print("Loading embedding model")
     try:
         embed_model = AutoModel.from_pretrained(
             config.embed_model_id,
@@ -109,11 +99,7 @@ def load_model(config):
             token=token,  # using 'token' parameter
         )
     except Exception as e:
-        print("DEBUG: Exception while loading embedding model:", e)
         raise e
-    print("DEBUG: Embedding model loaded successfully.")
-
-    print("DEBUG: Loading embedding tokenizer for", config.embed_model_id)
     try:
         embed_tokenizer = AutoTokenizer.from_pretrained(
             config.embed_model_id,
@@ -122,9 +108,8 @@ def load_model(config):
             token=token,
         )
     except Exception as e:
-        print("DEBUG: Exception while loading embedding tokenizer:", e)
         raise e
-    print("DEBUG: Embedding tokenizer loaded successfully.")
+    print(":Embedding tokenizer loaded successfully.")
     embed_model.eval()
     embed_tokenizer.model_max_length = 4096
 
@@ -132,7 +117,7 @@ def load_model(config):
     # Load the main LLM model via vLLM.
     # -------------------------------
     if config.use_vllm:
-        print("DEBUG: vLLM mode enabled. Starting to load main LLM model via vLLM.")
+        print("vLLM mode enabled. Starting to load main LLM model via vLLM.")
         if config.model.quantization_4bit:
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -140,28 +125,23 @@ def load_model(config):
                 bnb_4bit_use_double_quant=True,
                 bnb_4bit_quant_type="nf4",
             )
-            print("DEBUG: Using 4-bit quantization.")
+            print("Using 4-bit quantization.")
         elif config.model.quantization_8bit:
             bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-            print("DEBUG: Using 8-bit quantization.")
+            print("Using 8-bit quantization.")
         else:
             bnb_config = None
-            print("DEBUG: No quantization configuration provided.")
+            print("Using pure option of Model(No quantization)")
 
         local_model_path = os.path.join(
             config.cache_dir, "models--" + config.model_id.replace("/", "--")
         )
         local_model_path = os.path.abspath(local_model_path)
-        print("DEBUG: Local model path =", local_model_path)
 
         config_file = os.path.join(local_model_path, "config.json")
-        print("DEBUG: Config file path =", config_file)
         need_patch = False
 
         if not os.path.exists(config_file):
-            print(
-                "DEBUG: Config file does not exist. Creating directory and fetching config."
-            )
             os.makedirs(local_model_path, exist_ok=True)
             try:
                 hf_config = AutoConfig.from_pretrained(
@@ -171,42 +151,45 @@ def load_model(config):
                     token=token,
                 )
             except Exception as e:
-                print("DEBUG: Exception fetching config:", e)
                 raise e
             config_dict = hf_config.to_dict()
             if not config_dict.get("architectures"):
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
-                need_patch = True
-                print("DEBUG: Architectures not set. Patching config_dict.")
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
-            if need_patch:
-                print("DEBUG: Patched config file saved at", config_file)
-            else:
-                print("DEBUG: Config file saved at", config_file)
         else:
-            print("DEBUG: Config file exists. Reading config file from", config_file)
             with open(config_file, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
             if not config_dict.get("architectures"):
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
                 with open(config_file, "w", encoding="utf-8") as f:
                     json.dump(config_dict, f)
-                print("DEBUG: Existing config file patched.")
 
         weight_dir, weight_format = find_weight_directory(local_model_path)
-        print("DEBUG: Weight directory =", weight_dir, "and format =", weight_format)
         if weight_dir is None:
-            raise RuntimeError(f"Unable to find model weights in {local_model_path}.")
-        else:
-            print("DEBUG: Model weights found at", weight_dir)
+            print("DEBUG: No model weights found. Attempting to download model snapshot.")
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    print(f"DEBUG: Snapshot download attempt {attempt+1}...")
+                    # Attempt to download the model snapshot using the Hugging Face hub function.
+                    from huggingface_hub import snapshot_download
+                    snapshot_download(config.model_id, cache_dir=config.cache_dir, token=token)
+                    break  # If download succeeds, break out of the loop.
+                except Exception as e:
+                    print(f"DEBUG: Snapshot download attempt {attempt+1} failed:", e)
+                    if attempt < max_retries - 1:
+                        print("DEBUG: Retrying snapshot download...")
+                    else:
+                        raise RuntimeError(f"Snapshot download failed after {max_retries} attempts: {e}")
+            # After download, try to find the weights again.
+            weight_dir, weight_format = find_weight_directory(local_model_path)
+            if weight_dir is None:
+                raise RuntimeError(f"Unable to find model weights even after snapshot download in {local_model_path}.")
 
         snapshot_config = os.path.join(weight_dir, "config.json")
-        print("DEBUG: Snapshot config file path =", snapshot_config)
         if not os.path.exists(snapshot_config):
             shutil.copy(config_file, snapshot_config)
-            print("DEBUG: Copied config file to snapshot directory.")
-
         engine_args = AsyncEngineArgs(
             model=weight_dir,
             tokenizer=config.model_id,
@@ -215,7 +198,6 @@ def load_model(config):
             config_format="hf",
             load_format=weight_format,
         )
-        print("DEBUG: Created initial EngineArgs:", engine_args)
         engine_args.enable_prefix_caching = True
         engine_args.max_num_seqs = 128
         engine_args.max_num_batched_tokens = 8192
@@ -223,7 +205,8 @@ def load_model(config):
         engine_args.scheduler_delay_factor = 0.1
         engine_args.enable_chunked_prefill = True
         engine_args.gpu_memory_utilization = 0.95
-        print("DEBUG: Final EngineArgs:", engine_args)
+        
+        print("Final EngineArgs:", engine_args)
 
         try:
             engine = AsyncLLMEngine.from_engine_args(engine_args)
