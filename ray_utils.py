@@ -13,6 +13,10 @@ from utils import (
     error_format,
 )
 
+# Import it for the Streaming
+import uuid
+from typing import Tuple, Dict
+from RAG import generate as rag_generate
 
 @ray.remote(num_gpus=1)  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
@@ -26,8 +30,8 @@ class InferenceActor:
         self.data = load_data(config.data_path)
         # 비동기 큐와 배치 처리 설정 (마이크로배칭)
         self.request_queue = asyncio.Queue()
-        self.batch_size = 20  # 최대 배치 수
-        self.batch_delay = 2  # 배치당 처리 시간
+        self.batch_size = 10  # 최대 배치 수
+        self.batch_delay = 0.5  # 배치당 처리 시간
         asyncio.create_task(self._batch_processor())
 
     async def process_query(self, http_query):
@@ -60,7 +64,7 @@ class InferenceActor:
         
             # Process each request in the batch concurrently
             await asyncio.gather(*(self._process_single_query(http_query, future) for http_query, future in batch))
-
+    
 
     async def _process_single_query(self, http_query, future):
         try:
@@ -127,3 +131,8 @@ class InferenceActor:
             future.set_result(outputs)
         except Exception as e:
             future.set_result(error_format(f"처리 중 오류 발생: {str(e)}", 500))
+            
+    # ----------------------------------------------------------------------
+    # ------------------ New Part for the Streaming ------------------------
+    # ----------------------------------------------------------------------
+    

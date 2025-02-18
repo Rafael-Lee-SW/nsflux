@@ -1,3 +1,4 @@
+# app_socket.py
 from flask import Flask, render_template, request, Response
 from RAG import generate_answer, execute_rag, query_sort  # 기존에 만든 RAG 시스템 불러오기
 import json
