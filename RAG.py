@@ -410,6 +410,87 @@ async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
     return answer
 
 
+# -------------- NEW STREAMING VERSION --------------
+@time_tracker
+async def generate_answer_stream(query, docs, model, tokenizer, config):
+    """
+    Streaming version of generate_answer that yields partial tokens as they arrive.
+    """
+    # Build your prompt
+    prompt = f"""
+<bos><start_of_turn>user
+... same instructions ...
+내부 자료: {docs}
+질문: {query}<end_of_turn>
+<start_of_turn>model
+답변: \
+"""
+
+    if config.use_vllm:
+        from vllm import SamplingParams
+
+        sampling_params = SamplingParams(
+            max_tokens=config.model.max_new_tokens,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        request_id = str(uuid.uuid4())
+
+        # Instead of collecting the entire text, yield partial chunks:
+        # vLLM engine usage:
+        async for partial_chunk in collect_vllm_text_stream(prompt, model, sampling_params, request_id):
+            yield partial_chunk
+
+    else:
+        # If not using vLLM, do HF generation with TextIteratorStreamer or similar:
+        # Example code for HF:
+        import torch
+        from transformers import TextIteratorStreamer
+
+        input_ids = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=4024
+        ).to("cuda")
+        streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
+        generation_kwargs = dict(
+            **input_ids,
+            streamer=streamer,
+            max_new_tokens=config.model.max_new_tokens,
+            do_sample=config.model.do_sample,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+
+        # Launch generation in background
+        import threading
+        t = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+        t.start()
+        # Now read partial tokens from streamer
+        for new_token in streamer:
+            yield new_token
+
+@time_tracker
+async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_params, request_id) -> str:
+    """
+    vLLM-based streaming generator: yields each partial token or chunk
+    as it arrives from the engine.
+    """
+    # We can watch each chunk in the async generator:
+    async for request_output in engine.generate(prompt, request_id=request_id, sampling_params=sampling_params):
+        # Each `request_output` can contain multiple completions, but usually you want the first one:
+        # If you have multi-sampling or n=... then handle them all.
+        if not request_output.outputs:
+            continue
+        # We can yield the partial text from the *last* token chunk
+        for completion in request_output.outputs:
+            yield completion.text  # or just the newly produced chunk
+            
+            # --------------- Streaming ------------------
+
+
 if __name__ == "__main__":
     import asyncio
 
