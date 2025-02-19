@@ -9,4 +9,5 @@ def init_ray():
         dashboard_host="0.0.0.0" # External IP accessable
         # dashboard_port=8265
     )
-    print("Ray initialized. DashBoard running at http://209.20.158.139:8265")
+    # print("Ray initialized. DashBoard running at http://209.20.158.139:8265")
+    print("Ray initialized. DashBoard running at http://158.101.126.175:8265") # New Server(8xA100)
