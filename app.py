@@ -56,7 +56,7 @@ def index():
 #     return render_template('index_test.html') # index.html을 렌더링
 
 # Test 페이지를 불러오는 라우트
-@app.route('/stream')
+@app.route('/test')
 def test_page():
     return render_template('index_test_streaming.html') # index.html을 렌더링
 
@@ -78,49 +78,51 @@ async def query():
         error_resp = error_format(f"서버 처리 중 오류 발생: {str(e)}", 500)
         return Response(error_resp, content_type=content_type)
 
-# Flask app 실행
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
-
 # --------------------- Streaming part ----------------------------
 
-@app.route('/query_stream', methods=['POST'])
+@app.route('/query_stream', methods=['GET'])
 def query_stream():
     """
     SSE streaming endpoint.
-    Client sends JSON { "qry_contents": "..." }
-    We:
-      1) ask the actor for a request_id via process_query_stream.remote(http_query).
-      2) yield partial tokens in SSE until done.
+    For debugging, we add extra print statements to confirm each step.
     """
-    http_query = request.json or {}
-    # call actor
-    request_id_future = inference_actor.process_query_stream.remote(http_query)
-    request_id = ray.get(request_id_future)
-    print("Assigned request_id:", request_id)
+    user_input = request.args.get('input', '')
+    print(f"[DEBUG] /query_stream (GET) called with user_input='{user_input}'")
+
+    # Build an http_query dict
+    http_query = {"qry_contents": user_input}
+    print(f"[DEBUG] Built http_query={http_query}")
+
+    # Ask the actor for a streaming request_id
+    print("[DEBUG] Calling inference_actor.process_query_stream.remote(...)")
+    request_id = ray.get(inference_actor.process_query_stream.remote(http_query))
+    print(f"[DEBUG] Returned from actor call; request_id={request_id}")
 
     @stream_with_context
     def sse_generator():
-        # We'll pull partial tokens in a loop
+        print("[DEBUG] sse_generator started: begin pulling partial tokens in a loop")
         while True:
-            # We call pop_sse_token in an async manner. But Flask route is sync.
-            # So we can do an async->sync bridge:
+            # Pull partial tokens from the actor
             partial_text = ray.get(inference_actor.pop_sse_token.remote(request_id))
+            print(f"[DEBUG] sse_generator received partial_text={partial_text}")
+
             if partial_text is None:
-                # Means no data or the queue is done. 
-                # We might sleep or break
+                print("[DEBUG] partial_text is None => no more data => break SSE loop")
                 break
-
             if partial_text == "[[STREAM_DONE]]":
-                # End of the generation
+                print("[DEBUG] got [[STREAM_DONE]], ending SSE loop")
                 break
 
-            # yield in SSE format
+            # SSE chunk
             yield f"data: {partial_text}\n\n"
 
-        # Now we can close the queue
+        print("[DEBUG] sse_generator done: now calling close_sse_queue")
         ray.get(inference_actor.close_sse_queue.remote(request_id))
-
+        print("[DEBUG] SSE closed.")
     return Response(sse_generator(), mimetype='text/event-stream')
 
 # --------------------- Streaming part ----------------------------
+
+# Flask app 실행
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)
