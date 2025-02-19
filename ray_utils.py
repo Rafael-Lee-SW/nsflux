@@ -21,7 +21,7 @@ from utils import (
 )
 
 
-@ray.remote(num_gpus=1)  # From Decorator, Each Actor is allocated 1 GPU
+@ray.remote(num_gpus=8)  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
     async def __init__(self, config):
         self.config = config

@@ -199,12 +199,18 @@ def load_model(config):
             load_format=weight_format,
         )
         engine_args.enable_prefix_caching = True
-        engine_args.max_num_seqs = 128
-        engine_args.max_num_batched_tokens = 8192
-        engine_args.block_size = 128
+        # engine_args.max_num_seqs = 128
+        # engine_args.max_num_batched_tokens = 8192
+        # engine_args.block_size = 128
         engine_args.scheduler_delay_factor = 0.1
         engine_args.enable_chunked_prefill = True
         engine_args.gpu_memory_utilization = 0.95
+        
+        # Using Multi-GPU at once.
+        engine_args.tensor_parallel_size = 8
+        
+        # For Fixing the Multi GPU problem
+        engine_args.disable_custom_all_reduce = True
         
         print("Final EngineArgs:", engine_args)
 
