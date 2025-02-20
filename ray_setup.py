@@ -1,5 +1,6 @@
 # ray_setup.py
 import ray
+from ray import serve
 
 def init_ray():
     # Ray-Dashboard - GPU 상태, 사용 통계 등을 제공하는 모니터링 툴, host 0.0.0.0로 외부 접속을 허용하고, Default 포트인 8265으로 설정

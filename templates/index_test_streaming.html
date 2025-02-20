@@ -137,11 +137,50 @@
       #referenceData {
         display: none;
       }
+      /* Test set selector styling */
+      .test-set-selector {
+        margin-bottom: 20px;
+        text-align: center;
+      }
+      .test-set-selector label {
+        font-weight: bold;
+        margin-right: 10px;
+        cursor: pointer;
+      }
+      .test-set-selector select {
+        padding: 5px;
+        font-size: 14px;
+      }
+      /* Progress indicator styling */
+      .progress-indicator {
+        font-weight: bold;
+        margin-bottom: 10px;
+        text-align: center;
+      }
     </style>
   </head>
   <body>
     <h1>Simple RAG Query Interface</h1>
-
+    
+    <!-- Test Set Selector -->
+    <div class="test-set-selector">
+      <label for="testSetSelect" title="옵션별 설명:
+• 20 Multi SET1: SET1의 20개 질문 (same1-1 ~ same4-5, 텍스트에 'SET1' 포함)
+• 20 Multi SET2: SET2의 20개 질문 (same1-1 ~ same4-5, 텍스트에 'SET2' 포함)
+• 20 Multi SET3: SET3의 20개 질문 (same1-1 ~ same4-5, 텍스트에 'SET3' 포함)
+• Same Question 100 Times: 동일한 질문 ('디지털 전략') 100회 반복
+• 5 Questions Circulate 20 Times: 5개의 질문을 20회씩 반복 (총 100개)
+• 100 Mixed: 100개의 다양한 혼합 질문 (Mix Test Set)">Test Set:</label>
+      <select id="testSetSelect">
+        <option value="set1" title="20개의 질문: same1-1 ~ same4-5 (텍스트에 'SET1' 포함)" selected>20 Multi SET1</option>
+        <option value="set2" title="20개의 질문: same1-1 ~ same4-5 (텍스트에 'SET2' 포함)">20 Multi SET2</option>
+        <option value="set3" title="20개의 질문: same1-1 ~ same4-5 (텍스트에 'SET3' 포함)">20 Multi SET3</option>
+        <option value="same100" title="동일한 질문 '디지털 전략'을 100회 반복">Same Question 100 Times</option>
+        <option value="circulate5x20" title="5개의 질문을 20회씩 반복 (총 100개)">5 Questions Circulate 20 Times</option>
+        <option value="mixed100" title="100개의 다양한 혼합 질문 (Mix Test Set)">100 Mixed</option>
+      </select>
+    </div>
+    
     <!-- ==========================
          (1) Non-Streaming Query
          ========================== -->
@@ -150,10 +189,12 @@
     <div class="output" id="output"></div>
 
     <!-- ==========================
-         (2) Concurrency Test (Non-Streaming POST)
+         (2) Concurrency Test (Non-Streaming POST) - 50 queries
          ========================== -->
     <div class="test-section">
       <h2>Testing the POST requests concurrently (display results as they arrive)</h2>
+      <!-- Progress indicator will be shown here -->
+      <div id="progressIndicator" class="progress-indicator"></div>
       <button style="font-size: 16px; padding: 10px 20px;" onclick="testQueries()">Test</button>
       <div class="output" id="testResults"></div>
     </div>
@@ -165,14 +206,10 @@
       <h2>Streaming Test (Single)</h2>
       <p>Use this to make a single streaming query via SSE.
          The partial tokens accumulate as one text block. Times below are updated as generation proceeds.</p>
-
       <input type="text" id="streamInput" placeholder="Type your streaming query here..." />
       <button onclick="startStream()">Start Streaming</button>
-
       <pre id="streamOutput" style="max-height: 250px; overflow-y: auto; white-space: pre-wrap; background: #fafafa;"></pre>
-
       <div class="stream-info-box" id="streamTiming"></div>
-
       <button onclick="toggleReferences()">Show References</button>
       <div id="referenceData">
         <h4>Reference Data</h4>
@@ -183,6 +220,7 @@
         </ul>
       </div>
     </div>
+
     <!-- ==========================
          (4) Simultaneous Streaming Test
          ========================== -->
@@ -195,14 +233,20 @@
       <!-- The partial text blocks area -->
       <div class="output" id="simul-partials"></div>
     </div>
+
     <!-- ==========================
-        (5) Continuous Sync Test
-        ========================== -->
+         (5) Continuous Sync Test
+         ========================== -->
     <div class="test-section">
       <h2>Continuous Sync Test</h2>
-      <p>Run 10 sequential queries and compute average timings for each version.</p>
-      <button onclick="continuousTest('nonstream')">Start Continuous Non-Streaming Test</button>
-      <button onclick="continuousTest('stream')">Start Continuous Streaming Test</button>
+      <p>
+        Run 100 sequential queries (from same1-1 to same20-5) based on the selected test set.  
+        Choose either non-streaming or streaming approach, and compute average timings in ms.
+      </p>
+      <!-- Progress indicator for continuous test -->
+      <div id="continuousProgress" class="progress-indicator"></div>
+      <button onclick="continuousTest('nonstream')">Start Continuous Non-Streaming Test (100 queries)</button>
+      <button onclick="continuousTest('stream')">Start Continuous Streaming Test (100 queries)</button>
       <div class="output" id="continuousTestResults"></div>
     </div>
 
@@ -250,7 +294,7 @@
 
       // Build normal JSON results with timing.
       // Only display '답변' (rsp_type "A") immediately; hide '검색데이터' (rsp_type "R") behind a toggle.
-      function formatJsonOutput(data, sendTime, receiveTime, elapsed) {
+      function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
         let formattedOutput = `
           <strong>Send Time:</strong> ${sendTime} <br>
           <strong>Receive Time:</strong> ${receiveTime} <br>
@@ -275,17 +319,16 @@
                 answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
               } else if (item.rsp_type === "R") {
                 // Hide behind "Show Retrieval" button
-                const hiddenId = "retrieval_" + idx;
+                const hiddenId = `retrieval_${uniquePrefix}_${idx}`;
                 retrievalHTML += `
                   <div>
                     <button onclick="toggleHiddenDiv('${hiddenId}')">Show Retrieval</button>
-                    <div id="${hiddenId}" class="hidden-retrieval">
+                    <div id="${hiddenId}" class="hidden-retrieval" style="display:none;">
                       <pre>${JSON.stringify(item, null, 4)}</pre>
                     </div>
                   </div>
                 `;
               } else {
-                // Otherwise just show it
                 answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
               }
             });
@@ -310,26 +353,18 @@
       }
 
       /************************************************************
-       * (2) Concurrency Test (Non-Streaming POST)
+       * (2) Concurrency Test (Non-Streaming POST) - 50 queries
        ************************************************************/
       function testQueries() {
-        const queries = [
-          { id: 'same1-1', text: '신입사원 인사 필수로 알아야 하는 것' },
-          { id: 'same1-2', text: '디지털화 근황' },
-          { id: 'same1-3', text: 'IOT 컨테이너 사업에 대해서' },
-          { id: 'same1-4', text: '주간회의 특징 및 주요 말씀' },
-          { id: 'same1-5', text: '해운업계의 경쟁 구도' },
-          { id: 'same2-1', text: '신입사원 인사 필수로 알아야 하는 것' },
-          { id: 'same2-2', text: '디지털화 근황' },
-          { id: 'same2-3', text: 'IOT 컨테이너 사업에 대해서' },
-          { id: 'same2-4', text: '주간회의 특징 및 주요 말씀' },
-          { id: 'same2-5', text: '해운업계의 경쟁 구도' }
-        ];
-
+        const queries = buildTestQueries();
         document.getElementById('testResults').innerHTML = 'Testing in progress...';
 
-        const results = [];
+        const totalQueries = queries.length;
         let arrivalCounter = 0;
+        // Initialize progress indicator
+        updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries);
+
+        const results = [];
 
         queries.forEach((query) => {
           const sendTime = new Date();
@@ -359,6 +394,7 @@
                   arrival: arrivalCounter
                 });
                 updateTestResults(results);
+                updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries);
               });
             })
             .catch((error) => {
@@ -377,8 +413,16 @@
                 arrival: arrivalCounter
               });
               updateTestResults(results);
+              updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries);
             });
         });
+      }
+
+      function updateProgressIndicator(elementId, current, total) {
+        const elem = document.getElementById(elementId);
+        if (elem) {
+          elem.innerText = `Completed: ${current} / ${total} queries`;
+        }
       }
 
       function updateTestResults(results) {
@@ -424,6 +468,13 @@
 
         let detailsHTML = '<div class="test-details"><h3>Individual Test Details</h3>';
         results.forEach((result) => {
+          const safeResultOutput = formatJsonOutput(
+            result.data,
+            result.sendTime,
+            result.receiveTime,
+            result.elapsed,
+            result.id  // <-- 사용
+          );
           detailsHTML += `
             <div class="test-item">
               <h4>${result.id} - ${result.text}</h4>
@@ -433,7 +484,7 @@
               <p><strong>Elapsed Time:</strong> ${result.elapsed} ms</p>
               <p><strong>Status:</strong> ${result.status}</p>
               <p><strong>Response Data (Answer only):</strong></p>
-              ${formatJsonOutput(result.data, result.sendTime, result.receiveTime, result.elapsed)}
+              ${safeResultOutput}
             </div>
           `;
         });
@@ -488,16 +539,13 @@
 
         streamEventSource.onmessage = function (event) {
           const chunk = event.data;
-          // Check for done token ignoring whitespace
           const trimmed = chunk.trim();
 
-          // If this is the first real chunk
           if (!gotFirstChunkTime && !trimmed.includes("[[STREAM_DONE]]")) {
             gotFirstChunkTime = new Date();
             updateSingleStreamTiming();
           }
 
-          // If we see the done marker
           if (trimmed.includes("[[STREAM_DONE]]")) {
             doneTime = new Date();
             streamEventSource.close();
@@ -505,7 +553,6 @@
             return;
           }
 
-          // Otherwise, accumulate text
           partialAccumulator += chunk;
           outputEl.textContent = partialAccumulator;
           outputEl.scrollTop = outputEl.scrollHeight;
@@ -513,7 +560,7 @@
 
         streamEventSource.onerror = function (err) {
           console.error('SSE error:', err);
-          doneTime = new Date(); // Set the end time on error
+          doneTime = new Date();
           streamEventSource.close();
           updateSingleStreamTiming();
         };
@@ -558,8 +605,7 @@
       /************************************************************
        * (4) Simultaneous Streaming SSE
        ************************************************************/
-      let simulResults = []; // { id, query, partialText, startTime, firstChunkTime, endTime }
-
+      let simulResults = [];
       function testStreamingQueries() {
         const sseQueries = [
           { id: 'SSE-1', text: '디지털화 근황' },
@@ -676,99 +722,315 @@
         document.getElementById('simul-partials').innerHTML = html;
       }
 
-      // Function to run continuous tests
+      /************************************************************
+       * (5) Continuous Sync Test
+       * Run 100 sequential queries (from same1-1 to same20-5) based on the selected test set
+       ************************************************************/
       async function continuousTest(mode) {
+        const queries = buildTestQueries();
         const results = [];
-        const totalRuns = 10;
-        document.getElementById('continuousTestResults').innerHTML = "Running test...<br>";
+        const total = queries.length;
+        document.getElementById('continuousTestResults').innerHTML = `Running ${mode} test...<br>`;
         
-        for (let i = 0; i < totalRuns; i++) {
+        // Update progress for continuous test
+        updateProgressIndicator('continuousProgress', 0, total);
+    
+        for (let i = 0; i < queries.length; i++) {
           if (mode === 'nonstream') {
-            const res = await runNonStreamingQuery(i + 1);
-            results.push(res);
-          } else if (mode === 'stream') {
-            const res = await runStreamingQuery(i + 1);
-            results.push(res);
+            const r = await runNonStreamingQuery(queries[i]);
+            results.push(r);
+          } else {
+            const r = await runStreamingQuery(queries[i]);
+            results.push(r);
           }
+          updateProgressIndicator('continuousProgress', i + 1, total);
         }
-        
-        // Compute average durations
-        let totalDuration = results.reduce((sum, item) => sum + item.duration, 0);
-        let avgDuration = (totalDuration / totalRuns).toFixed(2);
-        
-        let html = `<h3>${mode === 'nonstream' ? 'Non-Streaming' : 'Streaming'} Test Results</h3>`;
+    
+        // Compute average duration
+        let sum = 0;
+        results.forEach(r => sum += r.duration);
+        const avg = (sum / results.length).toFixed(2);
+    
+        // Show results
+        let html = `<h3>Continuous ${mode === 'nonstream' ? 'Non-Streaming' : 'Streaming'} Test (100 queries) Results</h3>`;
+        html += `<p>Average Duration: <strong>${avg} ms</strong></p>`;
         html += "<ul>";
         results.forEach((r, idx) => {
-          html += `<li>Run ${idx + 1}: Start: ${r.startTime}, End: ${r.endTime}, Duration: ${r.duration} ms</li>`;
+          html += `<li><strong>${r.id}</strong> [${r.query}] - Start: ${r.startTime}, End: ${r.endTime}, Duration: ${r.duration} ms</li>`;
         });
-        html += `</ul><strong>Average Duration: ${avgDuration} ms</strong>`;
+        html += "</ul>";
         document.getElementById('continuousTestResults').innerHTML = html;
       }
 
-      // For non-streaming test: sends a normal POST request and records start/end times.
-      async function runNonStreamingQuery(runNumber) {
-        const queryText = "디지털 전략"; // or any test query
+      // Build 100 queries based on the selected test set
+      function buildTestQueries() {
+        const testSet = document.getElementById('testSetSelect').value;
+        let queries = [];
+        if (testSet === 'set1') {
+          const mixed20Queries1 = [
+            { id: "ask1", text: "남성해운의 중국 시장 동향" },
+            { id: "ask2", text: "남성해운의 일본 시장 영업 전략" },
+            { id: "ask3", text: "남성해운의 동남아 시장 발전 가능성" },
+            { id: "ask4", text: "남성해운의 중국 시장 동향" },
+            { id: "ask5", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "ask6", text: "디지털화 근황" },
+            { id: "ask7", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask8", text: "남성해운 운임 동향" },
+            { id: "ask9", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask10", text: "최근 해운업계 동향" },
+            { id: "ask11", text: "디지털화 근황" },
+            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask13", text: "남성해운 운임 동향" },
+            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask15", text: "최근 해운업계 동향" },
+            { id: "ask16", text: "디지털화 근황" },
+            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask18", text: "남성해운 운임 동향" },
+            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask20", text: "최근 해운업계 동향" }
+          ];
+          queries = mixed20Queries1;
+        } else if (testSet === 'set2') {
+          const mixed20Queries2 = [
+            { id: "ask1", text: "타운사의 전략" },
+            { id: "ask2", text: "남성해운과 타운사의 차별점" },
+            { id: "ask3", text: "남성해운의 수익 구조" },
+            { id: "ask4", text: "해운사의 특징과 남성해운이 가진 고유의 특징" },
+            { id: "ask5", text: "지난해 매출과 앞으로의 전망" },
+            { id: "ask6", text: "남성해운의 AI 추진 과제 현황" },
+            { id: "ask7", text: "동영해운과 남성해운의 공통점과 차이점" },
+            { id: "ask8", text: "남성해운의 새로운 전략과 먹거리" },
+            { id: "ask9", text: "신입사원 채용 계획 및 교육 일정" },
+            { id: "ask10", text: "해운업계의 큰 흐름과 현재 남성해운의 판단" },
+            { id: "ask11", text: "디지털화 근황" },
+            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask13", text: "남성해운 운임 동향" },
+            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask15", text: "최근 해운업계 동향" },
+            { id: "ask16", text: "디지털화 근황" },
+            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask18", text: "남성해운 운임 동향" },
+            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask20", text: "최근 해운업계 동향" }
+          ];
+          queries = mixed20Queries2;
+        } else if (testSet === 'set3') {
+          const mixed20Queries3 = [
+            { id: "same1-1", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "same1-2", text: "디지털화 근황" },
+            { id: "same1-3", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "same1-4", text: "주간회의 특징 및 주요 말씀" },
+            { id: "same1-5", text: "해운업계의 경쟁 구도" },
+            { id: "same2-1", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "same2-2", text: "디지털화 근황" },
+            { id: "same2-3", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "same2-4", text: "주간회의 특징 및 주요 말씀" },
+            { id: "same2-5", text: "해운업계의 경쟁 구도" },
+            { id: "same3-1", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "same3-2", text: "디지털화 근황" },
+            { id: "same3-3", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "same3-4", text: "주간회의 특징 및 주요 말씀" },
+            { id: "same3-5", text: "해운업계의 경쟁 구도" },
+            { id: "same4-1", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "same4-2", text: "디지털화 근황" },
+            { id: "same4-3", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "same4-4", text: "주간회의 특징 및 주요 말씀" },
+            { id: "same4-5", text: "해운업계의 경쟁 구도" }
+          ];
+          queries = mixed20Queries3;
+        } else if (testSet === 'same100') {
+          for (let i = 1; i <= 100; i++) {
+            queries.push({
+              id: `same100-${i}`,
+              text: "디지털 전략"
+            });
+          }
+        } else if (testSet === 'circulate5x20') {
+          const baseQueries = [
+            { id: "q1", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "q2", text: "디지털화 근황" },
+            { id: "q3", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "q4", text: "주간회의 특징 및 주요 말씀" },
+            { id: "q5", text: "해운업계의 경쟁 구도" }
+          ];
+          for (let k = 1; k <= 20; k++) {
+            baseQueries.forEach((q) => {
+              queries.push({
+                id: `circulate${k}-${q.id}`,
+                text: q.text
+              });
+            });
+          }
+        } else if (testSet === 'mixed100') {
+          const mixedQueries = [
+            { id: "mix-ask1", text: "타운사의 전략" },
+            { id: "mix-ask2", text: "남성해운의 중국 시장 동향" },
+            { id: "mix-ask3", text: "해운업계의 경쟁 구도" },
+            { id: "mix-ask4", text: "디지털화의 최신 트렌드" },
+            { id: "mix-ask5", text: "IOT 컨테이너 사업의 전망" },
+            { id: "mix-ask6", text: "타운사의 시장 점유율 분석" },
+            { id: "mix-ask7", text: "남성해운의 일본 시장 영업 전략" },
+            { id: "mix-ask8", text: "해운업계의 글로벌 시장 동향" },
+            { id: "mix-ask9", text: "디지털 전환의 성공 사례" },
+            { id: "mix-ask10", text: "IOT 기술을 활용한 물류 혁신" },
+            { id: "mix-ask11", text: "타운사의 경쟁 우위" },
+            { id: "mix-ask12", text: "남성해운의 동남아 시장 발전 가능성" },
+            { id: "mix-ask13", text: "해운업계의 기술 혁신 현황" },
+            { id: "mix-ask14", text: "디지털 기술이 기업에 미치는 영향" },
+            { id: "mix-ask15", text: "IOT와 빅데이터의 결합 사례" },
+            { id: "mix-ask16", text: "타운사의 성장 동력" },
+            { id: "mix-ask17", text: "남성해운의 미국 시장 진출 전략" },
+            { id: "mix-ask18", text: "해운업계의 운임 변동 요인" },
+            { id: "mix-ask19", text: "디지털화 도입의 비용 효율성" },
+            { id: "mix-ask20", text: "IOT 기술 도입의 장단점" },
+            { id: "mix-ask21", text: "타운사의 혁신 사례" },
+            { id: "mix-ask22", text: "남성해운의 수익 구조 분석" },
+            { id: "mix-ask23", text: "해운업계의 환경 규제 대응" },
+            { id: "mix-ask24", text: "디지털 전환 전략 수립 방법" },
+            { id: "mix-ask25", text: "IOT 컨테이너의 운영 효율성" },
+            { id: "mix-ask26", text: "타운사의 고객 만족도" },
+            { id: "mix-ask27", text: "남성해운의 비용 절감 전략" },
+            { id: "mix-ask28", text: "해운업계의 디지털 전환" },
+            { id: "mix-ask29", text: "디지털화와 빅데이터 활용" },
+            { id: "mix-ask30", text: "IOT 기반 실시간 모니터링 시스템" },
+            { id: "mix-ask31", text: "타운사의 재무 구조" },
+            { id: "mix-ask32", text: "남성해운의 신규 서비스 도입" },
+            { id: "mix-ask33", text: "해운업계의 물류 효율성 개선" },
+            { id: "mix-ask34", text: "디지털화의 보안 이슈" },
+            { id: "mix-ask35", text: "IOT와 인공지능의 결합 효과" },
+            { id: "mix-ask36", text: "타운사의 리스크 관리" },
+            { id: "mix-ask37", text: "남성해운의 고객 만족도 조사" },
+            { id: "mix-ask38", text: "해운업계의 비용 구조" },
+            { id: "mix-ask39", text: "디지털 트랜스포메이션의 장단점" },
+            { id: "mix-ask40", text: "IOT 기술을 활용한 비용 절감" },
+            { id: "mix-ask41", text: "타운사의 해외 진출 전략" },
+            { id: "mix-ask42", text: "남성해운의 운임 변동 분석" },
+            { id: "mix-ask43", text: "해운업계의 신규 시장 개척" },
+            { id: "mix-ask44", text: "디지털화 추진을 위한 조직 문화" },
+            { id: "mix-ask45", text: "IOT 컨테이너 사업의 경쟁력" },
+            { id: "mix-ask46", text: "타운사의 신규 사업 계획" },
+            { id: "mix-ask47", text: "남성해운의 미래 성장 전략" },
+            { id: "mix-ask48", text: "해운업계의 고객 서비스 혁신" },
+            { id: "mix-ask49", text: "디지털 전환과 고객 경험 혁신" },
+            { id: "mix-ask50", text: "IOT 기술 도입을 위한 투자 전략" },
+            { id: "mix-ask51", text: "타운사의 브랜드 가치" },
+            { id: "mix-ask52", text: "남성해운의 경쟁사 비교" },
+            { id: "mix-ask53", text: "해운업계의 글로벌 네트워크" },
+            { id: "mix-ask54", text: "디지털화와 인공지능의 결합" },
+            { id: "mix-ask55", text: "IOT와 클라우드 컴퓨팅의 연계" },
+            { id: "mix-ask56", text: "타운사의 공급망 관리" },
+            { id: "mix-ask57", text: "남성해운의 글로벌 네트워크" },
+            { id: "mix-ask58", text: "해운업계의 재무 안정성" },
+            { id: "mix-ask59", text: "디지털 전환의 글로벌 사례" },
+            { id: "mix-ask60", text: "IOT 기반 물류 자동화 사례" },
+            { id: "mix-ask61", text: "타운사의 인재 육성 전략" },
+            { id: "mix-ask62", text: "남성해운의 혁신 기술 도입" },
+            { id: "mix-ask63", text: "해운업계의 기술 투자" },
+            { id: "mix-ask64", text: "디지털화 추진 시 장애 요인" },
+            { id: "mix-ask65", text: "IOT 기술의 보안 이슈" },
+            { id: "mix-ask66", text: "타운사의 사회적 책임 활동" },
+            { id: "mix-ask67", text: "남성해운의 운영 효율성" },
+            { id: "mix-ask68", text: "해운업계의 공급망 관리" },
+            { id: "mix-ask69", text: "디지털화에 따른 비용 절감 효과" },
+            { id: "mix-ask70", text: "IOT 컨테이너 사업의 글로벌 동향" },
+            { id: "mix-ask71", text: "타운사의 기술 혁신" },
+            { id: "mix-ask72", text: "남성해운의 재무 건전성" },
+            { id: "mix-ask73", text: "해운업계의 미래 전망" },
+            { id: "mix-ask74", text: "디지털 트랜스포메이션의 미래 전망" },
+            { id: "mix-ask75", text: "IOT와 데이터 분석의 시너지 효과" },
+            { id: "mix-ask76", text: "타운사의 마케팅 전략" },
+            { id: "mix-ask77", text: "남성해운의 리스크 관리 전략" },
+            { id: "mix-ask78", text: "해운업계의 혁신 사례" },
+            { id: "mix-ask79", text: "디지털화 전략 수립 시 고려사항" },
+            { id: "mix-ask80", text: "IOT 기술 도입 시 장애 요인" },
+            { id: "mix-ask81", text: "타운사의 고객 서비스 개선" },
+            { id: "mix-ask82", text: "남성해운의 신규 투자 계획" },
+            { id: "mix-ask83", text: "해운업계의 위험 요인" },
+            { id: "mix-ask84", text: "디지털 전환이 기업 경쟁력에 미치는 영향" },
+            { id: "mix-ask85", text: "IOT 컨테이너의 미래 전략" },
+            { id: "mix-ask86", text: "타운사의 경쟁사 비교" },
+            { id: "mix-ask87", text: "남성해운의 시장 점유율 변화" },
+            { id: "mix-ask88", text: "해운업계의 인재 육성" },
+            { id: "mix-ask89", text: "디지털화와 클라우드 컴퓨팅" },
+            { id: "mix-ask90", text: "IOT 기술을 활용한 혁신 사례" },
+            { id: "mix-ask91", text: "타운사의 시장 성장 전망" },
+            { id: "mix-ask92", text: "남성해운의 고객 서비스 전략" },
+            { id: "mix-ask93", text: "해운업계의 시장 성장 동력" },
+            { id: "mix-ask94", text: "디지털 전환의 성공 요인" },
+            { id: "mix-ask95", text: "IOT 기반 스마트 물류 솔루션" },
+            { id: "mix-ask96", text: "타운사의 미래 비전" },
+            { id: "mix-ask97", text: "남성해운의 미래 비전" },
+            { id: "mix-ask98", text: "해운업계의 신기술 도입 현황" },
+            { id: "mix-ask99", text: "디지털 트랜스포메이션이 해운업계에 미치는 영향" },
+            { id: "mix-ask100", text: "IOT 기술이 해운업계에 미치는 영향" }
+          ];
+          queries = mixedQueries; // Use the mixed set
+        }
+        return queries;
+      }
+    
+      /************************************************************
+       * (For Continuous Test) Non-streaming version: normal POST request
+       ************************************************************/
+      async function runNonStreamingQuery(qObj) {
         const sendTime = new Date();
-        const startTimestamp = Date.now();
-        
+        const startTs = Date.now();
         try {
-          const response = await fetch('/query', {
+          const resp = await fetch('/query', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ qry_contents: queryText })
+            body: JSON.stringify({ qry_contents: qObj.text })
           });
-          await response.json(); // wait for complete JSON result
-        } catch (error) {
-          console.error("Error in non-streaming query", error);
+          await resp.json();
+        } catch (e) {
+          console.error("Non-stream error:", e);
         }
-        
         const endTime = new Date();
-        const duration = Date.now() - startTimestamp;
+        const duration = Date.now() - startTs;
         return {
-          run: runNumber,
+          id: qObj.id,
+          query: qObj.text,
           startTime: formatTime(sendTime),
           endTime: formatTime(endTime),
           duration: duration
         };
       }
-
-      // For streaming test: returns a promise that resolves when streaming is finished.
-      function runStreamingQuery(runNumber) {
+    
+      /************************************************************
+       * (For Continuous Test) Streaming version: SSE approach
+       ************************************************************/
+      function runStreamingQuery(qObj) {
         return new Promise((resolve, reject) => {
-          const queryText = "디지털 전략"; // test query
           const sendTime = new Date();
-          const startTimestamp = Date.now();
-          let firstChunkTime = null;
-          
-          // Create a temporary EventSource (similar to startStream() but self-contained)
-          const sseUrl = '/query_stream?input=' + encodeURIComponent(queryText);
+          const startTs = Date.now();
+    
+          const sseUrl = '/query_stream?input=' + encodeURIComponent(qObj.text);
           const es = new EventSource(sseUrl);
-          es.onmessage = function (event) {
-            const chunk = event.data;
-            // If final result message, ignore for timing purposes
-            if (chunk.startsWith("[[FINAL_RESULT]]")) return;
-            
-            if (!firstChunkTime && !chunk.includes("[[STREAM_DONE]]")) {
-              firstChunkTime = new Date();
-            }
-            if (chunk.includes("[[STREAM_DONE]]")) {
-              const endTime = new Date();
-              const duration = Date.now() - startTimestamp;
+    
+          es.onmessage = (evt) => {
+            const trimmed = evt.data.trim();
+            if (trimmed.includes("[[STREAM_DONE]]")) {
               es.close();
+              const endTime = new Date();
+              const duration = Date.now() - startTs;
               resolve({
-                run: runNumber,
+                id: qObj.id,
+                query: qObj.text,
                 startTime: formatTime(sendTime),
                 endTime: formatTime(endTime),
                 duration: duration
               });
             }
           };
-          es.onerror = function (err) {
-            const endTime = new Date();
-            const duration = Date.now() - startTimestamp;
+    
+          es.onerror = (err) => {
+            console.error("Stream error on", qObj.id, err);
             es.close();
+            const endTime = new Date();
+            const duration = Date.now() - startTs;
             resolve({
-              run: runNumber,
+              id: qObj.id,
+              query: qObj.text,
               startTime: formatTime(sendTime),
               endTime: formatTime(endTime),
               duration: duration
