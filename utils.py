@@ -198,19 +198,20 @@ def load_model(config):
             config_format="hf",
             load_format=weight_format,
         )
+        
+        vllm_conf = config.get("vllm", {})
+        
         engine_args.enable_prefix_caching = True
-        # engine_args.max_num_seqs = 128
-        # engine_args.max_num_batched_tokens = 8192
-        # engine_args.block_size = 128
-        engine_args.scheduler_delay_factor = 0.1
+        engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
-        engine_args.gpu_memory_utilization = 0.95
-        
-        # Using Multi-GPU at once.
-        engine_args.tensor_parallel_size = 8
-        
-        # For Fixing the Multi GPU problem
-        engine_args.disable_custom_all_reduce = True
+        engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
+        # engine_args.max_num_seqs = vllm_conf.get("max_num_seqs", 128)
+        # engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
+        # engine_args.block_size = vllm_conf.get("block_size", 128)
+        engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization", 0.9)
+
+        if vllm_conf.get("disable_custom_all_reduce", False):
+            engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
         
         print("Final EngineArgs:", engine_args)
 

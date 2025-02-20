@@ -1,6 +1,6 @@
 # ray_utils.py
-
 import ray  # Ray library
+from ray import serve
 import json
 import asyncio  # async I/O process module
 import uuid  # --- NEW OR MODIFIED ---
@@ -20,8 +20,7 @@ from utils import (
     error_format,
 )
 
-
-@ray.remote(num_gpus=8)  # From Decorator, Each Actor is allocated 1 GPU
+@ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
     async def __init__(self, config):
         self.config = config
@@ -363,3 +362,26 @@ class InferenceActor:
             del self.active_sse_queues[request_id]
         else:
             print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
+
+# Ray Serve를 통한 배포
+@serve.deployment(name="inference", num_replicas=2)
+class InferenceService:
+    def __init__(self, config):
+        self.config = config
+        self.actor = InferenceActor.options(num_gpus=config.ray.actor_num_gpus).remote(config)
+
+    async def query(self, http_query: dict):
+        result = await self.actor.process_query.remote(http_query)
+        return result
+
+    async def process_query_stream(self, http_query: dict) -> str:
+        req_id = await self.actor.process_query_stream.remote(http_query)
+        return req_id
+
+    async def pop_sse_token(self, req_id: str) -> str:
+        token = await self.actor.pop_sse_token.remote(req_id)
+        return token
+
+    async def close_sse_queue(self, req_id: str) -> str:
+        await self.actor.close_sse_queue.remote(req_id)
+        return "closed"
