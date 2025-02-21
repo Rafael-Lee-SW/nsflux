@@ -339,7 +339,7 @@ class InferenceActor:
         queue = self.active_sse_queues[request_id]
         try:
             token = await asyncio.wait_for(queue.get(), timeout=120.0)
-            print(f"[STREAM] pop_sse_token => got token from queue: {token}")
+            # print(f"[STREAM] pop_sse_token => got token from queue: {token}")
             return token
         except asyncio.TimeoutError:
             print(
@@ -363,25 +363,27 @@ class InferenceActor:
         else:
             print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
 
-# Ray Serve를 통한 배포
-@serve.deployment(name="inference", num_replicas=1)
-class InferenceService:
-    def __init__(self, config):
-        self.config = config
-        self.actor = InferenceActor.options(num_gpus=config.ray.actor_num_gpus).remote(config)
+# Too using about two actor
 
-    async def query(self, http_query: dict):
-        result = await self.actor.process_query.remote(http_query)
-        return result
+# # Ray Serve를 통한 배포
+# @serve.deployment(name="inference", num_replicas=1)
+# class InferenceService:
+#     def __init__(self, config):
+#         self.config = config
+#         self.actor = InferenceActor.options(num_gpus=config.ray.actor_num_gpus).remote(config)
 
-    async def process_query_stream(self, http_query: dict) -> str:
-        req_id = await self.actor.process_query_stream.remote(http_query)
-        return req_id
+#     async def query(self, http_query: dict):
+#         result = await self.actor.process_query.remote(http_query)
+#         return result
 
-    async def pop_sse_token(self, req_id: str) -> str:
-        token = await self.actor.pop_sse_token.remote(req_id)
-        return token
+#     async def process_query_stream(self, http_query: dict) -> str:
+#         req_id = await self.actor.process_query_stream.remote(http_query)
+#         return req_id
 
-    async def close_sse_queue(self, req_id: str) -> str:
-        await self.actor.close_sse_queue.remote(req_id)
-        return "closed"
+#     async def pop_sse_token(self, req_id: str) -> str:
+#         token = await self.actor.pop_sse_token.remote(req_id)
+#         return token
+
+#     async def close_sse_queue(self, req_id: str) -> str:
+#         await self.actor.close_sse_queue.remote(req_id)
+#         return "closed"
