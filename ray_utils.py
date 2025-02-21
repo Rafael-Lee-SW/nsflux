@@ -263,7 +263,7 @@ class InferenceActor:
                 if not new_text.strip():
                     continue
 
-                print(f"[STREAM] yield new_text => '{new_text[:50]}...'")
+                # print(f"[STREAM] yield new_text => '{new_text[:50]}...'") # Too large logs
                 await queue.put(new_text)
 
             # Now partial_accumulator is the final text
@@ -364,7 +364,7 @@ class InferenceActor:
             print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
 
 # Ray Serve를 통한 배포
-@serve.deployment(name="inference", num_replicas=2)
+@serve.deployment(name="inference", num_replicas=1)
 class InferenceService:
     def __init__(self, config):
         self.config = config

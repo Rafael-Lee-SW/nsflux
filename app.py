@@ -40,10 +40,6 @@ random_seed(config.seed)
 init_ray() # Initialize the Ray
 serve.start(detached=True)
 
-########## Create the single Ray Actors above only one GPU ##########
-########## later on, Create more actors on serveral Multi GPU ##########
-# inference_actor = InferenceActor.options(num_gpus=config.ray.actor_num_gpus).remote(config) # Single Actor
-
 # Ray Serve 배포(Deployment) - InferenceService는 ray_utils.py에 정의되어 있음.
 # config.ray.actor_count에 따라 복제본(replica) 수를 결정합니다.
 inference_service = InferenceService.bind(config)
