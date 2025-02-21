@@ -4,6 +4,7 @@ from ray import serve
 import json
 import asyncio  # async I/O process module
 import uuid  # --- NEW OR MODIFIED ---
+import time
 from typing import Dict, Optional  # --- NEW OR MODIFIED ---
 
 from RAG import (
@@ -32,8 +33,8 @@ class InferenceActor:
         self.data = load_data(config.data_path)
         # 비동기 큐와 배치 처리 설정 (마이크로배칭)
         self.request_queue = asyncio.Queue()
-        self.batch_size = 10  # 최대 배치 수
-        self.batch_delay = 0.5  # 배치당 처리 시간
+        self.max_batch_size = 10  # 최대 배치 수
+        self.batch_wait_timeout = 5  # 배치당 처리 시간
 
         # --- NEW OR MODIFIED ---
         # A dictionary to store SSE queues for streaming requests
@@ -56,6 +57,7 @@ class InferenceActor:
         # There's no SSE queue for normal queries
         sse_queue = None
         await self.request_queue.put((http_query, future, sse_queue))
+        print("self.request_queue : ", self.request_queue)
         return await future
 
     async def _batch_processor(self):
@@ -65,19 +67,29 @@ class InferenceActor:
         """
         while True:
             batch = []
+            batch_start_time = time.time()
             # 1) get first request from the queue
             print("=== _batch_processor waiting for request_queue item... ===")
             item = await self.request_queue.get()
+            print("현재 request_queue 상태 : ", self.request_queue)
             batch.append(item)
+            
 
+            print(f"[DEBUG] Received first request at {time.strftime('%H:%M:%S')}")
+            
             # 2) try to fill the batch up to batch_size or until timeout
             try:
-                while len(batch) < self.batch_size:
+                while len(batch) < self.max_batch_size:
+                    print("현재 배치 사이즈 : ", len(batch))
+                    print("최대 배치 사이즈 : ", self.max_batch_size)
                     item = await asyncio.wait_for(
-                        self.request_queue.get(), timeout=self.batch_delay
+                        self.request_queue.get(), timeout=self.batch_wait_timeout
                     )
+                    
                     batch.append(item)
+                    print(f"[DEBUG] Received additional request at {time.strftime('%H:%M:%S')}; batch size now: {len(batch)}")
             except asyncio.TimeoutError:
+                print(f"[DEBUG] Timeout reached after {time.time() - batch_start_time:.2f} seconds; proceeding with batch size: {len(batch)}")
                 pass
 
             print(f"=== _batch_processor got a batch of size {len(batch)} ===")
@@ -88,6 +100,24 @@ class InferenceActor:
 
             # We'll keep your same approach: for each item, call _process_single_query,
             # except we add partial-token streaming inside that method if needed.
+            
+            # --- Calculate and log total input tokens in this batch ---
+            total_tokens = 0
+            for idx, (req, fut, sse_queue) in enumerate(batch):
+                # For streaming requests, the query is under "qry_contents"
+                if isinstance(req, dict):
+                    query_text = req.get("qry_contents", "")
+                else:
+                    query_text = ""
+                if query_text:
+                    tokens = self.tokenizer(query_text, add_special_tokens=True)["input_ids"]
+                    token_count = len(tokens)
+                    total_tokens += token_count
+                    print(f"[DEBUG] Batch item {idx+1}: query: '{query_text}' uses {token_count} tokens")
+                else:
+                    print(f"[DEBUG] Batch item {idx+1}: No query text found.")
+            print(f"[BATCH] Total input tokens in current batch: {total_tokens}")
+            
             await asyncio.gather(
                 *(
                     self._process_single_query(req, fut, sse_queue)
@@ -121,6 +151,9 @@ class InferenceActor:
 
             # 1) get user query
             user_input = http_query.get("qry_contents", "")
+            # To Calculate the token
+            tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
+            print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
             # 2) optionally reload data if needed
             self.data = load_data(
                 self.config.data_path
