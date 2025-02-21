@@ -165,19 +165,19 @@
     <!-- Test Set Selector -->
     <div class="test-set-selector">
       <label for="testSetSelect" title="옵션별 설명:
-• 20 Multi SET1: SET1의 20개 질문 (same1-1 ~ same4-5, 텍스트에 'SET1' 포함)
-• 20 Multi SET2: SET2의 20개 질문 (same1-1 ~ same4-5, 텍스트에 'SET2' 포함)
-• 20 Multi SET3: SET3의 20개 질문 (same1-1 ~ same4-5, 텍스트에 'SET3' 포함)
+• 20 Multi SET1: SET1의 20개 질문
+• 20 Multi SET2: SET2의 20개 질문
+• 20 Multi SET3: SET3의 20개 질문
 • Same Question 100 Times: 동일한 질문 ('디지털 전략') 100회 반복
-• 5 Questions Circulate 20 Times: 5개의 질문을 20회씩 반복 (총 100개)
+• 5 Questions Circulate 20 Times: 5개의 다른 질문을 20회씩 반복 (총 100개)
 • 100 Mixed: 100개의 다양한 혼합 질문 (Mix Test Set)">Test Set:</label>
       <select id="testSetSelect">
-        <option value="set1" title="20개의 질문: same1-1 ~ same4-5 (텍스트에 'SET1' 포함)" selected>20 Multi SET1</option>
-        <option value="set2" title="20개의 질문: same1-1 ~ same4-5 (텍스트에 'SET2' 포함)">20 Multi SET2</option>
-        <option value="set3" title="20개의 질문: same1-1 ~ same4-5 (텍스트에 'SET3' 포함)">20 Multi SET3</option>
-        <option value="same100" title="동일한 질문 '디지털 전략'을 100회 반복">Same Question 100 Times</option>
-        <option value="circulate5x20" title="5개의 질문을 20회씩 반복 (총 100개)">5 Questions Circulate 20 Times</option>
-        <option value="mixed100" title="100개의 다양한 혼합 질문 (Mix Test Set)">100 Mixed</option>
+        <option value="set1" title="20개의 다른 질문 SET1" selected>20개의 다른 질문 세트 1번</option>
+        <option value="set2" title="20개의 다른 질문 SET2">20개의 다른 질문 세트 2번</option>
+        <option value="set3" title="20개의 다른 질문 SET3">20개의 다른 질문 세트 3번</option>
+        <option value="same100" title="동일한 질문 '디지털 전략'을 100회 반복">같은 질문('디지털 전략') 100개</option>
+        <option value="circulate5x20" title="5개의 다른 질문을 20회씩 반복 (총 100개)">5개의 다른 질문 세트 20번 반복</option>
+        <option value="mixed100" title="100개의 다양한 혼합 질문 (Mix Test Set)">100개의 다른 질문</option>
       </select>
     </div>
     
@@ -185,14 +185,15 @@
          (1) Non-Streaming Query
          ========================== -->
     <input type="text" id="userInput" placeholder="Type your query here..." />
-    <button onclick="sendQuery()">Submit</button>
+    <button onclick="sendQuery()">단일 전송(스트리밍 X)</button>
     <div class="output" id="output"></div>
 
     <!-- ==========================
          (2) Concurrency Test (Non-Streaming POST) - 50 queries
          ========================== -->
     <div class="test-section">
-      <h2>Testing the POST requests concurrently (display results as they arrive)</h2>
+      <h2>한 번에 질문 여러개 전송하기 테스트</h2>
+      <h5>Testing the POST requests concurrently (display results as they arrive)</h5>
       <!-- Progress indicator will be shown here -->
       <div id="progressIndicator" class="progress-indicator"></div>
       <button style="font-size: 16px; padding: 10px 20px;" onclick="testQueries()">Test</button>
@@ -203,7 +204,8 @@
          (3) Single Streaming Test
          ========================== -->
     <div class="test-section">
-      <h2>Streaming Test (Single)</h2>
+      <h2>스트리밍 테스트(단일)</h2>
+      <h5>Streaming Test (Single)</h5>
       <p>Use this to make a single streaming query via SSE.
          The partial tokens accumulate as one text block. Times below are updated as generation proceeds.</p>
       <input type="text" id="streamInput" placeholder="Type your streaming query here..." />
@@ -225,7 +227,8 @@
          (4) Simultaneous Streaming Test
          ========================== -->
     <div class="test-section">
-      <h2>Simultaneous Streaming Test</h2>
+      <h2>스트리밍 테스트(동시)</h2>
+      <h5>Simultaneous Streaming Test</h5>
       <p>Launch multiple streaming queries at once. Each query has its own SSE connection. We track times and show partial texts separately.</p>
       <button onclick="testStreamingQueries()">Start Simultaneous Streaming</button>
       <!-- The main property table (no partial text) -->
@@ -238,7 +241,8 @@
          (5) Continuous Sync Test
          ========================== -->
     <div class="test-section">
-      <h2>Continuous Sync Test</h2>
+      <h2>연속 질문 테스트(단일 평균 시간 테스트)</h2>
+      <h5>Continuous Sync Test</h5>
       <p>
         Run 100 sequential queries (from same1-1 to same20-5) based on the selected test set.  
         Choose either non-streaming or streaming approach, and compute average timings in ms.
@@ -421,7 +425,7 @@
       function updateProgressIndicator(elementId, current, total) {
         const elem = document.getElementById(elementId);
         if (elem) {
-          elem.innerText = `Completed: ${current} / ${total} queries`;
+          elem.innerText = `완료: ${current} / ${total} queries`;
         }
       }
 

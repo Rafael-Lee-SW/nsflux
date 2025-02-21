@@ -13,8 +13,8 @@ vllm:
   scheduler_delay_factor: 0.1
   enable_chunked_prefill: True
   tensor_parallel_size: 2 # vLLM의 GPU 사용 갯수 (!!!! actor_num_gpus 보다 작아야 함 !!!!)
-  max_num_seqs: 128     # 미적용
-  max_num_batched_tokens: 8192 # 미적용
+  max_num_seqs: 128
+  max_num_batched_tokens: 16384
   block_size: 128 # 미적용
   gpu_memory_utilization: 0.95
   disable_custom_all_reduce: true

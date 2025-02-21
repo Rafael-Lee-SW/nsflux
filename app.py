@@ -1,10 +1,9 @@
 # app.py
 import os
-
 # Setting environment variable
-os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
+# os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
 os.environ["HF_HOME"] = "/workspace/huggingface"
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # For the Huggingface Token setting
 os.environ["HF_TOKEN_PATH"] = "/root/.cache/huggingface/token"
 # Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA),
@@ -26,6 +25,7 @@ import json
 import yaml
 from box import Box
 from utils import random_seed, error_format
+from datetime import datetime
 
 # Import the Ray modules
 from ray_setup import init_ray
@@ -85,9 +85,18 @@ def test_page():
 @app.route("/query", methods=["POST"])
 async def query():
     try:
+        
+        # Log when the query is received
+        receive_time = datetime.now().isoformat()
+        print(f"[APP] Received /query request at {receive_time}")
+        
+        # Optionally, attach the client time if desired:
         http_query = request.json  # 클라이언트로부터 JSON 요청 수신
+        
+        http_query["server_receive_time"] = receive_time
+        
         # Ray Serve 배포된 서비스를 통해 추론 요청 (자동으로 로드밸런싱됨)
-        result = await inference_handle.query.remote(http_query)
+        result = await inference_actor.process_query.remote(http_query)
         if isinstance(result, dict):
             result = json.dumps(result, ensure_ascii=False)
         print("APP.py - 결과: ", result)

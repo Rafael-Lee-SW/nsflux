@@ -59,7 +59,7 @@ async def generate_answer(query, docs, **kwargs):
     model = kwargs.get("model")
     tokenizer = kwargs.get("tokenizer")
     config = kwargs.get("config")
-
+    
     answer = await generate(docs, query, model, tokenizer, config)
     return answer
 
@@ -340,7 +340,7 @@ async def generate(docs, query, model, tokenizer, config):
         )
         # request_id = 요청 주체를 구분하는 아이디, 유저별이 될 수도 있고, 대화별이 될 수도 있다.
         accepted_request_id = str(uuid.uuid4())
-
+        
         # vllm을 통해 Model을 구동하여 Text를 생성한다.
         answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
     else:
