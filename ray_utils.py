@@ -3,9 +3,11 @@ import ray  # Ray library
 from ray import serve
 import json
 import asyncio  # async I/O process module
+from concurrent.futures import ProcessPoolExecutor # 스레드 컨트롤
 import uuid  # --- NEW OR MODIFIED ---
 import time
 from typing import Dict, Optional  # --- NEW OR MODIFIED ---
+import threading # To find out the usage of thread
 
 from RAG import (
     query_sort,
@@ -33,8 +35,11 @@ class InferenceActor:
         self.data = load_data(config.data_path)
         # 비동기 큐와 배치 처리 설정 (마이크로배칭)
         self.request_queue = asyncio.Queue()
-        self.max_batch_size = 10  # 최대 배치 수
-        self.batch_wait_timeout = 5  # 배치당 처리 시간
+        self.max_batch_size = 20  # 최대 배치 수
+        self.batch_wait_timeout = 0.05  # 배치당 처리 시간
+        
+        # Actor 내부에서 ProcessPoolExecutor 생성 (직렬화 문제 회피)
+        self.process_pool = ProcessPoolExecutor(max_workers=4)
 
         # --- NEW OR MODIFIED ---
         # A dictionary to store SSE queues for streaming requests
@@ -71,7 +76,7 @@ class InferenceActor:
             # 1) get first request from the queue
             print("=== _batch_processor waiting for request_queue item... ===")
             item = await self.request_queue.get()
-            print("현재 request_queue 상태 : ", self.request_queue)
+            print(f"[DEBUG] 첫 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: 1)")
             batch.append(item)
             
 
@@ -87,12 +92,41 @@ class InferenceActor:
                     )
                     
                     batch.append(item)
-                    print(f"[DEBUG] Received additional request at {time.strftime('%H:%M:%S')}; batch size now: {len(batch)}")
+                    print(f"[DEBUG] 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})")
             except asyncio.TimeoutError:
-                print(f"[DEBUG] Timeout reached after {time.time() - batch_start_time:.2f} seconds; proceeding with batch size: {len(batch)}")
+                elapsed = time.time() - batch_start_time
+                print(f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})")
                 pass
 
-            print(f"=== _batch_processor got a batch of size {len(batch)} ===")
+            # # 큐에 이미 쌓인 요청을 가능한 즉시 가져오기
+            # while len(batch) < self.max_batch_size:
+            #     try:
+            #         item = self.request_queue.get_nowait()
+            #         batch.append(item)
+            #         print(f"[DEBUG] 즉시 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})")
+            #     except asyncio.QueueEmpty:
+            #         break
+
+            # # 만약 원하는 배치 크기에 도달하지 않았다면, 추가 요청을 대기
+            # if len(batch) < self.max_batch_size:
+            #     try:
+            #         item = await asyncio.wait_for(self.request_queue.get(), timeout=self.batch_wait_timeout)
+            #         batch.append(item)
+            #         print(f"[DEBUG] 추가 요청 도착 (대기 후): {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})")
+            #         # 그리고 다시 즉시 추가 가능한 요청을 모음
+            #         while len(batch) < self.max_batch_size:
+            #             try:
+            #                 item = self.request_queue.get_nowait()
+            #                 batch.append(item)
+            #                 print(f"[DEBUG] 즉시 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})")
+            #             except asyncio.QueueEmpty:
+            #                 break
+            #     except asyncio.TimeoutError:
+            #         elapsed = time.time() - batch_start_time
+            #         print(f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})")
+
+
+            print(f"=== _batch_processor: 배치 사이즈 {len(batch)} 처리 시작 ({time.strftime('%H:%M:%S')}) ===")
 
             # Now we have a batch of items: (http_query or {streaming}, future, sse_queue)
             # We'll process them concurrently, same as your existing code.
@@ -117,19 +151,23 @@ class InferenceActor:
                 else:
                     print(f"[DEBUG] Batch item {idx+1}: No query text found.")
             print(f"[BATCH] Total input tokens in current batch: {total_tokens}")
-            
+            # 각 요청 처리 전후에 로그 추가
+            start_proc = time.time()
             await asyncio.gather(
                 *(
                     self._process_single_query(req, fut, sse_queue)
                     for (req, fut, sse_queue) in batch
                 )
             )
+            proc_time = time.time() - start_proc
+            print(f"[DEBUG] 해당 배치 처리 완료 (처리시간: {proc_time:.2f}초)")
 
     async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
         """
         Process a single query from the micro-batch. If 'sse_queue' is given,
         we do partial-token streaming. Otherwise, normal final result.
         """
+        print(f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}")
         try:
             # --- NEW OR MODIFIED ---
             # Distinguish between normal requests vs streaming requests:
@@ -160,15 +198,18 @@ class InferenceActor:
             )  # if you want always-latest, else skip
             # 3) classify
             print("   ... calling query_sort() ...")
-            QU, KE, TA, TI = await query_sort(
-                user_input,
-                model=self.model,
-                tokenizer=self.tokenizer,
-                embed_model=self.embed_model,
-                embed_tokenizer=self.embed_tokenizer,
-                data=self.data,
-                config=self.config,
-            )
+            print(f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}")
+            # 호출부 수정
+            params = {
+                "user_input": user_input,
+                "model": self.model,
+                "tokenizer": self.tokenizer,
+                "embed_model": self.embed_model,
+                "embed_tokenizer": self.embed_tokenizer,
+                "data": self.data,
+                "config": self.config,
+            }
+            QU, KE, TA, TI = await query_sort(params)
             print(f"   ... query_sort => QU={QU}, KE={KE}, TA={TA}, TI={TI}")
 
             # 4) RAG

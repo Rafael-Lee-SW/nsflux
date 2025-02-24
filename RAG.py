@@ -65,10 +65,15 @@ async def generate_answer(query, docs, **kwargs):
 
 
 @time_tracker
-async def query_sort(query, **kwargs):
-    model = kwargs.get("model")
-    tokenizer = kwargs.get("tokenizer")
-    config = kwargs.get("config")
+async def query_sort(params):
+    # params: 딕셔너리로 전달된 값들
+    query = params["user_input"]
+    model = params["model"]
+    tokenizer = params["tokenizer"]
+    embed_model = params["embed_model"]
+    embed_tokenizer = params["embed_tokenizer"]
+    data = params["data"]
+    config = params["config"]
 
     PROMPT = f"""\
 <bos><start_of_turn>user
@@ -505,7 +510,8 @@ if __name__ == "__main__":
         status = True
         while status == True:
             query = input("질문 : ")
-            QU, TA, TI = await query_sort(query)
+            # QU, TA, TI = await query_sort(query)
+            QU, TA, TI = await query_sort({"user_input": query, "model": None, "tokenizer": None, "embed_model": None, "embed_tokenizer": None, "data": None, "config": None})
             print("query_sort result done")
             if TA == "yes":  # Table 이 필요하면
                 print("\n" + beep)

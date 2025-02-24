@@ -19,6 +19,7 @@ from flask import (
     Response,
     render_template,
     jsonify,
+    g,
     stream_with_context,
 )
 import json
@@ -32,6 +33,15 @@ from ray_setup import init_ray
 from ray import serve
 from ray_utils import InferenceActor
 # from ray_utils import InferenceService
+
+# ------ checking process of the thread level
+import logging
+
+# 로깅 설정: 요청 처리 시간과 현재 스레드 이름을 기록
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s [%(threadName)s] %(message)s'
+)
 
 # --------------------- Streaming part ----------------------------
 import ray
@@ -59,7 +69,7 @@ serve.start(detached=True)
 # inference_handle = serve.get_deployment_handle("inference", app_name="default")
 
 #### Ray-Actor 단독 ####
-inference_actor = InferenceActor.remote(config)
+inference_actor = InferenceActor.options(num_cpus=52, max_concurrency=15, num_gpus=config.ray.actor_num_gpus).remote(config)
 
 ########## FLASK APP setting ##########
 app = Flask(__name__)
@@ -76,10 +86,6 @@ def index():
 @app.route("/test")
 def test_page():
     return render_template("index_test_streaming.html")  # index.html을 렌더링
-
-
-#     return render_template('index_test.html') # index.html을 렌더링
-
 
 # Query Endpoint (Non-streaming)
 @app.route("/query", methods=["POST"])
@@ -151,6 +157,8 @@ def query_stream():
     return Response(sse_generator(), mimetype="text/event-stream")
 
 # --------------------- Streaming part ----------------------------
+
+
 
 # Flask app 실행
 if __name__ == "__main__":
