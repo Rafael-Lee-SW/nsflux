@@ -4,7 +4,7 @@
 model_id : 'google/gemma-2-27b-it'
 
 ray:
-  actor_count: 1        # 총 Actor 개수
+  actor_count: 1          # 총 Actor 개수
   actor_num_gpus: 2       # Ray-Actor(Node)가 점유하고 있는 GPU
 
 use_vllm: True # vLLM 사용 여부

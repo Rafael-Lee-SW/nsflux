@@ -114,32 +114,30 @@ async def query():
 
 # --------------------- Streaming part ----------------------------
 
-@app.route("/query_stream", methods=["GET"])
+@app.route("/query_stream", methods=["POST"])
 def query_stream():
     """
-    SSE streaming endpoint.
-    For debugging, we add extra print statements to confirm each step.
+    SSE streaming endpoint via POST.
+    We'll read JSON input: {"input": "..."}.
+    Then we produce chunked SSE data with a yield-based generator.
     """
-    user_input = request.args.get("input", "")
-    print(f"[DEBUG] /query_stream (GET) called with user_input='{user_input}'")
+    body = request.json or {}
+    user_input = body.get("input", "")
+    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}'")
 
-    # Build an http_query dict
+    # Build the http_query
     http_query = {"qry_contents": user_input}
     print(f"[DEBUG] Built http_query={http_query}")
 
-    # Ask the actor for a streaming request_id
-    print("[DEBUG] Calling inference_actor.process_query_stream.remote(...)")
+    # Obtain request_id from Ray
     request_id = ray.get(inference_actor.process_query_stream.remote(http_query))
-    print(f"[DEBUG] Returned from actor call; request_id={request_id}")
+    print(f"[DEBUG] streaming request_id={request_id}")
 
     @stream_with_context
     def sse_generator():
         print("[DEBUG] sse_generator started: begin pulling partial tokens in a loop")
         while True:
-            # Pull partial tokens from the actor
             partial_text = ray.get(inference_actor.pop_sse_token.remote(request_id))
-            # print(f"[DEBUG] sse_generator received partial_text={partial_text}")
-
             if partial_text is None:
                 print("[DEBUG] partial_text is None => no more data => break SSE loop")
                 break
@@ -147,13 +145,14 @@ def query_stream():
                 print("[DEBUG] got [[STREAM_DONE]], ending SSE loop")
                 break
 
-            # SSE chunk
+            # SSE chunk: note we do 'data: <text>\n\n'
             yield f"data: {partial_text}\n\n"
 
         print("[DEBUG] sse_generator done: now calling close_sse_queue")
         ray.get(inference_actor.close_sse_queue.remote(request_id))
         print("[DEBUG] SSE closed.")
 
+    # Return SSE response
     return Response(sse_generator(), mimetype="text/event-stream")
 
 # --------------------- Streaming part ----------------------------

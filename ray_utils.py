@@ -46,9 +46,12 @@ class InferenceActor:
         # Key = request_id, Value = an asyncio.Queue of partial token strings
         self.active_sse_queues: Dict[str, asyncio.Queue] = {}
 
-        # 끝: start the micro-batch processor
-        asyncio.create_task(self._batch_processor())
+        # Micro-batching만 적용
+        # asyncio.create_task(self._batch_processor())
 
+        # In-flight batching까지 추가 적용
+        asyncio.create_task(self._in_flight_batch_processor())
+        
     # --------------------------------------------------------
     # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
     # --------------------------------------------------------
@@ -64,6 +67,10 @@ class InferenceActor:
         await self.request_queue.put((http_query, future, sse_queue))
         print("self.request_queue : ", self.request_queue)
         return await future
+
+    # -------------------------------------------------------------------------
+    # Micro_batch_processor
+    # -------------------------------------------------------------------------
 
     async def _batch_processor(self):
         """
@@ -98,59 +105,8 @@ class InferenceActor:
                 print(f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})")
                 pass
 
-            # # 큐에 이미 쌓인 요청을 가능한 즉시 가져오기
-            # while len(batch) < self.max_batch_size:
-            #     try:
-            #         item = self.request_queue.get_nowait()
-            #         batch.append(item)
-            #         print(f"[DEBUG] 즉시 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})")
-            #     except asyncio.QueueEmpty:
-            #         break
-
-            # # 만약 원하는 배치 크기에 도달하지 않았다면, 추가 요청을 대기
-            # if len(batch) < self.max_batch_size:
-            #     try:
-            #         item = await asyncio.wait_for(self.request_queue.get(), timeout=self.batch_wait_timeout)
-            #         batch.append(item)
-            #         print(f"[DEBUG] 추가 요청 도착 (대기 후): {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})")
-            #         # 그리고 다시 즉시 추가 가능한 요청을 모음
-            #         while len(batch) < self.max_batch_size:
-            #             try:
-            #                 item = self.request_queue.get_nowait()
-            #                 batch.append(item)
-            #                 print(f"[DEBUG] 즉시 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})")
-            #             except asyncio.QueueEmpty:
-            #                 break
-            #     except asyncio.TimeoutError:
-            #         elapsed = time.time() - batch_start_time
-            #         print(f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})")
-
-
             print(f"=== _batch_processor: 배치 사이즈 {len(batch)} 처리 시작 ({time.strftime('%H:%M:%S')}) ===")
-
-            # Now we have a batch of items: (http_query or {streaming}, future, sse_queue)
-            # We'll process them concurrently, same as your existing code.
-            # But if sse_queue is not None, that means "streaming request."
-
-            # We'll keep your same approach: for each item, call _process_single_query,
-            # except we add partial-token streaming inside that method if needed.
             
-            # --- Calculate and log total input tokens in this batch ---
-            total_tokens = 0
-            for idx, (req, fut, sse_queue) in enumerate(batch):
-                # For streaming requests, the query is under "qry_contents"
-                if isinstance(req, dict):
-                    query_text = req.get("qry_contents", "")
-                else:
-                    query_text = ""
-                if query_text:
-                    tokens = self.tokenizer(query_text, add_special_tokens=True)["input_ids"]
-                    token_count = len(tokens)
-                    total_tokens += token_count
-                    print(f"[DEBUG] Batch item {idx+1}: query: '{query_text}' uses {token_count} tokens")
-                else:
-                    print(f"[DEBUG] Batch item {idx+1}: No query text found.")
-            print(f"[BATCH] Total input tokens in current batch: {total_tokens}")
             # 각 요청 처리 전후에 로그 추가
             start_proc = time.time()
             await asyncio.gather(
@@ -161,6 +117,46 @@ class InferenceActor:
             )
             proc_time = time.time() - start_proc
             print(f"[DEBUG] 해당 배치 처리 완료 (처리시간: {proc_time:.2f}초)")
+
+    # -------------------------------------------------------------------------
+    # In-flight BATCH PROCESSOR
+    # -------------------------------------------------------------------------
+    
+    async def _in_flight_batch_processor(self):
+        while True:
+            # Wait for the first item (blocking until at least one is available)
+            print("=== [In-Flight Batching] Waiting for first item in request_queue... ===")
+            first_item = await self.request_queue.get()
+            batch = [first_item]
+            batch_start_time = time.time()
+
+            print("[In-Flight Batching] Got the first request. Attempting to fill a batch...")
+
+            # Attempt to fill up the batch until we hit max_batch_size or batch_wait_timeout
+            while len(batch) < self.max_batch_size:
+                try:
+                    remain_time = self.batch_wait_timeout - (time.time() - batch_start_time)
+                    if remain_time <= 0:
+                        print("[In-Flight Batching] Timed out waiting for more requests; proceeding with current batch.")
+                        break
+                    item = await asyncio.wait_for(self.request_queue.get(), timeout=remain_time)
+                    batch.append(item)
+                    print(f"[In-Flight Batching] +1 request => batch size now {len(batch)}")
+                except asyncio.TimeoutError:
+                    print("[In-Flight Batching] Timeout reached => proceeding with the batch.")
+                    break
+
+            print(f"=== [In-Flight Batching] Collected a batch of size {len(batch)} ===")
+
+            # We have a batch of items: each item is ( http_query_or_stream_dict, future, sse_queue )
+            # We'll process them concurrently.
+            tasks = []
+            for request_tuple in batch:
+                request_obj, fut, sse_queue = request_tuple
+                tasks.append(self._process_single_query(request_obj, fut, sse_queue))
+
+            # Actually run them all concurrently
+            await asyncio.gather(*tasks)
 
     async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
         """
@@ -192,13 +188,16 @@ class InferenceActor:
             # To Calculate the token
             tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
             print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
+            
             # 2) optionally reload data if needed
             self.data = load_data(
                 self.config.data_path
             )  # if you want always-latest, else skip
+            
             # 3) classify
             print("   ... calling query_sort() ...")
             print(f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}")
+            
             # 호출부 수정
             params = {
                 "user_input": user_input,

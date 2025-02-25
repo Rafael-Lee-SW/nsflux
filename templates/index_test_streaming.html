@@ -194,22 +194,23 @@
     <div class="test-section">
       <h2>한 번에 질문 여러개 전송하기 테스트</h2>
       <h5>Testing the POST requests concurrently (display results as they arrive)</h5>
-      <!-- Progress indicator will be shown here -->
       <div id="progressIndicator" class="progress-indicator"></div>
       <button style="font-size: 16px; padding: 10px 20px;" onclick="testQueries()">Test</button>
       <div class="output" id="testResults"></div>
     </div>
 
     <!-- ==========================
-         (3) Single Streaming Test
+         (3) Single Streaming Test (POST-based)
          ========================== -->
     <div class="test-section">
-      <h2>스트리밍 테스트(단일)</h2>
-      <h5>Streaming Test (Single)</h5>
-      <p>Use this to make a single streaming query via SSE.
-         The partial tokens accumulate as one text block. Times below are updated as generation proceeds.</p>
+      <h2>스트리밍 테스트(단일 - POST)</h2>
+      <h5>Streaming Test (Single via POST)</h5>
+      <p>
+        This test uses a POST-based fetch to stream the response.
+        The server sends SSE-style chunks and we process them manually.
+      </p>
       <input type="text" id="streamInput" placeholder="Type your streaming query here..." />
-      <button onclick="startStream()">Start Streaming</button>
+      <button onclick="startStreamPOST()">Start Streaming (POST)</button>
       <pre id="streamOutput" style="max-height: 250px; overflow-y: auto; white-space: pre-wrap; background: #fafafa;"></pre>
       <div class="stream-info-box" id="streamTiming"></div>
       <button onclick="toggleReferences()">Show References</button>
@@ -224,16 +225,17 @@
     </div>
 
     <!-- ==========================
-         (4) Simultaneous Streaming Test
+         (4) Simultaneous Streaming Test (GET-based)
          ========================== -->
     <div class="test-section">
       <h2>스트리밍 테스트(동시 3개)</h2>
-      <h5>Simultaneous Streaming Test</h5>
-      <p>Launch multiple streaming queries at once. Each query has its own SSE connection. We track times and show partial texts separately.</p>
+      <h5>Simultaneous Streaming Test (GET-based SSE)</h5>
+      <p>
+        Launch multiple streaming queries at once using GET-based SSE.
+      </p>
       <button onclick="testStreamingQueries()">Start Simultaneous Streaming</button>
-      <!-- The main property table (no partial text) -->
+      <button onclick="testStreamingQueriesMulti()">테스트 셋으로 테스트</button>
       <div class="output" id="simul-main-table"></div>
-      <!-- The partial text blocks area -->
       <div class="output" id="simul-partials"></div>
     </div>
 
@@ -244,10 +246,9 @@
       <h2>연속 질문 테스트(단일 평균 시간 테스트)</h2>
       <h5>Continuous Sync Test</h5>
       <p>
-        Run 100 sequential queries (from same1-1 to same20-5) based on the selected test set.  
+        Run 100 sequential queries (from same1-1 to same20-5) based on the selected test set.
         Choose either non-streaming or streaming approach, and compute average timings in ms.
       </p>
-      <!-- Progress indicator for continuous test -->
       <div id="continuousProgress" class="progress-indicator"></div>
       <button onclick="continuousTest('nonstream')">Start Continuous Non-Streaming Test (100 queries)</button>
       <button onclick="continuousTest('stream')">Start Continuous Streaming Test (100 queries)</button>
@@ -296,8 +297,7 @@
         return d.toLocaleTimeString() + '.' + ms;
       }
 
-      // Build normal JSON results with timing.
-      // Only display '답변' (rsp_type "A") immediately; hide '검색데이터' (rsp_type "R") behind a toggle.
+      // Build JSON output
       function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
         let formattedOutput = `
           <strong>Send Time:</strong> ${sendTime} <br>
@@ -319,10 +319,8 @@
             let retrievalHTML = "";
             data.data_list.forEach((item, idx) => {
               if (item.rsp_type === "A") {
-                // Show answer immediately
                 answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
               } else if (item.rsp_type === "R") {
-                // Hide behind "Show Retrieval" button
                 const hiddenId = `retrieval_${uniquePrefix}_${idx}`;
                 retrievalHTML += `
                   <div>
@@ -362,12 +360,9 @@
       function testQueries() {
         const queries = buildTestQueries();
         document.getElementById('testResults').innerHTML = 'Testing in progress...';
-
         const totalQueries = queries.length;
         let arrivalCounter = 0;
-        // Initialize progress indicator
         updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries);
-
         const results = [];
 
         queries.forEach((query) => {
@@ -384,7 +379,6 @@
               const receiveTime = new Date();
               const receiveTimeStr = formatTime(receiveTime);
               const elapsed = Date.now() - startTimestamp;
-
               return response.json().then((data) => {
                 arrivalCounter++;
                 results.push({
@@ -477,7 +471,7 @@
             result.sendTime,
             result.receiveTime,
             result.elapsed,
-            result.id  // <-- 사용
+            result.id
           );
           detailsHTML += `
             <div class="test-item">
@@ -493,121 +487,106 @@
           `;
         });
         detailsHTML += "</div>";
-
         return summaryHTML + detailsHTML;
       }
 
       /************************************************************
-       * (3) Single Streaming SSE
+       * (3) Single Streaming Test (POST-based streaming)
        ************************************************************/
-      let streamEventSource = null;
-      let partialAccumulator = "";
-      let streamSendTime = null;
-      let gotFirstChunkTime = null;
-      let doneTime = null;
+      let postStreamPartial = "";
+      let postStreamStartTime, postStreamFirstChunkTime, postStreamEndTime;
 
-      function startStream() {
+      async function startStreamPOST() {
         const userQuery = document.getElementById('streamInput').value.trim();
         if (!userQuery) {
           alert('Please type a streaming query.');
           return;
         }
-
-        partialAccumulator = "";
-        gotFirstChunkTime = null;
-        doneTime = null;
-        const outputEl = document.getElementById('streamOutput');
-        outputEl.textContent = "";
+        // Reset variables
+        postStreamPartial = "";
+        postStreamFirstChunkTime = null;
+        postStreamEndTime = null;
+        document.getElementById('streamOutput').textContent = "";
         document.getElementById('streamTiming').innerHTML = "";
 
-        streamSendTime = new Date();
-        const sendTimeStr = formatTime(streamSendTime);
+        postStreamStartTime = performance.now();
 
-        document.getElementById('streamTiming').innerHTML = `
-          <strong>SSE Send Time:</strong> ${sendTimeStr} <br>
-          <strong>Generation Start Time:</strong> (waiting for first chunk...)<br>
-          <strong>Generation End Time:</strong> (not finished)<br>
-          <strong>Durations:</strong><br>
-          &bull; Send→Start: N/A<br>
-          &bull; Send→End: N/A<br>
-          &bull; Start→End: N/A
-        `;
-
-        const sseUrl = '/query_stream?input=' + encodeURIComponent(userQuery);
-
-        if (streamEventSource) {
-          streamEventSource.close();
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: userQuery })
+          });
+          if (!response.ok) {
+            const errTxt = await response.text();
+            throw new Error('Response not OK: ' + response.status + " " + errTxt);
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              postStreamEndTime = performance.now();
+              updatePostStreamTiming();
+              break;
+            }
+            const chunk = decoder.decode(value, { stream: true });
+            processPostSseChunk(chunk);
+            document.getElementById('streamOutput').textContent = postStreamPartial;
+          }
+        } catch (err) {
+          console.error('POST-based streaming error:', err);
+          postStreamEndTime = performance.now();
+          updatePostStreamTiming();
         }
-
-        streamEventSource = new EventSource(sseUrl);
-
-        streamEventSource.onmessage = function (event) {
-          const chunk = event.data;
-          const trimmed = chunk.trim();
-
-          if (!gotFirstChunkTime && !trimmed.includes("[[STREAM_DONE]]")) {
-            gotFirstChunkTime = new Date();
-            updateSingleStreamTiming();
-          }
-
-          if (trimmed.includes("[[STREAM_DONE]]")) {
-            doneTime = new Date();
-            streamEventSource.close();
-            updateSingleStreamTiming();
-            return;
-          }
-
-          partialAccumulator += chunk;
-          outputEl.textContent = partialAccumulator;
-          outputEl.scrollTop = outputEl.scrollHeight;
-        };
-
-        streamEventSource.onerror = function (err) {
-          console.error('SSE error:', err);
-          doneTime = new Date();
-          streamEventSource.close();
-          updateSingleStreamTiming();
-        };
       }
 
-      function updateSingleStreamTiming() {
-        let html = `<strong>SSE Send Time:</strong> ${formatTime(streamSendTime)}<br>`;
-        html += gotFirstChunkTime
-          ? `<strong>Generation Start Time:</strong> ${formatTime(gotFirstChunkTime)}<br>`
-          : `<strong>Generation Start Time:</strong> (waiting...)<br>`;
-        html += doneTime
-          ? `<strong>Generation End Time:</strong> ${formatTime(doneTime)}<br>`
-          : `<strong>Generation End Time:</strong> (not finished)<br>`;
-
-        let sendToStart = '(N/A)', sendToEnd = '(N/A)', startToEnd = '(N/A)';
-        if (gotFirstChunkTime) {
-          sendToStart = (gotFirstChunkTime - streamSendTime) + ' ms';
+      function processPostSseChunk(chunk) {
+        // SSE chunks in POST are expected as: "data: <text>\n\n"
+        const lines = chunk.split("\n");
+        for (let line of lines) {
+          line = line.trim();
+          if (!line) continue;
+          if (line.startsWith("data:")) {
+            const sseData = line.slice(5).trim();
+            if (!postStreamFirstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
+              postStreamFirstChunkTime = performance.now();
+              updatePostStreamTiming();
+            }
+            if (sseData === "[[STREAM_DONE]]") {
+              postStreamEndTime = performance.now();
+              updatePostStreamTiming();
+              return;
+            }
+            postStreamPartial += sseData;
+          }
         }
-        if (doneTime) {
-          sendToEnd = (doneTime - streamSendTime) + ' ms';
-        }
-        if (gotFirstChunkTime && doneTime) {
-          startToEnd = (doneTime - gotFirstChunkTime) + ' ms';
-        }
-
-        html += `<strong>Durations:</strong><br>
-                 &bull; Send→Start: ${sendToStart}<br>
-                 &bull; Send→End: ${sendToEnd}<br>
-                 &bull; Start→End: ${startToEnd}`;
-        document.getElementById('streamTiming').innerHTML = html;
+        updatePostStreamTiming();
       }
 
-      function toggleReferences() {
-        const refDiv = document.getElementById('referenceData');
-        if (refDiv.style.display === 'none' || refDiv.style.display === '') {
-          refDiv.style.display = 'block';
+      function updatePostStreamTiming() {
+        let msg = "";
+        if (postStreamStartTime) {
+          msg += `Started: ${postStreamStartTime.toFixed(1)} ms\n`;
+        }
+        if (postStreamFirstChunkTime) {
+          msg += `First chunk: ${postStreamFirstChunkTime.toFixed(1)} ms (delta: ${(postStreamFirstChunkTime - postStreamStartTime).toFixed(1)} ms)\n`;
         } else {
-          refDiv.style.display = 'none';
+          msg += "First chunk: not yet\n";
         }
+        if (postStreamEndTime) {
+          msg += `End: ${postStreamEndTime.toFixed(1)} ms (delta: ${(postStreamEndTime - postStreamStartTime).toFixed(1)} ms)\n`;
+          if (postStreamFirstChunkTime) {
+            msg += `Chunk→End: ${(postStreamEndTime - postStreamFirstChunkTime).toFixed(1)} ms\n`;
+          }
+        } else {
+          msg += "End: not yet\n";
+        }
+        document.getElementById('streamTiming').innerHTML = msg;
       }
 
       /************************************************************
-       * (4) Simultaneous Streaming SSE
+       * (4) Simultaneous Streaming Test (GET-based SSE)
        ************************************************************/
       let simulResults = [];
       function testStreamingQueries() {
@@ -622,6 +601,55 @@
         simulResults = [];
 
         sseQueries.forEach((q) => {
+          const now = new Date();
+          const resultObj = {
+            id: q.id,
+            query: q.text,
+            partialText: '',
+            startTime: now,
+            firstChunkTime: null,
+            endTime: null
+          };
+          simulResults.push(resultObj);
+
+          const url = '/query_stream?input=' + encodeURIComponent(q.text);
+          const es = new EventSource(url);
+
+          let gotFirstChunk = false;
+          es.onmessage = (evt) => {
+            const trimmed = evt.data.trim();
+            if (!gotFirstChunk && !trimmed.includes("[[STREAM_DONE]]")) {
+              gotFirstChunk = true;
+              resultObj.firstChunkTime = new Date();
+            }
+            if (trimmed.includes("[[STREAM_DONE]]")) {
+              resultObj.endTime = new Date();
+              es.close();
+            } else {
+              resultObj.partialText += evt.data;
+            }
+            updateSimulProps(simulResults);
+            updateSimulPartials(simulResults);
+          };
+
+          es.onerror = (err) => {
+            console.error('SSE error on ' + q.id, err);
+            resultObj.endTime = new Date();
+            es.close();
+            updateSimulProps(simulResults);
+            updateSimulPartials(simulResults);
+          };
+        });
+      }
+
+      // (4.2) New function: run streaming with test set (simultaneous) via GET-based SSE
+      function testStreamingQueriesMulti() {
+        const testQueries = buildTestQueries(); 
+        document.getElementById('simul-main-table').innerHTML = '';
+        document.getElementById('simul-partials').innerHTML = '';
+        simulResults = [];
+
+        testQueries.forEach((q) => {
           const now = new Date();
           const resultObj = {
             id: q.id,
@@ -678,11 +706,9 @@
             </thead>
             <tbody>
         `;
-
         results.forEach((r) => {
           const firstChunkStr = r.firstChunkTime ? formatTime(r.firstChunkTime) : '(not yet)';
           const endStr = r.endTime ? formatTime(r.endTime) : '(not finished)';
-
           let sendToStart = '', sendToEnd = '', startToEnd = '';
           if (r.firstChunkTime) {
             sendToStart = r.firstChunkTime - r.startTime + '';
@@ -693,7 +719,6 @@
           if (r.firstChunkTime && r.endTime) {
             startToEnd = r.endTime - r.firstChunkTime + '';
           }
-
           html += `
             <tr>
               <td>${r.id}</td>
@@ -728,15 +753,12 @@
 
       /************************************************************
        * (5) Continuous Sync Test
-       * Run 100 sequential queries (from same1-1 to same20-5) based on the selected test set
        ************************************************************/
       async function continuousTest(mode) {
         const queries = buildTestQueries();
         const results = [];
         const total = queries.length;
         document.getElementById('continuousTestResults').innerHTML = `Running ${mode} test...<br>`;
-        
-        // Update progress for continuous test
         updateProgressIndicator('continuousProgress', 0, total);
     
         for (let i = 0; i < queries.length; i++) {
@@ -750,12 +772,10 @@
           updateProgressIndicator('continuousProgress', i + 1, total);
         }
     
-        // Compute average duration
         let sum = 0;
         results.forEach(r => sum += r.duration);
         const avg = (sum / results.length).toFixed(2);
     
-        // Show results
         let html = `<h3>Continuous ${mode === 'nonstream' ? 'Non-Streaming' : 'Streaming'} Test (100 queries) Results</h3>`;
         html += `<p>Average Duration: <strong>${avg} ms</strong></p>`;
         html += "<ul>";
@@ -766,7 +786,67 @@
         document.getElementById('continuousTestResults').innerHTML = html;
       }
 
-      // Build 100 queries based on the selected test set
+      async function runNonStreamingQuery(qObj) {
+        const sendTime = new Date();
+        const startTs = Date.now();
+        try {
+          const resp = await fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qry_contents: qObj.text })
+          });
+          await resp.json();
+        } catch (e) {
+          console.error("Non-stream error:", e);
+        }
+        const endTime = new Date();
+        const duration = Date.now() - startTs;
+        return {
+          id: qObj.id,
+          query: qObj.text,
+          startTime: formatTime(sendTime),
+          endTime: formatTime(endTime),
+          duration: duration
+        };
+      }
+    
+      function runStreamingQuery(qObj) {
+        return new Promise((resolve, reject) => {
+          const sendTime = new Date();
+          const startTs = Date.now();
+          const sseUrl = '/query_stream?input=' + encodeURIComponent(qObj.text);
+          const es = new EventSource(sseUrl);
+          es.onmessage = (evt) => {
+            const trimmed = evt.data.trim();
+            if (trimmed.includes("[[STREAM_DONE]]")) {
+              es.close();
+              const endTime = new Date();
+              const duration = Date.now() - startTs;
+              resolve({
+                id: qObj.id,
+                query: qObj.text,
+                startTime: formatTime(sendTime),
+                endTime: formatTime(endTime),
+                duration: duration
+              });
+            }
+          };
+          es.onerror = (err) => {
+            console.error("Stream error on", qObj.id, err);
+            es.close();
+            const endTime = new Date();
+            const duration = Date.now() - startTs;
+            resolve({
+              id: qObj.id,
+              query: qObj.text,
+              startTime: formatTime(sendTime),
+              endTime: formatTime(endTime),
+              duration: duration
+            });
+          };
+        });
+      }
+    
       function buildTestQueries() {
         const testSet = document.getElementById('testSetSelect').value;
         let queries = [];
@@ -844,10 +924,7 @@
           queries = mixed20Queries3;
         } else if (testSet === 'same100') {
           for (let i = 1; i <= 100; i++) {
-            queries.push({
-              id: `same100-${i}`,
-              text: "디지털 전략"
-            });
+            queries.push({ id: `same100-${i}`, text: "디지털 전략" });
           }
         } else if (testSet === 'circulate5x20') {
           const baseQueries = [
@@ -859,10 +936,7 @@
           ];
           for (let k = 1; k <= 20; k++) {
             baseQueries.forEach((q) => {
-              queries.push({
-                id: `circulate${k}-${q.id}`,
-                text: q.text
-              });
+              queries.push({ id: `circulate${k}-${q.id}`, text: q.text });
             });
           }
         } else if (testSet === 'mixed100') {
@@ -1001,16 +1075,14 @@
       }
     
       /************************************************************
-       * (For Continuous Test) Streaming version: SSE approach
+       * (For Continuous Test) Streaming version: SSE approach (GET-based)
        ************************************************************/
       function runStreamingQuery(qObj) {
         return new Promise((resolve, reject) => {
           const sendTime = new Date();
           const startTs = Date.now();
-    
           const sseUrl = '/query_stream?input=' + encodeURIComponent(qObj.text);
           const es = new EventSource(sseUrl);
-    
           es.onmessage = (evt) => {
             const trimmed = evt.data.trim();
             if (trimmed.includes("[[STREAM_DONE]]")) {
@@ -1026,7 +1098,6 @@
               });
             }
           };
-    
           es.onerror = (err) => {
             console.error("Stream error on", qObj.id, err);
             es.close();
