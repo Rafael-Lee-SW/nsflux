@@ -228,7 +228,7 @@
          (4) Simultaneous Streaming Test (GET-based)
          ========================== -->
     <div class="test-section">
-      <h2>스트리밍 테스트(동시 3개)</h2>
+      <h2>스트리밍 테스트(동시 3개, 테스트셋)</h2>
       <h5>Simultaneous Streaming Test (GET-based SSE)</h5>
       <p>
         Launch multiple streaming queries at once using GET-based SSE.
@@ -591,6 +591,7 @@
       // Helper: Stream a single query via POST
       async function startStreamForQuery(queryObj) {
         const sendTime = performance.now();
+        let firstChunkTime = null;
         try {
           const response = await fetch('/query_stream', {
             method: 'POST',
@@ -605,6 +606,9 @@
             const { done, value } = await reader.read();
             if (done) break;
             const chunk = decoder.decode(value, { stream: true });
+            if (!firstChunkTime && chunk.trim() !== "") {
+              firstChunkTime = performance.now();
+            }
             partialText += chunk;
           }
           const endTime = performance.now();
@@ -673,25 +677,55 @@
           };
         }
       }
-      async function testStreamingQueries() {
-        // Use a fixed set of 3 queries
-        const sseQueries = [
-          { id: 'SSE-1', text: '디지털화 근황' },
-          { id: 'SSE-2', text: 'IOT 컨테이너 사업에 대해서' },
-          { id: 'SSE-3', text: '주간회의 특징' }
-        ];
-        const promises = sseQueries.map(q => startStreamForQuery(q));
-        const results = await Promise.all(promises);
-        updateSimulProps(results);
-        updateSimulPartials(results);
+      async function startSimulStream(queryObj, streamNumber) {
+        const containerId = `stream-${streamNumber}`;
+        const container = document.getElementById(containerId);
+        container.innerHTML = `<h4>${queryObj.id} - ${queryObj.text}</h4><div class="partial-content"></div>`;
+        
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: queryObj.text })
+          });
+    
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let partial = '';
+          
+          activeStreams.set(queryObj.id, { reader, decoder });
+          
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            partial += chunk;
+            
+            // Process SSE chunks
+            const lines = partial.split('\n');
+            partial = lines.pop(); // Store incomplete line
+            
+            for (const line of lines) {
+              if (line.startsWith('data:')) {
+                const content = line.replace('data:', '').trim();
+                if (content === '[[STREAM_DONE]]') break;
+                
+                const contentDiv = container.querySelector('.partial-content');
+                contentDiv.textContent += content;
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`Stream error for ${queryObj.id}:`, err);
+          container.innerHTML += `<p style="color:red">Error: ${err.message}</p>`;
+        } finally {
+          activeStreams.delete(queryObj.id);
+        }
       }
-      async function testStreamingQueriesMulti() {
-        const testQueries = buildTestQueries();
-        const promises = testQueries.map(q => startStreamForQuery(q));
-        const results = await Promise.all(promises);
-        updateSimulProps(results);
-        updateSimulPartials(results);
-      }
+      // Update the table to include first chunk time
       function updateSimulProps(results) {
         let html = `<table>
             <thead>
@@ -699,18 +733,24 @@
                 <th>ID</th>
                 <th>Query</th>
                 <th>Send Time</th>
+                <th>First Chunk Time</th>
                 <th>End Time</th>
                 <th>Duration (ms)</th>
               </tr>
             </thead>
             <tbody>`;
         results.forEach(r => {
+          const sendStr = r.sendTime.toFixed(1);
+          const firstStr = r.firstChunkTime ? r.firstChunkTime.toFixed(1) : '(n/a)';
+          const endStr = r.endTime.toFixed(1);
+          const durationStr = r.duration.toFixed(1);
           html += `<tr>
               <td>${r.id}</td>
               <td>${r.query}</td>
-              <td>${r.startTime.toFixed(1)}</td>
-              <td>${r.endTime.toFixed(1)}</td>
-              <td>${r.duration.toFixed(1)}</td>
+              <td>${sendStr}</td>
+              <td>${firstStr}</td>
+              <td>${endStr}</td>
+              <td>${durationStr}</td>
             </tr>`;
         });
         html += `</tbody></table>`;
@@ -722,9 +762,35 @@
           html += `<div class="partial-text-block">
                       <h4>${r.id} - Partial Text</h4>
                       <pre>${r.partialText}</pre>
-                   </div>`;
+                    </div>`;
         });
         document.getElementById('simul-partials').innerHTML = html;
+      }
+      /************************************************************
+      * (4.1) Simultaneous Three Streaming Test (POST-based streaming)
+      ************************************************************/
+      const activeStreams = new Map();
+      async function testStreamingQueries() {
+        // Use a fixed set of 3 queries
+        const sseQueries = [
+          { id: 'SSE-1', text: '디지털화 근황' },
+          { id: 'SSE-2', text: 'IOT 컨테이너 사업에 대해서' },
+          { id: 'SSE-3', text: '주간회의 특징' }
+        ];
+        const simulResults = await Promise.all(sseQueries.map(q => startStreamForQuery(q)));
+        updateSimulProps(simulResults);
+        updateSimulPartials(simulResults);
+      }
+
+      /************************************************************
+      * (4.2) Simultaneous Multi Streaming Test (POST-based streaming)
+      ************************************************************/
+      async function testStreamingQueriesMulti() {
+        const testQueries = buildTestQueries();
+        // Create a container for each query result
+        const simulResults = await Promise.all(testQueries.map(q => startStreamForQuery(q)));
+        updateSimulProps(simulResults);
+        updateSimulPartials(simulResults);
       }
 
       /************************************************************
@@ -904,7 +970,7 @@
           }
         } else if (testSet === 'circulate5x20') {
           const baseQueries = [
-            { id: "q1", text: "남성해운 영업 전략" },
+            { id: "q1", text: "신입사원 인사 필수로 알아야 하는 것" },
             { id: "q2", text: "디지털화 근황" },
             { id: "q3", text: "IOT 컨테이너 사업에 대해서" },
             { id: "q4", text: "주간회의 특징 및 주요 말씀" },
