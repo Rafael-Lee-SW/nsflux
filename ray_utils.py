@@ -40,7 +40,7 @@ class InferenceActor:
         self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간
 
         # Actor 내부에서 ProcessPoolExecutor 생성 (직렬화 문제 회피)
-        self.process_pool = ProcessPoolExecutor(max_workers=16)
+        # self.process_pool = ProcessPoolExecutor(max_workers=16)
 
         self.queue_manager = ray.get_actor("SSEQueueManager")
         # --- NEW OR MODIFIED ---
@@ -69,7 +69,7 @@ class InferenceActor:
         # There's no SSE queue for normal queries
         sse_queue = None
         await self.request_queue.put((http_query, future, sse_queue))
-        print("self.request_queue : ", self.request_queue)
+        print("self.request_queue : ", len(self.request_queue))
         return await future
 
     # -------------------------------------------------------------------------
@@ -468,7 +468,10 @@ class InferenceActor:
 
 
 # Ray Serve를 통한 배포
-@serve.deployment(name="inference")
+@serve.deployment(
+    name="inference",
+    max_ongoing_requests=50,
+    )
 class InferenceService:
     def __init__(self, config):
         self.config = config

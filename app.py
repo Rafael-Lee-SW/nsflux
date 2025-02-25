@@ -158,7 +158,8 @@ def query_stream():
                 break
             yield f"data: {token}\n\n"
         # Optionally, trigger cleanup
-        ray.get(inference_handle.close_sse_queue.remote(request_id))
+        obj_ref = inference_handle.process_query_stream.remote(http_query)._to_object_ref_sync()
+        ray.get(obj_ref)
     
     return Response(sse_generator(), mimetype="text/event-stream")
 # --------------------- Streaming part ----------------------------
