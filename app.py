@@ -32,7 +32,7 @@ from datetime import datetime
 from ray_setup import init_ray
 from ray import serve
 from ray_utils import InferenceActor
-# from ray_utils import InferenceService
+from ray_utils import InferenceService, SSEQueueManager
 
 # ------ checking process of the thread level
 import logging
@@ -58,18 +58,16 @@ random_seed(config.seed)
 
 ########## Ray Dashboard 8265 port ##########
 init_ray()  # Initialize the Ray
+sse_manager = SSEQueueManager.options(name="SSEQueueManager").remote()
 serve.start(detached=True)
 
-# Ray Serve 배포(Deployment) - InferenceService는 ray_utils.py에 정의되어 있음.
-# config.ray.actor_count에 따라 복제본(replica) 수를 결정합니다.
-# inference_service = InferenceService.bind(config)
-# serve.run(inference_service)
-
-# # 배포된 서비스 핸들 가져오기
-# inference_handle = serve.get_deployment_handle("inference", app_name="default")
+#### Ray-Actor 다중 ####
+inference_service = InferenceService.options(num_replicas=config.ray.actor_count).bind(config)
+serve.run(inference_service)
+inference_handle = serve.get_deployment_handle("inference", app_name="default")
 
 #### Ray-Actor 단독 ####
-inference_actor = InferenceActor.options(num_cpus=52, max_concurrency=15, num_gpus=config.ray.actor_num_gpus).remote(config)
+# inference_actor = InferenceActor.options(num_cpus=config.ray.num_cpus, num_gpus=config.ray.num_gpus).remote(config)
 
 ########## FLASK APP setting ##########
 app = Flask(__name__)
@@ -102,62 +100,68 @@ async def query():
         http_query["server_receive_time"] = receive_time
         
         # Ray Serve 배포된 서비스를 통해 추론 요청 (자동으로 로드밸런싱됨)
-        result = await inference_actor.process_query.remote(http_query)
+        # result = await inference_actor.process_query.remote(http_query) # 단일
+        result = await inference_handle.query.remote(http_query) # 다중
         if isinstance(result, dict):
             result = json.dumps(result, ensure_ascii=False)
-        print("APP.py - 결과: ", result)
+        # print("APP.py - 결과: ", result)
         return Response(result, content_type=content_type)
     except Exception as e:
         error_resp = error_format(f"서버 처리 중 오류 발생: {str(e)}", 500)
         return Response(error_resp, content_type=content_type)
 
-
 # --------------------- Streaming part ----------------------------
 
+# Streaming Endpoint (POST 방식 SSE) → 동기식 뷰 함수로 변경
 @app.route("/query_stream", methods=["POST"])
 def query_stream():
     """
-    SSE streaming endpoint via POST.
-    We'll read JSON input: {"input": "..."}.
-    Then we produce chunked SSE data with a yield-based generator.
+    POST 방식 SSE 스트리밍 엔드포인트.
+    클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
     """
     body = request.json or {}
     user_input = body.get("input", "")
     print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}'")
-
-    # Build the http_query
     http_query = {"qry_contents": user_input}
     print(f"[DEBUG] Built http_query={http_query}")
 
     # Obtain request_id from Ray
-    request_id = ray.get(inference_actor.process_query_stream.remote(http_query))
+    # request_id = ray.get(inference_actor.process_query_stream.remote(http_query)) # 단일
+    # ----------------------------------------------------------------------------- 다중
+    response = inference_handle.process_query_stream.remote(http_query)
+    obj_ref = response._to_object_ref_sync()
+    request_id = ray.get(obj_ref)
+    # ----------------------------------------------------------------------------- 다중
     print(f"[DEBUG] streaming request_id={request_id}")
 
-    @stream_with_context
+
+    # def sse_generator():
+    #     print("[DEBUG] sse_generator started: begin pulling partial tokens in a loop")
+    #     while True:
+    #         partial_text = ray.get(inference_actor.pop_sse_token.remote(request_id)) # 단일
+    #         if partial_text is None:
+    #             print("[DEBUG] partial_text is None => no more data => break SSE loop")
+    #             break
+    #         if partial_text == "[[STREAM_DONE]]":
+    #             print("[DEBUG] got [[STREAM_DONE]], ending SSE loop")
+    #             break
+    #         yield f"data: {partial_text}\n\n"
+    #     # close_sse_queue 호출
+    #     ray.get(inference_actor.close_sse_queue.remote(request_id)) # 단일
+    #     print("[DEBUG] SSE closed.")
+    
     def sse_generator():
-        print("[DEBUG] sse_generator started: begin pulling partial tokens in a loop")
         while True:
-            partial_text = ray.get(inference_actor.pop_sse_token.remote(request_id))
-            if partial_text is None:
-                print("[DEBUG] partial_text is None => no more data => break SSE loop")
+            # Retrieve token from SSEQueueManager
+            token = ray.get(sse_manager.get_token.remote(request_id, 120))
+            if token is None or token == "[[STREAM_DONE]]":
                 break
-            if partial_text == "[[STREAM_DONE]]":
-                print("[DEBUG] got [[STREAM_DONE]], ending SSE loop")
-                break
-
-            # SSE chunk: note we do 'data: <text>\n\n'
-            yield f"data: {partial_text}\n\n"
-
-        print("[DEBUG] sse_generator done: now calling close_sse_queue")
-        ray.get(inference_actor.close_sse_queue.remote(request_id))
-        print("[DEBUG] SSE closed.")
-
-    # Return SSE response
+            yield f"data: {token}\n\n"
+        # Optionally, trigger cleanup
+        ray.get(inference_handle.close_sse_queue.remote(request_id))
+    
     return Response(sse_generator(), mimetype="text/event-stream")
-
 # --------------------- Streaming part ----------------------------
-
-
 
 # Flask app 실행
 if __name__ == "__main__":
