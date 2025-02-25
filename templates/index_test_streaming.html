@@ -588,165 +588,141 @@
       /************************************************************
        * (4) Simultaneous Streaming Test (GET-based SSE)
        ************************************************************/
-      let simulResults = [];
-      function testStreamingQueries() {
+      // Helper: Stream a single query via POST
+      async function startStreamForQuery(queryObj) {
+        const sendTime = performance.now();
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: queryObj.text })
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let partialText = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            partialText += chunk;
+          }
+          const endTime = performance.now();
+          return {
+            id: queryObj.id,
+            query: queryObj.text,
+            startTime: sendTime,
+            endTime: endTime,
+            duration: endTime - sendTime,
+            partialText: partialText
+          };
+        } catch (err) {
+          console.error("Streaming error for", queryObj.id, err);
+          const endTime = performance.now();
+          return {
+            id: queryObj.id,
+            query: queryObj.text,
+            startTime: sendTime,
+            endTime: endTime,
+            duration: endTime - sendTime,
+            partialText: ""
+          };
+        }
+      }
+
+      /************************************************************
+       * (4) Simultaneous Streaming Test (POST-based streaming)
+       * We replace GET-based EventSource with POST-based streaming
+       ************************************************************/
+      async function startStreamForQuery(queryObj) {
+        const sendTime = performance.now();
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: queryObj.text })
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let partialText = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            partialText += decoder.decode(value, { stream: true });
+          }
+          const endTime = performance.now();
+          return {
+            id: queryObj.id,
+            query: queryObj.text,
+            startTime: sendTime,
+            endTime: endTime,
+            duration: endTime - sendTime,
+            partialText: partialText
+          };
+        } catch (err) {
+          console.error("Streaming error for", queryObj.id, err);
+          const endTime = performance.now();
+          return {
+            id: queryObj.id,
+            query: queryObj.text,
+            startTime: sendTime,
+            endTime: endTime,
+            duration: endTime - sendTime,
+            partialText: ""
+          };
+        }
+      }
+      async function testStreamingQueries() {
+        // Use a fixed set of 3 queries
         const sseQueries = [
           { id: 'SSE-1', text: '디지털화 근황' },
           { id: 'SSE-2', text: 'IOT 컨테이너 사업에 대해서' },
           { id: 'SSE-3', text: '주간회의 특징' }
         ];
-
-        document.getElementById('simul-main-table').innerHTML = '';
-        document.getElementById('simul-partials').innerHTML = '';
-        simulResults = [];
-
-        sseQueries.forEach((q) => {
-          const now = new Date();
-          const resultObj = {
-            id: q.id,
-            query: q.text,
-            partialText: '',
-            startTime: now,
-            firstChunkTime: null,
-            endTime: null
-          };
-          simulResults.push(resultObj);
-
-          const url = '/query_stream?input=' + encodeURIComponent(q.text);
-          const es = new EventSource(url);
-
-          let gotFirstChunk = false;
-          es.onmessage = (evt) => {
-            const trimmed = evt.data.trim();
-            if (!gotFirstChunk && !trimmed.includes("[[STREAM_DONE]]")) {
-              gotFirstChunk = true;
-              resultObj.firstChunkTime = new Date();
-            }
-            if (trimmed.includes("[[STREAM_DONE]]")) {
-              resultObj.endTime = new Date();
-              es.close();
-            } else {
-              resultObj.partialText += evt.data;
-            }
-            updateSimulProps(simulResults);
-            updateSimulPartials(simulResults);
-          };
-
-          es.onerror = (err) => {
-            console.error('SSE error on ' + q.id, err);
-            resultObj.endTime = new Date();
-            es.close();
-            updateSimulProps(simulResults);
-            updateSimulPartials(simulResults);
-          };
-        });
+        const promises = sseQueries.map(q => startStreamForQuery(q));
+        const results = await Promise.all(promises);
+        updateSimulProps(results);
+        updateSimulPartials(results);
       }
-
-      // (4.2) New function: run streaming with test set (simultaneous) via GET-based SSE
-      function testStreamingQueriesMulti() {
-        const testQueries = buildTestQueries(); 
-        document.getElementById('simul-main-table').innerHTML = '';
-        document.getElementById('simul-partials').innerHTML = '';
-        simulResults = [];
-
-        testQueries.forEach((q) => {
-          const now = new Date();
-          const resultObj = {
-            id: q.id,
-            query: q.text,
-            partialText: '',
-            startTime: now,
-            firstChunkTime: null,
-            endTime: null
-          };
-          simulResults.push(resultObj);
-
-          const url = '/query_stream?input=' + encodeURIComponent(q.text);
-          const es = new EventSource(url);
-
-          let gotFirstChunk = false;
-          es.onmessage = (evt) => {
-            const trimmed = evt.data.trim();
-            if (!gotFirstChunk && !trimmed.includes("[[STREAM_DONE]]")) {
-              gotFirstChunk = true;
-              resultObj.firstChunkTime = new Date();
-            }
-            if (trimmed.includes("[[STREAM_DONE]]")) {
-              resultObj.endTime = new Date();
-              es.close();
-            } else {
-              resultObj.partialText += evt.data;
-            }
-            updateSimulProps(simulResults);
-            updateSimulPartials(simulResults);
-          };
-
-          es.onerror = (err) => {
-            console.error('SSE error on ' + q.id, err);
-            resultObj.endTime = new Date();
-            es.close();
-            updateSimulProps(simulResults);
-            updateSimulPartials(simulResults);
-          };
-        });
+      async function testStreamingQueriesMulti() {
+        const testQueries = buildTestQueries();
+        const promises = testQueries.map(q => startStreamForQuery(q));
+        const results = await Promise.all(promises);
+        updateSimulProps(results);
+        updateSimulPartials(results);
       }
-
       function updateSimulProps(results) {
-        let html = `
-          <table>
+        let html = `<table>
             <thead>
               <tr>
                 <th>ID</th>
                 <th>Query</th>
                 <th>Send Time</th>
-                <th>Start Time</th>
                 <th>End Time</th>
-                <th>Durations (ms)</th>
+                <th>Duration (ms)</th>
               </tr>
             </thead>
-            <tbody>
-        `;
-        results.forEach((r) => {
-          const firstChunkStr = r.firstChunkTime ? formatTime(r.firstChunkTime) : '(not yet)';
-          const endStr = r.endTime ? formatTime(r.endTime) : '(not finished)';
-          let sendToStart = '', sendToEnd = '', startToEnd = '';
-          if (r.firstChunkTime) {
-            sendToStart = r.firstChunkTime - r.startTime + '';
-          }
-          if (r.endTime) {
-            sendToEnd = r.endTime - r.startTime + '';
-          }
-          if (r.firstChunkTime && r.endTime) {
-            startToEnd = r.endTime - r.firstChunkTime + '';
-          }
-          html += `
-            <tr>
+            <tbody>`;
+        results.forEach(r => {
+          html += `<tr>
               <td>${r.id}</td>
               <td>${r.query}</td>
-              <td>${formatTime(r.startTime)}</td>
-              <td>${firstChunkStr}</td>
-              <td>${endStr}</td>
-              <td>
-                Send→Start: ${sendToStart}<br>
-                Send→End: ${sendToEnd}<br>
-                Start→End: ${startToEnd}
-              </td>
-            </tr>
-          `;
+              <td>${r.startTime.toFixed(1)}</td>
+              <td>${r.endTime.toFixed(1)}</td>
+              <td>${r.duration.toFixed(1)}</td>
+            </tr>`;
         });
         html += `</tbody></table>`;
         document.getElementById('simul-main-table').innerHTML = html;
       }
-
       function updateSimulPartials(results) {
         let html = '<h3>Partial Text Blocks</h3>';
-        results.forEach((r) => {
-          html += `
-            <div class="partial-text-block">
-              <h4>${r.id} - Partial Text</h4>
-              <pre>${r.partialText}</pre>
-            </div>
-          `;
+        results.forEach(r => {
+          html += `<div class="partial-text-block">
+                      <h4>${r.id} - Partial Text</h4>
+                      <pre>${r.partialText}</pre>
+                   </div>`;
         });
         document.getElementById('simul-partials').innerHTML = html;
       }
@@ -928,13 +904,13 @@
           }
         } else if (testSet === 'circulate5x20') {
           const baseQueries = [
-            { id: "q1", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "q1", text: "남성해운 영업 전략" },
             { id: "q2", text: "디지털화 근황" },
             { id: "q3", text: "IOT 컨테이너 사업에 대해서" },
             { id: "q4", text: "주간회의 특징 및 주요 말씀" },
             { id: "q5", text: "해운업계의 경쟁 구도" }
           ];
-          for (let k = 1; k <= 20; k++) {
+          for (let k = 1; k <= 40; k++) {
             baseQueries.forEach((q) => {
               queries.push({ id: `circulate${k}-${q.id}`, text: q.text });
             });

@@ -3,11 +3,11 @@ import ray  # Ray library
 from ray import serve
 import json
 import asyncio  # async I/O process module
-from concurrent.futures import ProcessPoolExecutor # 스레드 컨트롤
+from concurrent.futures import ProcessPoolExecutor  # 스레드 컨트롤
 import uuid  # --- NEW OR MODIFIED ---
 import time
 from typing import Dict, Optional  # --- NEW OR MODIFIED ---
-import threading # To find out the usage of thread
+import threading  # To find out the usage of thread
 
 from RAG import (
     query_sort,
@@ -23,6 +23,7 @@ from utils import (
     error_format,
 )
 
+
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
     async def __init__(self, config):
@@ -35,23 +36,26 @@ class InferenceActor:
         self.data = load_data(config.data_path)
         # 비동기 큐와 배치 처리 설정 (마이크로배칭)
         self.request_queue = asyncio.Queue()
-        self.max_batch_size = 20  # 최대 배치 수
-        self.batch_wait_timeout = 0.05  # 배치당 처리 시간
-        
-        # Actor 내부에서 ProcessPoolExecutor 생성 (직렬화 문제 회피)
-        self.process_pool = ProcessPoolExecutor(max_workers=4)
+        self.max_batch_size = config.ray.max_batch_size  # 최대 배치 수
+        self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간
 
+        # Actor 내부에서 ProcessPoolExecutor 생성 (직렬화 문제 회피)
+        self.process_pool = ProcessPoolExecutor(max_workers=16)
+
+        self.queue_manager = ray.get_actor("SSEQueueManager")
         # --- NEW OR MODIFIED ---
         # A dictionary to store SSE queues for streaming requests
         # Key = request_id, Value = an asyncio.Queue of partial token strings
         self.active_sse_queues: Dict[str, asyncio.Queue] = {}
+
+        self.batch_counter = 0  # New counter to track batches
 
         # Micro-batching만 적용
         # asyncio.create_task(self._batch_processor())
 
         # In-flight batching까지 추가 적용
         asyncio.create_task(self._in_flight_batch_processor())
-        
+
     # --------------------------------------------------------
     # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
     # --------------------------------------------------------
@@ -83,12 +87,13 @@ class InferenceActor:
             # 1) get first request from the queue
             print("=== _batch_processor waiting for request_queue item... ===")
             item = await self.request_queue.get()
-            print(f"[DEBUG] 첫 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: 1)")
+            print(
+                f"[DEBUG] 첫 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: 1)"
+            )
             batch.append(item)
-            
 
             print(f"[DEBUG] Received first request at {time.strftime('%H:%M:%S')}")
-            
+
             # 2) try to fill the batch up to batch_size or until timeout
             try:
                 while len(batch) < self.max_batch_size:
@@ -97,16 +102,22 @@ class InferenceActor:
                     item = await asyncio.wait_for(
                         self.request_queue.get(), timeout=self.batch_wait_timeout
                     )
-                    
+
                     batch.append(item)
-                    print(f"[DEBUG] 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})")
+                    print(
+                        f"[DEBUG] 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})"
+                    )
             except asyncio.TimeoutError:
                 elapsed = time.time() - batch_start_time
-                print(f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})")
+                print(
+                    f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})"
+                )
                 pass
 
-            print(f"=== _batch_processor: 배치 사이즈 {len(batch)} 처리 시작 ({time.strftime('%H:%M:%S')}) ===")
-            
+            print(
+                f"=== _batch_processor: 배치 사이즈 {len(batch)} 처리 시작 ({time.strftime('%H:%M:%S')}) ==="
+            )
+
             # 각 요청 처리 전후에 로그 추가
             start_proc = time.time()
             await asyncio.gather(
@@ -121,32 +132,48 @@ class InferenceActor:
     # -------------------------------------------------------------------------
     # In-flight BATCH PROCESSOR
     # -------------------------------------------------------------------------
-    
+
     async def _in_flight_batch_processor(self):
         while True:
             # Wait for the first item (blocking until at least one is available)
-            print("=== [In-Flight Batching] Waiting for first item in request_queue... ===")
+            print(
+                "=== [In-Flight Batching] Waiting for first item in request_queue... ==="
+            )
             first_item = await self.request_queue.get()
             batch = [first_item]
             batch_start_time = time.time()
 
-            print("[In-Flight Batching] Got the first request. Attempting to fill a batch...")
+            print(
+                "[In-Flight Batching] Got the first request. Attempting to fill a batch..."
+            )
 
             # Attempt to fill up the batch until we hit max_batch_size or batch_wait_timeout
             while len(batch) < self.max_batch_size:
                 try:
-                    remain_time = self.batch_wait_timeout - (time.time() - batch_start_time)
+                    remain_time = self.batch_wait_timeout - (
+                        time.time() - batch_start_time
+                    )
                     if remain_time <= 0:
-                        print("[In-Flight Batching] Timed out waiting for more requests; proceeding with current batch.")
+                        print(
+                            "[In-Flight Batching] Timed out waiting for more requests; proceeding with current batch."
+                        )
                         break
-                    item = await asyncio.wait_for(self.request_queue.get(), timeout=remain_time)
+                    item = await asyncio.wait_for(
+                        self.request_queue.get(), timeout=remain_time
+                    )
                     batch.append(item)
-                    print(f"[In-Flight Batching] +1 request => batch size now {len(batch)}")
+                    print(
+                        f"[In-Flight Batching] +1 request => batch size now {len(batch)} <<< {self.max_batch_size}"
+                    )
                 except asyncio.TimeoutError:
-                    print("[In-Flight Batching] Timeout reached => proceeding with the batch.")
+                    print(
+                        "[In-Flight Batching] Timeout reached => proceeding with the batch."
+                    )
                     break
-
-            print(f"=== [In-Flight Batching] Collected a batch of size {len(batch)} ===")
+            self.batch_counter += 1
+            print(
+                f"[BATCH {self.batch_counter}] In-Flight batch collected with {len(batch)} requests"
+            )
 
             # We have a batch of items: each item is ( http_query_or_stream_dict, future, sse_queue )
             # We'll process them concurrently.
@@ -163,7 +190,9 @@ class InferenceActor:
         Process a single query from the micro-batch. If 'sse_queue' is given,
         we do partial-token streaming. Otherwise, normal final result.
         """
-        print(f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}")
+        print(
+            f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}"
+        )
         try:
             # --- NEW OR MODIFIED ---
             # Distinguish between normal requests vs streaming requests:
@@ -188,16 +217,18 @@ class InferenceActor:
             # To Calculate the token
             tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
             print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
-            
+
             # 2) optionally reload data if needed
             self.data = load_data(
                 self.config.data_path
             )  # if you want always-latest, else skip
-            
+
             # 3) classify
             print("   ... calling query_sort() ...")
-            print(f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}")
-            
+            print(
+                f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}"
+            )
+
             # 호출부 수정
             params = {
                 "user_input": user_input,
@@ -284,9 +315,9 @@ class InferenceActor:
                             tokenizer=self.tokenizer,
                             config=self.config,
                         )
-                        print("process_to_format 이후에 OUTPUT:", output)
+                        print("process_to_format 이후에 OUTPUT 생성 완료")
                         answer = process_to_format([output], type="Answer")
-                        print("process_to_format 이후에 ANSWER:", answer)
+                        print("process_to_format 이후에 ANSWER까지 생성 완료")
                         outputs = process_format_to_response(retrieval, answer)
                         future.set_result(outputs)
 
@@ -311,54 +342,49 @@ class InferenceActor:
         and push them to the SSE queue in real time.
         We'll do a "delta" approach so each chunk is only what's newly added.
         """
-        print(f"[STREAM] _stream_partial_answer => request_id={request_id}, chart={chart}")
+        print(
+            f"[STREAM] _stream_partial_answer => request_id={request_id}, chart={chart}"
+        )
 
-        queue = self.active_sse_queues.get(request_id)
-        if not queue:
-            print(f"[STREAM] SSE queue not found => fallback to normal final (request_id={request_id})")
-            # fallback...
-            return
+        # 단일
+        # queue = self.active_sse_queues.get(request_id)
+        # if not queue:
+        #     print(f"[STREAM] SSE queue not found => fallback to normal final (request_id={request_id})")
+        #     # fallback...
+        #     return
 
         # This will hold the entire text so far. We'll yield only new pieces.
         partial_accumulator = ""
 
         try:
-            print(f"[STREAM] SSE queue found => calling generate_answer_stream (request_id={request_id})")
-
+            print(
+                f"[STREAM] SSE: calling generate_answer_stream for request_id={request_id}"
+            )
             async for partial_text in generate_answer_stream(
                 QU, docs, self.model, self.tokenizer, self.config
             ):
-                # partial_text is the entire text so far. Let's get the new substring.
-                new_text = partial_text[len(partial_accumulator):]
-                partial_accumulator = partial_text  # update
-
-                # Optionally skip if blank
+                new_text = partial_text[len(partial_accumulator) :]
+                partial_accumulator = partial_text
                 if not new_text.strip():
                     continue
-
-                # print(f"[STREAM] yield new_text => '{new_text[:50]}...'") # Too large logs
-                await queue.put(new_text)
-
-            # Now partial_accumulator is the final text
+                # Use the central SSEQueueManager to put tokens
+                await self.queue_manager.put_token.remote(request_id, new_text)
             final_text = partial_accumulator
-            # Build final JSON for the future
             if chart is not None:
                 ans = process_to_format([final_text, chart], type="Answer")
                 final_res = process_format_to_response(retrieval, ans)
             else:
                 ans = process_to_format([final_text], type="Answer")
                 final_res = process_format_to_response(retrieval, ans)
-
             future.set_result(final_res)
-            await queue.put("[[STREAM_DONE]]")
-            print(f"[STREAM] done => placed [[STREAM_DONE]] => request_id={request_id}")
-
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+            print(
+                f"[STREAM] done => placed [[STREAM_DONE]] for request_id={request_id}"
+            )
         except Exception as e:
             msg = f"[STREAM] error in partial streaming => {str(e)}"
-            print(msg)
             future.set_result(error_format(msg, 500))
-            if queue:
-                await queue.put("[[STREAM_DONE]]")
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
 
     # ------------------------------------------------------------
     # NEW METHODS TO SUPPORT SSE
@@ -372,6 +398,7 @@ class InferenceActor:
         Create request_id, SSE queue, push to the micro-batch, return request_id.
         """
         request_id = str(uuid.uuid4())
+        await self.queue_manager.create_queue.remote(request_id)
         print(
             f"[STREAM] process_query_stream => request_id={request_id}, http_query={http_query}"
         )
@@ -436,27 +463,71 @@ class InferenceActor:
         else:
             print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
 
+
 # Too using about two actor
 
-# # Ray Serve를 통한 배포
-# @serve.deployment(name="inference", num_replicas=1)
-# class InferenceService:
-#     def __init__(self, config):
-#         self.config = config
-#         self.actor = InferenceActor.options(num_gpus=config.ray.actor_num_gpus).remote(config)
 
-#     async def query(self, http_query: dict):
-#         result = await self.actor.process_query.remote(http_query)
-#         return result
+# Ray Serve를 통한 배포
+@serve.deployment(name="inference")
+class InferenceService:
+    def __init__(self, config):
+        self.config = config
+        self.actor = InferenceActor.options(
+            num_gpus=config.ray.num_gpus, num_cpus=config.ray.num_cpus
+        ).remote(config)
 
-#     async def process_query_stream(self, http_query: dict) -> str:
-#         req_id = await self.actor.process_query_stream.remote(http_query)
-#         return req_id
+    async def query(self, http_query: dict):
+        result = await self.actor.process_query.remote(http_query)
+        return result
 
-#     async def pop_sse_token(self, req_id: str) -> str:
-#         token = await self.actor.pop_sse_token.remote(req_id)
-#         return token
+    async def process_query_stream(self, http_query: dict) -> str:
+        req_id = await self.actor.process_query_stream.remote(http_query)
+        return req_id
 
-#     async def close_sse_queue(self, req_id: str) -> str:
-#         await self.actor.close_sse_queue.remote(req_id)
-#         return "closed"
+    async def pop_sse_token(self, req_id: str) -> str:
+        token = await self.actor.pop_sse_token.remote(req_id)
+        return token
+
+    async def close_sse_queue(self, req_id: str) -> str:
+        await self.actor.close_sse_queue.remote(req_id)
+        return "closed"
+
+
+# Ray의 요청을 비동기적으로 관리하기 위해 도입하는 큐-매니저
+@ray.remote
+class SSEQueueManager:
+    def __init__(self):
+        self.active_queues = {}
+        self.lock = asyncio.Lock()
+
+    async def create_queue(self, request_id):
+        async with self.lock:
+            self.active_queues[request_id] = asyncio.Queue()
+            return True
+
+    async def get_queue(self, request_id):
+        return self.active_queues.get(request_id)
+
+    async def get_token(self, request_id, timeout: float):
+        queue = self.active_queues.get(request_id)
+        if queue:
+            try:
+                token = await asyncio.wait_for(queue.get(), timeout=timeout)
+                return token
+            except asyncio.TimeoutError:
+                return None
+        return None
+
+    async def put_token(self, request_id, token):
+        async with self.lock:
+            if request_id in self.active_queues:
+                await self.active_queues[request_id].put(token)
+                return True
+            return False
+
+    async def delete_queue(self, request_id):
+        async with self.lock:
+            if request_id in self.active_queues:
+                del self.active_queues[request_id]
+                return True
+            return False

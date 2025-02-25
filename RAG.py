@@ -14,9 +14,11 @@ from tracking import time_tracker
 # Import the vLLM to use the AsyncLLMEngine
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 
+# In RAG.py (at the top, add an import for prompts)
+from prompt_rag import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE
+
 global beep
 beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
-
 
 @time_tracker
 def execute_rag(QU, KE, TA, TI, **kwargs):
@@ -75,54 +77,12 @@ async def query_sort(params):
     data = params["data"]
     config = params["config"]
 
-    PROMPT = f"""\
-<bos><start_of_turn>user
-너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. \
-query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. \
-keyword는 질문의 키워드를 뽑는거야. \
-table은 질문에 대한 답을 할때 표형식 데이터가 필요한지 여부야, 현재는 매출액 관련 질문만 대응 가능하니 이때만 yes로 답해줘.\
-time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는{datetime.today().year}년 {datetime.today().month}월 {datetime.today().day}일). 시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) \
-또한, '최근'이라는 말이 들어가면 2024-06-01:{datetime.today().year}-{datetime.today().month}-{datetime.today().day}로 설정해줘.\
-
-내가 먼저 예시를 줄게
-
-질문: 최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?
-답변:
-<query/>최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?<query>
-<keyword/>일본발 베트남착 매출 기여도 화주 고객<keyword>
-<table/>yes<table>
-<time/>2024-08-01:2024-{datetime.today().month}-{datetime.today().day}<time>
-
-질문: 올해 3월에 중국 시장 전망에 대해 조사했던 내용을 정리해줘
-답변:
-<query/>2024년 3월 중국시장 전망에 대한 조사내용을 알려주고 정리해줘<query>
-<keyword/>2024년 3월 중국시장 전망<keyword>
-<table/>no<table>
-<time/>2024-02-01:2024-05-01<time>
-
-질문: 부산발 인도네시아착 경쟁사 서비스 및 항차수를 알려줘
-답변:
-<query/>부산 출발 인도네시아 도착 경쟁사 서비스 및 항차수<query>
-<keyword/>부산발 인도네시아착 경쟁사 서비스 항차수<keyword>
-<table/>no<table>
-<time/>all<time>
-
-질문: 남성해운의 인도 대리점 선정 과정은 어떻게 돼?
-답변:
-<query/>인도 대리점 선정과정을 보기 좋게 정리해줘<query>
-<keyword/>인도 대리점 선정과정<keyword>
-<table/>no<table>
-<time/>all<time>
-
-### 아래 구분자를 추가하여 실제 사용자 질문을 명확히 구분합니다.
-### 새로운 질문: {query}<end_of_turn>
-<start_of_turn>model
-답변: \
-"""
+    # prompts/prompt_rag.py에서 프롬프트 별도 관리
+    PROMPT = QUERY_SORT_PROMPT.format(user_query=query)
+    
     # Get Answer from LLM
     print("##### query_sort is starting #####")
-    # use_vllm = True case
-    if config.use_vllm:
+    if config.use_vllm: # use_vllm = True case 
         from vllm import SamplingParams
 
         # 텍스트 생성 과정 제어 인자 설정 - 각 인자별 설명은 config.yaml 파일 참조
@@ -139,14 +99,14 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
         # vllm을 통해 Model을 구동하여 Text를 생성한다.
         answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
     else:
-        print(">>> About to Tokenizer")
+        # print(">>> About to Tokenizer")
         input_ids = tokenizer(
             PROMPT, return_tensors="pt", truncation=True, max_length=4024
         ).to("cuda")
-        print(">>> Finished tokenize")
+        # print(">>> Finished tokenize")
         token_count = input_ids["input_ids"].shape[1]
-        print(f">>> Input token count: {token_count}", flush=True)
-        print(">>> About to call model.generate()")
+        # print(f">>> Input token count: {token_count}", flush=True)
+        # print(">>> About to call model.generate()")
         outputs = model.generate(
             **input_ids,
             max_new_tokens=config.model.max_new_tokens,
@@ -158,12 +118,12 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
         )
-        print(">>> Finished model.generate()")
+        # print(">>> Finished model.generate()")
         generated_tokens = outputs[0].shape[0]
-        print(f">>> Generated token count: {generated_tokens}")
+        # print(f">>> Generated token count: {generated_tokens}")
         answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-        print(answer)
-        print(">>> decode done, returning answer")
+        # print(answer)
+        # print(">>> decode done, returning answer")
 
     # Regular expression to extract content between <query/> and <query>
     query_pattern = r"<query.*?>(.*?)<query.*?>"
@@ -179,8 +139,8 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
     # 시간이 all 이면 전체에서 검색.
     if TI == "all":
         TI = "1900-01-01:2099-01-01"
-    print(beep)
-    print(f"사용자 질문:{query}")
+    # print(beep)
+    # print(f"사용자 질문:{query}")
     print(beep)
     print(f"구체화 질문: {QU}, 키워드 : {KE}, 테이블 필요 유무: {TA}, 시간: {TI}")
     print(beep)
@@ -252,11 +212,11 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
                 "contents": data["texts_vis"][index],
             }
         )
-        print(
-            f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}"
-        )
-        print("\n" + beep)
-
+        # print(
+        #     f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}"
+        # )
+        # print("\n" + beep)
+    print("자료 검색 성공")
     return documents, documents_list
 
 
@@ -320,16 +280,10 @@ def min_max_scaling(arr):
 
 @time_tracker
 async def generate(docs, query, model, tokenizer, config):
-    PROMPT = f"""
-<bos><start_of_turn>user
-너는 남성해운의 도움을 주는 데이터 분석가야.
-주어진 내부 자료에 기반해서 내 질문에 대답해줘. 답변 형식은 보고서처럼 길고 자세하고 논리정연하게 사실만을 가지고 작성해줘.  만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘. 또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
-내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
-내부 자료: {docs}
-질문: {query}<end_of_turn>
-<start_of_turn>model
-답변: \
-"""
+    
+    # prompts/prompt_rag.py에서 프롬프트 별도 관리
+    PROMPT = GENERATE_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    
     print("Inference steps")
     # vLLM 엔진 사용 시 (vLLM 엔진은 generate 메서드를 제공합니다)
     if config.use_vllm:
@@ -349,14 +303,14 @@ async def generate(docs, query, model, tokenizer, config):
         # vllm을 통해 Model을 구동하여 Text를 생성한다.
         answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
     else:
-        print(">>> About to Tokenizer")
+        # print(">>> About to Tokenizer")
         input_ids = tokenizer(
             PROMPT, return_tensors="pt", truncation=True, max_length=4024
         ).to("cuda")
-        print(">>> Finished tokenize")
+        # print(">>> Finished tokenize")
         token_count = input_ids["input_ids"].shape[1]
-        print(f">>> Input token count: {token_count}", flush=True)
-        print(">>> About to call model.generate()")
+        # print(f">>> Input token count: {token_count}", flush=True)
+        # print(">>> About to call model.generate()")
         outputs = model.generate(
             **input_ids,
             max_new_tokens=config.model.max_new_tokens,
@@ -368,11 +322,11 @@ async def generate(docs, query, model, tokenizer, config):
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
         )
-        print(">>> Finished model.generate()")
+        # print(">>> Finished model.generate()")
         generated_tokens = outputs[0].shape[0]
-        print(f">>> Generated token count: {generated_tokens}")
+        # print(f">>> Generated token count: {generated_tokens}")
         answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-        print(answer)
+        # print(answer)
         print(">>> decode done, returning answer")
     return answer
 
@@ -382,14 +336,6 @@ async def generate(docs, query, model, tokenizer, config):
 async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id):
     """
     Collects outputs from the vLLM model generation and extracts the final answer text.
-
-    Parameters:
-      PROMPT: The prompt string to send to the model.
-      model: The vLLM model object.
-      sampling_params: Sampling parameters for text generation.
-
-    Returns:
-      A string representing the final generated answer.
     """
     import asyncio, concurrent.futures
 
@@ -422,14 +368,7 @@ async def generate_answer_stream(query, docs, model, tokenizer, config):
     Streaming version of generate_answer that yields partial tokens as they arrive.
     """
     # Build your prompt
-    prompt = f"""
-<bos><start_of_turn>user
-... same instructions ...
-내부 자료: {docs}
-질문: {query}<end_of_turn>
-<start_of_turn>model
-답변: \
-"""
+    prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
 
     if config.use_vllm:
         from vllm import SamplingParams
@@ -501,10 +440,10 @@ if __name__ == "__main__":
 
     # 엔진 생성 (예: engine_args는 미리 정의되어 있음)
     engine = AsyncLLMEngine.from_engine_args(engine_args, start_engine_loop=False)
-
     # 프로그램 시작 시 백그라운드 루프를 한 번만 시작합니다.
     if not engine.is_running:
         engine.start_background_loop()
+    
     async def main():
         
         status = True
