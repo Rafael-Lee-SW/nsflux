@@ -69,7 +69,7 @@ class InferenceActor:
         # There's no SSE queue for normal queries
         sse_queue = None
         await self.request_queue.put((http_query, future, sse_queue))
-        print("self.request_queue : ", len(self.request_queue))
+        # print("self.request_queue : ", self.request_queue)
         return await future
 
     # -------------------------------------------------------------------------
