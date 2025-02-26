@@ -8,6 +8,7 @@ import uuid  # --- NEW OR MODIFIED ---
 import time
 from typing import Dict, Optional  # --- NEW OR MODIFIED ---
 import threading  # To find out the usage of thread
+import datetime
 
 from RAG import (
     query_sort,
@@ -40,7 +41,8 @@ class InferenceActor:
         self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간
 
         # Actor 내부에서 ProcessPoolExecutor 생성 (직렬화 문제 회피)
-        # self.process_pool = ProcessPoolExecutor(max_workers=16)
+        max_workers = int(min(config.ray.num_cpus * 0.8, (26*config.ray.actor_count)-4))
+        self.process_pool = ProcessPoolExecutor(max_workers)
 
         self.queue_manager = ray.get_actor("SSEQueueManager")
         # --- NEW OR MODIFIED ---
@@ -257,7 +259,11 @@ class InferenceActor:
                         data=self.data,
                         config=self.config,
                     )
-                    retrieval, chart = process_to_format(docs_list, type="SQL")
+                    try:
+                        retrieval, chart = process_to_format(docs_list, type="SQL")
+                    except Exception as e:
+                        print("[ERROR] process_to_format (SQL) failed:", str(e))
+                        retrieval, chart = [], None
 
                     # If streaming => partial tokens
                     if is_streaming:
@@ -286,6 +292,7 @@ class InferenceActor:
 
             else:
                 try:
+                    print("[SOOWAN] TA is No, before make a retrieval")
                     docs, docs_list = execute_rag(
                         QU,
                         KE,
@@ -299,7 +306,7 @@ class InferenceActor:
                         config=self.config,
                     )
                     retrieval = process_to_format(docs_list, type="Retrieval")
-
+                    print("[SOOWAN] TA is No, and make a retrieval is successed")
                     if is_streaming:
                         print(
                             f"[STREAM] Starting partial generation for request_id={request_id}"
@@ -332,7 +339,7 @@ class InferenceActor:
             future.set_result(error_format(err_msg, 500))
 
     # ------------------------------------------------------------
-    # NEW HELPER FOR STREAMING PARTIAL ANSWERS
+    # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
     # ------------------------------------------------------------
     async def _stream_partial_answer(
         self, QU, docs, retrieval, chart, request_id, future
@@ -354,6 +361,19 @@ class InferenceActor:
         #     return
 
         # This will hold the entire text so far. We'll yield only new pieces.
+        
+        # 먼저, 참조 데이터 전송: type을 "reference"로 명시
+        reference_json = json.dumps({
+            "type": "reference",
+            "status_code": 200,
+            "result": "OK",
+            "detail": "Reference data",
+            "evt_time": datetime.datetime.now().isoformat(),
+            "data_list": retrieval
+        }, ensure_ascii=False)
+        await self.queue_manager.put_token.remote(request_id, reference_json)
+        print(f"[STREAM] Sent reference data for request_id={request_id}")
+        
         partial_accumulator = ""
 
         try:
@@ -363,12 +383,19 @@ class InferenceActor:
             async for partial_text in generate_answer_stream(
                 QU, docs, self.model, self.tokenizer, self.config
             ):
+                # print(f"[STREAM] Received partial_text: {partial_text}")
                 new_text = partial_text[len(partial_accumulator) :]
                 partial_accumulator = partial_text
                 if not new_text.strip():
                     continue
+                    # Wrap answer tokens in a JSON object with type "answer"
+                answer_json = json.dumps({
+                    "type": "answer",
+                    "answer": new_text
+                }, ensure_ascii=False)
                 # Use the central SSEQueueManager to put tokens
-                await self.queue_manager.put_token.remote(request_id, new_text)
+                # print(f"[STREAM] Sending token: {answer_json}")
+                await self.queue_manager.put_token.remote(request_id, answer_json)
             final_text = partial_accumulator
             if chart is not None:
                 ans = process_to_format([final_text, chart], type="Answer")
