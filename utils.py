@@ -362,7 +362,9 @@ def process_to_format(qry_contents, type):
     # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
     # 예제 응답 형식
     ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
+    # print("[SOOWAN] process_to_format 진입")
     if type == "Retrieval":
+        print("[SOOWAN] 타입 : 리트리버")
         tmp_format = {"rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []}
         for i, form in enumerate(qry_contents):
             tmp_format_ = {
@@ -373,6 +375,7 @@ def process_to_format(qry_contents, type):
         return tmp_format
 
     elif type == "SQL":
+        # print("[SOOWAN] 타입 : SQL")
         tmp_format = {
             "rsp_type": "R",
             "rsp_tit": "남성 내부 데이터",
@@ -393,6 +396,7 @@ def process_to_format(qry_contents, type):
         return tmp_format, tmp_format_chart
 
     elif type == "Answer":
+        print("[SOOWAN] 타입 : 대답")
         tmp_format = {"rsp_type": "A", "rsp_tit": "답변", "rsp_data": []}
         for i, form in enumerate(qry_contents):
             if i == 0:

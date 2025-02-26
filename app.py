@@ -134,7 +134,6 @@ def query_stream():
     # ----------------------------------------------------------------------------- 다중
     print(f"[DEBUG] streaming request_id={request_id}")
 
-
     # def sse_generator():
     #     print("[DEBUG] sse_generator started: begin pulling partial tokens in a loop")
     #     while True:
@@ -151,16 +150,25 @@ def query_stream():
     #     print("[DEBUG] SSE closed.")
     
     def sse_generator():
-        while True:
-            # Retrieve token from SSEQueueManager
-            token = ray.get(sse_manager.get_token.remote(request_id, 120))
-            if token is None or token == "[[STREAM_DONE]]":
-                break
-            yield f"data: {token}\n\n"
-        # Optionally, trigger cleanup
-        obj_ref = inference_handle.process_query_stream.remote(http_query)._to_object_ref_sync()
-        ray.get(obj_ref)
-    
+        try:
+            while True:
+                # Retrieve token from SSEQueueManager
+                token = ray.get(sse_manager.get_token.remote(request_id, 120))
+                if token is None or token == "[[STREAM_DONE]]":
+                    break
+                yield f"data: {token}\n\n"
+        except Exception as e:
+            error_token = json.dumps({"type": "error", "message": str(e)})
+            yield f"data: {error_token}\n\n"
+        finally:
+            # Cleanup: close the SSE queue after streaming is done
+            try:
+                obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+                ray.get(obj_ref)
+            except Exception as ex:
+                print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+            print("[DEBUG] SSE closed.")
+
     return Response(sse_generator(), mimetype="text/event-stream")
 # --------------------- Streaming part ----------------------------
 

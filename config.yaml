@@ -1,5 +1,5 @@
 # config.yaml
-
+# Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
 ### Model
 model_id : 'google/gemma-2-27b-it'
 
@@ -9,7 +9,7 @@ ray:
   num_cpus: 48                    # 각 Actor(Node)가 점유하고 있는 CPU 갯수 (1 actor 시에 gpu 48개, 2 actor 시에 gpu 24개 할당)
   max_batch_size: 10              # max_concurrency(actor 최대 동시 처리량, default 1000)로 대체해도 됨
   batch_wait_timeout: 0.05        
-  max_ongoing_requests: 50        # ray.serve에서 deployment setting으로 동시 요청 처리 갯수를 의미함(Batch랑 다름)
+  max_ongoing_requests: 100        # ray.serve에서 deployment setting으로 동시 요청 처리 갯수를 의미함(Batch랑 다름)
 
 use_vllm: True # vLLM 사용 여부
 vllm:

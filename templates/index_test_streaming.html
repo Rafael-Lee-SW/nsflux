@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Simple RAG Query Interface - Test</title>
     <style>
       body {
@@ -111,7 +111,6 @@
       #simul-main-table th {
         background: #ddd;
       }
-      /* The partial text containers below the table */
       .partial-text-block {
         margin-top: 10px;
         background: #fff;
@@ -136,6 +135,10 @@
       /* The references are hidden initially */
       #referenceData {
         display: none;
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid #ccc;
+        background: #fff;
       }
       /* Test set selector styling */
       .test-set-selector {
@@ -167,30 +170,26 @@
       <label for="testSetSelect" title="옵션별 설명:
 • 20 Multi SET1: SET1의 20개 질문
 • 20 Multi SET2: SET2의 20개 질문
-• 20 Multi SET3: SET3의 20개 질문
+• Different Three Question Sets: 서로 다른 3개 질문 세트
 • Same Question 100 Times: 동일한 질문 ('디지털 전략') 100회 반복
 • 5 Questions Circulate 20 Times: 5개의 다른 질문을 20회씩 반복 (총 100개)
 • 100 Mixed: 100개의 다양한 혼합 질문 (Mix Test Set)">Test Set:</label>
       <select id="testSetSelect">
         <option value="set1" title="20개의 다른 질문 SET1" selected>20개의 다른 질문 세트 1번</option>
         <option value="set2" title="20개의 다른 질문 SET2">20개의 다른 질문 세트 2번</option>
-        <option value="set3" title="20개의 다른 질문 SET3">20개의 다른 질문 세트 3번</option>
+        <option value="set3" title="서로 다른 3개 질문 세트">Different Three Question Sets</option>
         <option value="same100" title="동일한 질문 '디지털 전략'을 100회 반복">같은 질문('디지털 전략') 100개</option>
         <option value="circulate5x20" title="5개의 다른 질문을 20회씩 반복 (총 100개)">5개의 다른 질문 세트 20번 반복</option>
         <option value="mixed100" title="100개의 다양한 혼합 질문 (Mix Test Set)">100개의 다른 질문</option>
       </select>
     </div>
     
-    <!-- ==========================
-         (1) Non-Streaming Query
-         ========================== -->
+    <!-- (1) Non-Streaming Query -->
     <input type="text" id="userInput" placeholder="Type your query here..." />
     <button onclick="sendQuery()">단일 전송(스트리밍 X)</button>
     <div class="output" id="output"></div>
 
-    <!-- ==========================
-         (2) Concurrency Test (Non-Streaming POST) - 50 queries
-         ========================== -->
+    <!-- (2) Concurrency Test (Non-Streaming POST) - 50 queries -->
     <div class="test-section">
       <h2>한 번에 질문 여러개 전송하기 테스트</h2>
       <h5>Testing the POST requests concurrently (display results as they arrive)</h5>
@@ -199,55 +198,43 @@
       <div class="output" id="testResults"></div>
     </div>
 
-    <!-- ==========================
-         (3) Single Streaming Test (POST-based)
-         ========================== -->
+    <!-- (3) Single Streaming Test (POST-based) -->
     <div class="test-section">
       <h2>스트리밍 테스트(단일 - POST)</h2>
       <h5>Streaming Test (Single via POST)</h5>
       <p>
-        This test uses a POST-based fetch to stream the response.
-        The server sends SSE-style chunks and we process them manually.
+        이 테스트는 POST 기반 fetch를 사용하여 응답을 스트리밍합니다.
+        서버는 SSE 스타일의 청크를 전송하며, 참조 데이터와 답변 텍스트를 분리하여 처리합니다.
       </p>
       <input type="text" id="streamInput" placeholder="Type your streaming query here..." />
       <button onclick="startStreamPOST()">Start Streaming (POST)</button>
+      <!-- 답변 텍스트 영역 -->
       <pre id="streamOutput" style="max-height: 250px; overflow-y: auto; white-space: pre-wrap; background: #fafafa;"></pre>
+      <!-- 스트리밍 타이밍 정보 -->
       <div class="stream-info-box" id="streamTiming"></div>
+      <!-- 참조 데이터 영역 -->
       <button onclick="toggleReferences()">Show References</button>
-      <div id="referenceData">
-        <h4>Reference Data</h4>
-        <ul>
-          <li>1. Some reference or doc link</li>
-          <li>2. Another doc link</li>
-          <li>3. Another reference item</li>
-        </ul>
-      </div>
+      <div id="referenceData"></div>
     </div>
 
-    <!-- ==========================
-         (4) Simultaneous Streaming Test (GET-based)
-         ========================== -->
+    <!-- (4) Simultaneous Streaming Test (POST-based) -->
     <div class="test-section">
-      <h2>스트리밍 테스트(동시 3개, 테스트셋)</h2>
-      <h5>Simultaneous Streaming Test (GET-based SSE)</h5>
+      <h2>스트리밍 테스트(동시에, POST-based)</h2>
+      <h5>Simultaneous Streaming Test (POST-based streaming)</h5>
       <p>
-        Launch multiple streaming queries at once using GET-based SSE.
+        여러 스트리밍 쿼리를 POST 방식으로 동시에 실행합니다.
       </p>
-      <button onclick="testStreamingQueries()">Start Simultaneous Streaming</button>
-      <button onclick="testStreamingQueriesMulti()">테스트 셋으로 테스트</button>
-      <div class="output" id="simul-main-table"></div>
+      <button onclick="testSimulStreamPOST()">Start Simultaneous Streaming (POST)</button>
       <div class="output" id="simul-partials"></div>
+      <div class="output" id="simul-results"></div>
     </div>
 
-    <!-- ==========================
-         (5) Continuous Sync Test
-         ========================== -->
+    <!-- (5) Continuous Sync Test -->
     <div class="test-section">
       <h2>연속 질문 테스트(단일 평균 시간 테스트)</h2>
       <h5>Continuous Sync Test</h5>
       <p>
-        Run 100 sequential queries (from same1-1 to same20-5) based on the selected test set.
-        Choose either non-streaming or streaming approach, and compute average timings in ms.
+        선택한 테스트 셋에 따라 100개의 연속 쿼리를 실행하고 평균 응답 시간을 계산합니다.
       </p>
       <div id="continuousProgress" class="progress-indicator"></div>
       <button onclick="continuousTest('nonstream')">Start Continuous Non-Streaming Test (100 queries)</button>
@@ -257,39 +244,8 @@
 
     <script>
       /************************************************************
-       * (1) Non-Streaming Query
+       *  Common Utility Functions
        ************************************************************/
-      function sendQuery() {
-        const userInput = document.getElementById('userInput').value;
-        const sendTime = new Date();
-        const sendTimeStr = formatTime(sendTime);
-        const startTimestamp = Date.now();
-
-        fetch('/query', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ qry_contents: userInput })
-        })
-          .then((response) => {
-            const receiveTime = new Date();
-            const receiveTimeStr = formatTime(receiveTime);
-            const elapsed = Date.now() - startTimestamp;
-            if (!response.ok) {
-              return response.json().then((errorData) => { throw errorData; });
-            }
-            return response.json().then((data) => {
-              document.getElementById('output').innerHTML = formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
-            });
-          })
-          .catch((error) => {
-            const receiveTime = new Date();
-            const receiveTimeStr = formatTime(receiveTime);
-            const elapsed = Date.now() - startTimestamp;
-            console.error('Error:', error);
-            document.getElementById('output').innerHTML = formatJsonOutput(error, sendTimeStr, receiveTimeStr, elapsed);
-          });
-      }
-
       // Helper: Format time => "HH:MM:SS.ms"
       function formatTime(d) {
         if (!d) return '';
@@ -297,7 +253,24 @@
         return d.toLocaleTimeString() + '.' + ms;
       }
 
-      // Build JSON output
+      // Toggle retrieval or reference data blocks
+      function toggleHiddenDiv(divId) {
+        const div = document.getElementById(divId);
+        if (!div) return;
+        div.style.display = (div.style.display === "none" || div.style.display === "") ? "block" : "none";
+      }
+
+      // Toggle the reference data block
+      function toggleReferences() {
+        const refDiv = document.getElementById("referenceData");
+        if (refDiv.style.display === "none" || refDiv.style.display === "") {
+          refDiv.style.display = "block";
+        } else {
+          refDiv.style.display = "none";
+        }
+      }
+
+      // Build JSON output for non-streaming response
       function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
         let formattedOutput = `
           <strong>Send Time:</strong> ${sendTime} <br>
@@ -348,10 +321,51 @@
         return formattedOutput;
       }
 
-      function toggleHiddenDiv(divId) {
-        const div = document.getElementById(divId);
-        if (!div) return;
-        div.style.display = (div.style.display === "none" || div.style.display === "") ? "block" : "none";
+      // Used by multiple tests to show concurrency progress
+      function updateProgressIndicator(elementId, current, total, successCount = 0, failCount = 0) {
+        const elem = document.getElementById(elementId);
+        if (elem) {
+          const successRate = current > 0 ? ((successCount / current) * 100).toFixed(1) : 0;
+          elem.innerText = `완료: ${current} / ${total} queries | 성공: ${successCount}, 실패: ${failCount}, 성공률: ${successRate}%`;
+        }
+      }
+
+      /************************************************************
+       * (1) Non-Streaming Query
+       ************************************************************/
+      function sendQuery() {
+        const userInput = document.getElementById('userInput').value;
+        const sendTime = new Date();
+        const sendTimeStr = formatTime(sendTime);
+        const startTimestamp = Date.now();
+
+        fetch('/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ qry_contents: userInput })
+        })
+          .then((response) => {
+            const receiveTime = new Date();
+            const receiveTimeStr = formatTime(receiveTime);
+            const elapsed = Date.now() - startTimestamp;
+            if (!response.ok) {
+              return response.text().then((errorData) => {
+                throw new Error(`${response.status} ${response.statusText}: ${errorData}`);
+              });
+            }
+            return response.json().then((data) => {
+              document.getElementById('output').innerHTML =
+                formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
+            });
+          })
+          .catch((error) => {
+            const receiveTime = new Date();
+            const receiveTimeStr = formatTime(receiveTime);
+            const elapsed = Date.now() - startTimestamp;
+            console.error('Error:', error);
+            document.getElementById('output').innerHTML =
+              formatJsonOutput({ error: error.message }, sendTimeStr, receiveTimeStr, elapsed);
+          });
       }
 
       /************************************************************
@@ -362,7 +376,11 @@
         document.getElementById('testResults').innerHTML = 'Testing in progress...';
         const totalQueries = queries.length;
         let arrivalCounter = 0;
-        updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries);
+        let successCount = 0;
+        let failCount = 0;
+
+        updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+
         const results = [];
 
         queries.forEach((query) => {
@@ -379,26 +397,51 @@
               const receiveTime = new Date();
               const receiveTimeStr = formatTime(receiveTime);
               const elapsed = Date.now() - startTimestamp;
-              return response.json().then((data) => {
-                arrivalCounter++;
-                results.push({
-                  id: query.id,
-                  text: query.text,
-                  sendTime: sendTimeStr,
-                  receiveTime: receiveTimeStr,
-                  elapsed: elapsed,
-                  status: response.status,
-                  data: data,
-                  arrival: arrivalCounter
+
+              // Check success or fail
+              if (!response.ok) {
+                failCount++;
+                return response.text().then((errorData) => {
+                  arrivalCounter++;
+                  const errMsg = `${response.status} ${response.statusText}: ${errorData}`;
+                  results.push({
+                    id: query.id,
+                    text: query.text,
+                    sendTime: sendTimeStr,
+                    receiveTime: receiveTimeStr,
+                    elapsed: elapsed,
+                    success: false,
+                    error: errMsg,
+                    arrival: arrivalCounter
+                  });
+                  updateTestResults(results);
+                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
                 });
-                updateTestResults(results);
-                updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries);
-              });
+              } else {
+                successCount++;
+                return response.json().then((data) => {
+                  arrivalCounter++;
+                  results.push({
+                    id: query.id,
+                    text: query.text,
+                    sendTime: sendTimeStr,
+                    receiveTime: receiveTimeStr,
+                    elapsed: elapsed,
+                    success: true,
+                    data: data,
+                    arrival: arrivalCounter
+                  });
+                  updateTestResults(results);
+                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+                });
+              }
             })
             .catch((error) => {
+              // Real fetch error (network or something)
               const receiveTime = new Date();
               const receiveTimeStr = formatTime(receiveTime);
               const elapsed = Date.now() - startTimestamp;
+              failCount++;
               arrivalCounter++;
               results.push({
                 id: query.id,
@@ -406,21 +449,14 @@
                 sendTime: sendTimeStr,
                 receiveTime: receiveTimeStr,
                 elapsed: elapsed,
-                status: 'Error',
-                data: error,
+                success: false,
+                error: error.message,
                 arrival: arrivalCounter
               });
               updateTestResults(results);
-              updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries);
+              updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
             });
         });
-      }
-
-      function updateProgressIndicator(elementId, current, total) {
-        const elem = document.getElementById(elementId);
-        if (elem) {
-          elem.innerText = `완료: ${current} / ${total} queries`;
-        }
       }
 
       function updateTestResults(results) {
@@ -446,6 +482,7 @@
               <tbody>
         `;
         results.forEach((result) => {
+          const statusText = result.success ? 'Success' : 'Fail';
           summaryHTML += `
             <tr>
               <td>${result.arrival}</td>
@@ -454,7 +491,7 @@
               <td>${result.sendTime}</td>
               <td>${result.receiveTime}</td>
               <td>${result.elapsed}</td>
-              <td>${result.status}</td>
+              <td>${statusText}</td>
             </tr>
           `;
         });
@@ -466,13 +503,16 @@
 
         let detailsHTML = '<div class="test-details"><h3>Individual Test Details</h3>';
         results.forEach((result) => {
-          const safeResultOutput = formatJsonOutput(
-            result.data,
-            result.sendTime,
-            result.receiveTime,
-            result.elapsed,
-            result.id
-          );
+          const safeResultOutput = result.success
+            ? formatJsonOutput(
+                result.data || {},
+                result.sendTime,
+                result.receiveTime,
+                result.elapsed,
+                result.id
+              )
+            : `<pre style="color:red;">Error: ${result.error || 'Unknown error'}</pre>`;
+
           detailsHTML += `
             <div class="test-item">
               <h4>${result.id} - ${result.text}</h4>
@@ -480,8 +520,8 @@
               <p><strong>Send Time:</strong> ${result.sendTime}</p>
               <p><strong>Receive Time:</strong> ${result.receiveTime}</p>
               <p><strong>Elapsed Time:</strong> ${result.elapsed} ms</p>
-              <p><strong>Status:</strong> ${result.status}</p>
-              <p><strong>Response Data (Answer only):</strong></p>
+              <p><strong>Status:</strong> ${result.success ? 'Success' : 'Fail'}</p>
+              <p><strong>Response Data:</strong></p>
               ${safeResultOutput}
             </div>
           `;
@@ -493,21 +533,34 @@
       /************************************************************
        * (3) Single Streaming Test (POST-based streaming)
        ************************************************************/
-      let postStreamPartial = "";
-      let postStreamStartTime, postStreamFirstChunkTime, postStreamEndTime;
+      let postStreamFirstChunkTime = null;
+      let postStreamEndTime = null;
+      let postStreamStartTime = null;
+      let streamingInProgress = false;
+      let answerAccumulated = "";
+      let sseBuffer = "";
 
       async function startStreamPOST() {
+        if (streamingInProgress) {
+          alert("Streaming is already in progress.");
+          return;
+        }
+        streamingInProgress = true;
         const userQuery = document.getElementById('streamInput').value.trim();
         if (!userQuery) {
           alert('Please type a streaming query.');
+          streamingInProgress = false;
           return;
         }
         // Reset variables
-        postStreamPartial = "";
+        answerAccumulated = "";
+        sseBuffer = "";
         postStreamFirstChunkTime = null;
         postStreamEndTime = null;
         document.getElementById('streamOutput').textContent = "";
         document.getElementById('streamTiming').innerHTML = "";
+        document.getElementById('referenceData').innerHTML = "";
+        document.getElementById('referenceData').style.display = "none";
 
         postStreamStartTime = performance.now();
 
@@ -523,6 +576,7 @@
           }
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
+
           while (true) {
             const { done, value } = await reader.read();
             if (done) {
@@ -532,18 +586,21 @@
             }
             const chunk = decoder.decode(value, { stream: true });
             processPostSseChunk(chunk);
-            document.getElementById('streamOutput').textContent = postStreamPartial;
+            document.getElementById('streamOutput').textContent = answerAccumulated;
           }
         } catch (err) {
           console.error('POST-based streaming error:', err);
           postStreamEndTime = performance.now();
           updatePostStreamTiming();
+        } finally {
+          streamingInProgress = false;
         }
       }
 
       function processPostSseChunk(chunk) {
-        // SSE chunks in POST are expected as: "data: <text>\n\n"
-        const lines = chunk.split("\n");
+        sseBuffer += chunk;
+        let lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop(); // leftover
         for (let line of lines) {
           line = line.trim();
           if (!line) continue;
@@ -558,7 +615,27 @@
               updatePostStreamTiming();
               return;
             }
-            postStreamPartial += sseData;
+            try {
+              const jsonData = JSON.parse(sseData);
+              if (jsonData.type === "reference") {
+                let refHTML = `<h4>Reference Data</h4><ul>`;
+                if (Array.isArray(jsonData.data_list)) {
+                  jsonData.data_list.forEach((ref, idx) => {
+                    refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                  });
+                } else {
+                  refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
+                }
+                refHTML += `</ul>`;
+                document.getElementById("referenceData").innerHTML = refHTML;
+                document.getElementById("referenceData").style.display = "block";
+              } else if (jsonData.type === "answer") {
+                answerAccumulated += jsonData.answer;
+              }
+            } catch (e) {
+              // Not valid JSON, treat as plain text
+              answerAccumulated += sseData;
+            }
           }
         }
         updatePostStreamTiming();
@@ -566,17 +643,17 @@
 
       function updatePostStreamTiming() {
         let msg = "";
-        if (postStreamStartTime) {
+        if (postStreamStartTime !== null) {
           msg += `Started: ${postStreamStartTime.toFixed(1)} ms\n`;
         }
-        if (postStreamFirstChunkTime) {
+        if (postStreamFirstChunkTime !== null) {
           msg += `First chunk: ${postStreamFirstChunkTime.toFixed(1)} ms (delta: ${(postStreamFirstChunkTime - postStreamStartTime).toFixed(1)} ms)\n`;
         } else {
           msg += "First chunk: not yet\n";
         }
-        if (postStreamEndTime) {
+        if (postStreamEndTime !== null) {
           msg += `End: ${postStreamEndTime.toFixed(1)} ms (delta: ${(postStreamEndTime - postStreamStartTime).toFixed(1)} ms)\n`;
-          if (postStreamFirstChunkTime) {
+          if (postStreamFirstChunkTime !== null) {
             msg += `Chunk→End: ${(postStreamEndTime - postStreamFirstChunkTime).toFixed(1)} ms\n`;
           }
         } else {
@@ -586,211 +663,240 @@
       }
 
       /************************************************************
-       * (4) Simultaneous Streaming Test (GET-based SSE)
-       ************************************************************/
-      // Helper: Stream a single query via POST
-      async function startStreamForQuery(queryObj) {
-        const sendTime = performance.now();
-        let firstChunkTime = null;
-        try {
-          const response = await fetch('/query_stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: queryObj.text })
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let partialText = "";
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            if (!firstChunkTime && chunk.trim() !== "") {
-              firstChunkTime = performance.now();
-            }
-            partialText += chunk;
-          }
-          const endTime = performance.now();
-          return {
-            id: queryObj.id,
-            query: queryObj.text,
-            startTime: sendTime,
-            endTime: endTime,
-            duration: endTime - sendTime,
-            partialText: partialText
-          };
-        } catch (err) {
-          console.error("Streaming error for", queryObj.id, err);
-          const endTime = performance.now();
-          return {
-            id: queryObj.id,
-            query: queryObj.text,
-            startTime: sendTime,
-            endTime: endTime,
-            duration: endTime - sendTime,
-            partialText: ""
-          };
-        }
-      }
-
-      /************************************************************
        * (4) Simultaneous Streaming Test (POST-based streaming)
-       * We replace GET-based EventSource with POST-based streaming
        ************************************************************/
-      async function startStreamForQuery(queryObj) {
-        const sendTime = performance.now();
-        try {
-          const response = await fetch('/query_stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: queryObj.text })
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let partialText = "";
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            partialText += decoder.decode(value, { stream: true });
-          }
-          const endTime = performance.now();
-          return {
-            id: queryObj.id,
-            query: queryObj.text,
-            startTime: sendTime,
-            endTime: endTime,
-            duration: endTime - sendTime,
-            partialText: partialText
-          };
-        } catch (err) {
-          console.error("Streaming error for", queryObj.id, err);
-          const endTime = performance.now();
-          return {
-            id: queryObj.id,
-            query: queryObj.text,
-            startTime: sendTime,
-            endTime: endTime,
-            duration: endTime - sendTime,
-            partialText: ""
-          };
-        }
-      }
-      async function startSimulStream(queryObj, streamNumber) {
-        const containerId = `stream-${streamNumber}`;
+      async function startSimulStreamPOST(queryObj, containerId) {
         const container = document.getElementById(containerId);
-        container.innerHTML = `<h4>${queryObj.id} - ${queryObj.text}</h4><div class="partial-content"></div>`;
-        
+        container.innerHTML = `
+          <h4>${queryObj.id} - ${queryObj.text}</h4>
+          <pre class="stream-output" style="background:#fafafa; padding:10px;"></pre>
+          <div class="stream-info-box"></div>
+          <button onclick="toggleReferencesInContainer('${containerId}')">Toggle References</button>
+          <div class="reference-output" style="display:none; border:1px solid #ccc; padding:10px; margin-top:10px;"></div>
+        `;
+
+        let answerAccumulated = "";
+        let sseBuffer = "";
+        let chunkCount = 0;
+        const streamStartTime = performance.now();
+        let firstChunkTime = null;
+        let endTime = null;
+        let success = true;
+        let errorMessage = "";
+
         try {
           const response = await fetch('/query_stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ input: queryObj.text })
           });
-    
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          
+          if (!response.ok) {
+            success = false;
+            errorMessage = `Response not OK: ${response.status}`;
+            return {
+              id: queryObj.id,
+              query: queryObj.text,
+              sendTime: streamStartTime,
+              firstChunkTime,
+              endTime,
+              duration: 0,
+              success,
+              error: errorMessage,
+              chunkCount
+            };
+          }
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
-          let partial = '';
-          
-          activeStreams.set(queryObj.id, { reader, decoder });
-          
+
           while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
-            
+            if (done) {
+              endTime = performance.now();
+              updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+              break;
+            }
             const chunk = decoder.decode(value, { stream: true });
-            partial += chunk;
-            
-            // Process SSE chunks
-            const lines = partial.split('\n');
-            partial = lines.pop(); // Store incomplete line
-            
-            for (const line of lines) {
-              if (line.startsWith('data:')) {
-                const content = line.replace('data:', '').trim();
-                if (content === '[[STREAM_DONE]]') break;
-                
-                const contentDiv = container.querySelector('.partial-content');
-                contentDiv.textContent += content;
+            sseBuffer += chunk;
+            let lines = sseBuffer.split("\n");
+            sseBuffer = lines.pop();
+            for (let line of lines) {
+              line = line.trim();
+              if (!line) continue;
+              if (line.startsWith("data:")) {
+                const sseData = line.slice(5).trim();
+                // Count every SSE line as a 'chunk' for demonstration
+                chunkCount++;
+                if (!firstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
+                  firstChunkTime = performance.now();
+                  updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
+                }
+                if (sseData === "[[STREAM_DONE]]") {
+                  endTime = performance.now();
+                  updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+                  return {
+                    id: queryObj.id,
+                    query: queryObj.text,
+                    sendTime: streamStartTime,
+                    firstChunkTime,
+                    endTime,
+                    duration: endTime - streamStartTime,
+                    success,
+                    error: errorMessage,
+                    chunkCount
+                  };
+                }
+                try {
+                  const jsonData = JSON.parse(sseData);
+                  if (jsonData.type === "reference") {
+                    const refDiv = container.querySelector(".reference-output");
+                    let refHTML = `<h4>Reference Data</h4><ul>`;
+                    if (Array.isArray(jsonData.data_list)) {
+                      jsonData.data_list.forEach((ref, idx) => {
+                        refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                      });
+                    } else {
+                      refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
+                    }
+                    refHTML += `</ul>`;
+                    refDiv.innerHTML = refHTML;
+                  } else if (jsonData.type === "answer") {
+                    answerAccumulated += jsonData.answer;
+                    container.querySelector(".stream-output").textContent = answerAccumulated;
+                  }
+                } catch (e) {
+                  // Not valid JSON => treat as text
+                  answerAccumulated += sseData;
+                  container.querySelector(".stream-output").textContent = answerAccumulated;
+                }
               }
             }
+            updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
           }
         } catch (err) {
-          console.error(`Stream error for ${queryObj.id}:`, err);
-          container.innerHTML += `<p style="color:red">Error: ${err.message}</p>`;
-        } finally {
-          activeStreams.delete(queryObj.id);
+          success = false;
+          errorMessage = err.message;
+          container.querySelector(".stream-output").textContent += "\nError: " + err;
         }
-      }
-      // Update the table to include first chunk time
-      function updateSimulProps(results) {
-        let html = `<table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Query</th>
-                <th>Send Time</th>
-                <th>First Chunk Time</th>
-                <th>End Time</th>
-                <th>Duration (ms)</th>
-              </tr>
-            </thead>
-            <tbody>`;
-        results.forEach(r => {
-          const sendStr = r.sendTime.toFixed(1);
-          const firstStr = r.firstChunkTime ? r.firstChunkTime.toFixed(1) : '(n/a)';
-          const endStr = r.endTime.toFixed(1);
-          const durationStr = r.duration.toFixed(1);
-          html += `<tr>
-              <td>${r.id}</td>
-              <td>${r.query}</td>
-              <td>${sendStr}</td>
-              <td>${firstStr}</td>
-              <td>${endStr}</td>
-              <td>${durationStr}</td>
-            </tr>`;
-        });
-        html += `</tbody></table>`;
-        document.getElementById('simul-main-table').innerHTML = html;
-      }
-      function updateSimulPartials(results) {
-        let html = '<h3>Partial Text Blocks</h3>';
-        results.forEach(r => {
-          html += `<div class="partial-text-block">
-                      <h4>${r.id} - Partial Text</h4>
-                      <pre>${r.partialText}</pre>
-                    </div>`;
-        });
-        document.getElementById('simul-partials').innerHTML = html;
-      }
-      /************************************************************
-      * (4.1) Simultaneous Three Streaming Test (POST-based streaming)
-      ************************************************************/
-      const activeStreams = new Map();
-      async function testStreamingQueries() {
-        // Use a fixed set of 3 queries
-        const sseQueries = [
-          { id: 'SSE-1', text: '디지털화 근황' },
-          { id: 'SSE-2', text: 'IOT 컨테이너 사업에 대해서' },
-          { id: 'SSE-3', text: '주간회의 특징' }
-        ];
-        const simulResults = await Promise.all(sseQueries.map(q => startStreamForQuery(q)));
-        updateSimulProps(simulResults);
-        updateSimulPartials(simulResults);
+
+        // If we exit the loop or have an error:
+        endTime = endTime || performance.now();
+        updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+        return {
+          id: queryObj.id,
+          query: queryObj.text,
+          sendTime: streamStartTime,
+          firstChunkTime,
+          endTime,
+          duration: endTime - streamStartTime,
+          success,
+          error: errorMessage,
+          chunkCount
+        };
       }
 
-      /************************************************************
-      * (4.2) Simultaneous Multi Streaming Test (POST-based streaming)
-      ************************************************************/
-      async function testStreamingQueriesMulti() {
-        const testQueries = buildTestQueries();
-        // Create a container for each query result
-        const simulResults = await Promise.all(testQueries.map(q => startStreamForQuery(q)));
-        updateSimulProps(simulResults);
-        updateSimulPartials(simulResults);
+      function updateContainerTiming(container, start, first, end, chunkCount) {
+        const infoBox = container.querySelector(".stream-info-box");
+        let infoMsg = `Started: ${start.toFixed(1)} ms\n`;
+        if (first) {
+          infoMsg += `First chunk: ${first.toFixed(1)} ms (delta: ${(first - start).toFixed(1)} ms)\n`;
+        } else {
+          infoMsg += "First chunk: not yet\n";
+        }
+        if (end) {
+          infoMsg += `End: ${end.toFixed(1)} ms (delta: ${(end - start).toFixed(1)} ms)\n`;
+          if (first) {
+            infoMsg += `Chunk→End: ${(end - first).toFixed(1)} ms\n`;
+          }
+        } else {
+          infoMsg += "End: not yet\n";
+        }
+        infoMsg += `Chunk Count: ${chunkCount}\n`;
+        infoBox.textContent = infoMsg;
+      }
+
+      function toggleReferencesInContainer(containerId) {
+        const container = document.getElementById(containerId);
+        const refDiv = container.querySelector(".reference-output");
+        if (refDiv.style.display === "none" || refDiv.style.display === "") {
+          refDiv.style.display = "block";
+        } else {
+          refDiv.style.display = "none";
+        }
+      }
+
+      async function testSimulStreamPOST() {
+        const queries = buildTestQueries();
+        // Use all queries in the test set
+        const simulQueries = queries;
+        const simulPartialsContainer = document.getElementById("simul-partials");
+        const simulResultsContainer = document.getElementById("simul-results");
+        simulPartialsContainer.innerHTML = ""; // Clear previous streams
+        simulResultsContainer.innerHTML = "";   // Clear previous result table
+
+        // Fire all streaming requests in parallel
+        const promises = simulQueries.map((q, index) => {
+          const containerId = "simul-stream-" + index;
+          const div = document.createElement("div");
+          div.id = containerId;
+          simulPartialsContainer.appendChild(div);
+          return startSimulStreamPOST(q, containerId);
+        });
+
+        let results = await Promise.all(promises);
+        let summaryTable = buildSimulSummaryTable(results);
+        simulResultsContainer.innerHTML = summaryTable;
+      }
+
+      function buildSimulSummaryTable(results) {
+        // Calculate success/fail stats
+        let successCount = 0;
+        let failCount = 0;
+        results.forEach(r => {
+          if (r.success) successCount++;
+          else failCount++;
+        });
+
+        // Build summary table
+        let html = `<div class="test-summary">
+                      <h3>Simultaneous Streaming Results</h3>
+                      <p>Total: ${results.length}, Success: ${successCount}, Fail: ${failCount}</p>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>ID</th>
+                            <th>Query</th>
+                            <th>Send Time (ms)</th>
+                            <th>First Chunk (ms)</th>
+                            <th>End Time (ms)</th>
+                            <th>Duration (ms)</th>
+                            <th>Chunk Count</th>
+                            <th>Status</th>
+                            <th>Error</th>
+                          </tr>
+                        </thead>
+                        <tbody>`;
+
+        results.forEach(r => {
+          const statusText = r.success ? "Success" : "Fail";
+          const errorText = r.error || "";
+          const firstTimeStr = r.firstChunkTime ? r.firstChunkTime.toFixed(1) : "n/a";
+          const endTimeStr = r.endTime ? r.endTime.toFixed(1) : "n/a";
+          const durationStr = r.duration ? r.duration.toFixed(1) : "n/a";
+          html += `<tr>
+                     <td>${r.id}</td>
+                     <td>${r.query}</td>
+                     <td>${r.sendTime.toFixed(1)}</td>
+                     <td>${firstTimeStr}</td>
+                     <td>${endTimeStr}</td>
+                     <td>${durationStr}</td>
+                     <td>${r.chunkCount}</td>
+                     <td>${statusText}</td>
+                     <td style="color:red;">${errorText}</td>
+                   </tr>`;
+        });
+
+        html += `</tbody></table></div>`;
+        return html;
       }
 
       /************************************************************
@@ -802,7 +908,7 @@
         const total = queries.length;
         document.getElementById('continuousTestResults').innerHTML = `Running ${mode} test...<br>`;
         updateProgressIndicator('continuousProgress', 0, total);
-    
+
         for (let i = 0; i < queries.length; i++) {
           if (mode === 'nonstream') {
             const r = await runNonStreamingQuery(queries[i]);
@@ -813,15 +919,15 @@
           }
           updateProgressIndicator('continuousProgress', i + 1, total);
         }
-    
+
         let sum = 0;
         results.forEach(r => sum += r.duration);
         const avg = (sum / results.length).toFixed(2);
-    
-        let html = `<h3>Continuous ${mode === 'nonstream' ? 'Non-Streaming' : 'Streaming'} Test (100 queries) Results</h3>`;
+
+        let html = `<h3>Continuous ${mode === 'nonstream' ? 'Non-Streaming' : 'Streaming'} Test (${total} queries) Results</h3>`;
         html += `<p>Average Duration: <strong>${avg} ms</strong></p>`;
         html += "<ul>";
-        results.forEach((r, idx) => {
+        results.forEach((r) => {
           html += `<li><strong>${r.id}</strong> [${r.query}] - Start: ${r.startTime}, End: ${r.endTime}, Duration: ${r.duration} ms</li>`;
         });
         html += "</ul>";
@@ -851,7 +957,7 @@
           duration: duration
         };
       }
-    
+
       function runStreamingQuery(qObj) {
         return new Promise((resolve, reject) => {
           const sendTime = new Date();
@@ -888,7 +994,10 @@
           };
         });
       }
-    
+
+      /************************************************************
+       * Helper: Build Test Queries from the selector
+       ************************************************************/
       function buildTestQueries() {
         const testSet = document.getElementById('testSetSelect').value;
         let queries = [];
@@ -941,42 +1050,25 @@
           ];
           queries = mixed20Queries2;
         } else if (testSet === 'set3') {
-          const mixed20Queries3 = [
-            { id: "same1-1", text: "신입사원 인사 필수로 알아야 하는 것" },
-            { id: "same1-2", text: "디지털화 근황" },
-            { id: "same1-3", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "same1-4", text: "주간회의 특징 및 주요 말씀" },
-            { id: "same1-5", text: "해운업계의 경쟁 구도" },
-            { id: "same2-1", text: "신입사원 인사 필수로 알아야 하는 것" },
-            { id: "same2-2", text: "디지털화 근황" },
-            { id: "same2-3", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "same2-4", text: "주간회의 특징 및 주요 말씀" },
-            { id: "same2-5", text: "해운업계의 경쟁 구도" },
-            { id: "same3-1", text: "신입사원 인사 필수로 알아야 하는 것" },
-            { id: "same3-2", text: "디지털화 근황" },
-            { id: "same3-3", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "same3-4", text: "주간회의 특징 및 주요 말씀" },
-            { id: "same3-5", text: "해운업계의 경쟁 구도" },
-            { id: "same4-1", text: "신입사원 인사 필수로 알아야 하는 것" },
-            { id: "same4-2", text: "디지털화 근황" },
-            { id: "same4-3", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "same4-4", text: "주간회의 특징 및 주요 말씀" },
-            { id: "same4-5", text: "해운업계의 경쟁 구도" }
+          const differentThreeQueries = [
+            { id: "only3-1", text: "남성해운 중국 시장 근황" },
+            { id: "only3-2", text: "공 컨테이너 수송 전략" },
+            { id: "only3-3", text: "남성해운의 새로운 전략" }
           ];
-          queries = mixed20Queries3;
+          queries = differentThreeQueries;
         } else if (testSet === 'same100') {
           for (let i = 1; i <= 100; i++) {
             queries.push({ id: `same100-${i}`, text: "디지털 전략" });
           }
         } else if (testSet === 'circulate5x20') {
           const baseQueries = [
-            { id: "q1", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "q1", text: "남성해운 영업 전략" },
             { id: "q2", text: "디지털화 근황" },
             { id: "q3", text: "IOT 컨테이너 사업에 대해서" },
             { id: "q4", text: "주간회의 특징 및 주요 말씀" },
             { id: "q5", text: "해운업계의 경쟁 구도" }
           ];
-          for (let k = 1; k <= 40; k++) {
+          for (let k = 1; k <= 20; k++) {
             baseQueries.forEach((q) => {
               queries.push({ id: `circulate${k}-${q.id}`, text: q.text });
             });
@@ -1084,76 +1176,9 @@
             { id: "mix-ask99", text: "디지털 트랜스포메이션이 해운업계에 미치는 영향" },
             { id: "mix-ask100", text: "IOT 기술이 해운업계에 미치는 영향" }
           ];
-          queries = mixedQueries; // Use the mixed set
+          queries = mixedQueries;
         }
         return queries;
-      }
-    
-      /************************************************************
-       * (For Continuous Test) Non-streaming version: normal POST request
-       ************************************************************/
-      async function runNonStreamingQuery(qObj) {
-        const sendTime = new Date();
-        const startTs = Date.now();
-        try {
-          const resp = await fetch('/query', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ qry_contents: qObj.text })
-          });
-          await resp.json();
-        } catch (e) {
-          console.error("Non-stream error:", e);
-        }
-        const endTime = new Date();
-        const duration = Date.now() - startTs;
-        return {
-          id: qObj.id,
-          query: qObj.text,
-          startTime: formatTime(sendTime),
-          endTime: formatTime(endTime),
-          duration: duration
-        };
-      }
-    
-      /************************************************************
-       * (For Continuous Test) Streaming version: SSE approach (GET-based)
-       ************************************************************/
-      function runStreamingQuery(qObj) {
-        return new Promise((resolve, reject) => {
-          const sendTime = new Date();
-          const startTs = Date.now();
-          const sseUrl = '/query_stream?input=' + encodeURIComponent(qObj.text);
-          const es = new EventSource(sseUrl);
-          es.onmessage = (evt) => {
-            const trimmed = evt.data.trim();
-            if (trimmed.includes("[[STREAM_DONE]]")) {
-              es.close();
-              const endTime = new Date();
-              const duration = Date.now() - startTs;
-              resolve({
-                id: qObj.id,
-                query: qObj.text,
-                startTime: formatTime(sendTime),
-                endTime: formatTime(endTime),
-                duration: duration
-              });
-            }
-          };
-          es.onerror = (err) => {
-            console.error("Stream error on", qObj.id, err);
-            es.close();
-            const endTime = new Date();
-            const duration = Date.now() - startTs;
-            resolve({
-              id: qObj.id,
-              query: qObj.text,
-              startTime: formatTime(sendTime),
-              endTime: formatTime(endTime),
-              duration: duration
-            });
-          };
-        });
       }
     </script>
   </body>
