@@ -424,11 +424,13 @@ class InferenceActor:
         Called from /query_stream route.
         Create request_id, SSE queue, push to the micro-batch, return request_id.
         """
-        request_id = str(uuid.uuid4())
+        # 사용자로부터 Request_id를 받거나 그렇지 않은 경우, 이를 랜덤으로 생성
+        request_id = http_query.get("request_id")
+        if not request_id:
+            request_id = str(uuid.uuid4())
         await self.queue_manager.create_queue.remote(request_id)
-        print(
-            f"[STREAM] process_query_stream => request_id={request_id}, http_query={http_query}"
-        )
+        print(f"[STREAM] process_query_stream => request_id={request_id}, http_query={http_query}")
+
 
         loop = asyncio.get_event_loop()
         final_future = loop.create_future()
