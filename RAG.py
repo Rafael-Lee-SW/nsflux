@@ -404,9 +404,9 @@ async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_para
 
 if __name__ == "__main__":
     import asyncio
-    engine = AsyncLLMEngine.from_engine_args(engine_args, start_engine_loop=False)
-    if not engine.is_running:
-        engine.start_background_loop()
+    # engine = AsyncLLMEngine.from_engine_args(engine_args, start_engine_loop=False)
+    # if not engine.is_running:
+    #     engine.start_background_loop()
     
     async def main():
         status = True
