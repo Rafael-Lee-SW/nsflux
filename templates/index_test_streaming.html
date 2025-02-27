@@ -958,43 +958,50 @@
         };
       }
 
+      // 기존의 runStreamingQuery 함수는 GET 방식을 사용했으나, 이제 POST 방식으로 변경합니다.
+      // POST 방식으로 요청을 보내고, 응답 스트림을 처리하여 SSE 청크를 읽습니다.
       function runStreamingQuery(qObj) {
         return new Promise((resolve, reject) => {
           const sendTime = new Date();
           const startTs = Date.now();
-          const sseUrl = '/query_stream?input=' + encodeURIComponent(qObj.text);
-          const es = new EventSource(sseUrl);
-          es.onmessage = (evt) => {
-            const trimmed = evt.data.trim();
-            if (trimmed.includes("[[STREAM_DONE]]")) {
-              es.close();
-              const endTime = new Date();
-              const duration = Date.now() - startTs;
-              resolve({
-                id: qObj.id,
-                query: qObj.text,
-                startTime: formatTime(sendTime),
-                endTime: formatTime(endTime),
-                duration: duration
-              });
-            }
-          };
-          es.onerror = (err) => {
-            console.error("Stream error on", qObj.id, err);
-            es.close();
-            const endTime = new Date();
-            const duration = Date.now() - startTs;
-            resolve({
-              id: qObj.id,
-              query: qObj.text,
-              startTime: formatTime(sendTime),
-              endTime: formatTime(endTime),
-              duration: duration
+          let accumulatedText = "";
+          // POST 방식으로 /query_stream에 요청 (Content-Type은 JSON)
+          fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: qObj.text })
+          })
+            .then(response => {
+              const reader = response.body.getReader();
+              const decoder = new TextDecoder();
+              // 함수: 응답 스트림을 재귀적으로 읽어 처리
+              function processStream({ done, value }) {
+                if (done) {
+                  const endTime = new Date();
+                  const duration = Date.now() - startTs;
+                  resolve({
+                    id: qObj.id,
+                    query: qObj.text,
+                    startTime: formatTime(sendTime),
+                    endTime: formatTime(endTime),
+                    duration: duration,
+                    result: accumulatedText
+                  });
+                  return;
+                }
+                // 수신한 청크를 디코딩하여 누적
+                accumulatedText += decoder.decode(value, { stream: true });
+                // 추가 청크 읽기
+                reader.read().then(processStream).catch(reject);
+              }
+              return reader.read().then(processStream);
+            })
+            .catch(err => {
+              reject(err);
             });
-          };
         });
       }
-
+      
       /************************************************************
        * Helper: Build Test Queries from the selector
        ************************************************************/

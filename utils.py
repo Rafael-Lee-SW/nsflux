@@ -209,16 +209,30 @@ def load_model(config):
         engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
         # engine_args.block_size = vllm_conf.get("block_size", 128)
         engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization", 0.9)
-
+        
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
+        
+        engine_args.enable_memory_defrag = True # v1
         
         # print("Final EngineArgs:", engine_args)
         print("EngineArgs setting be finished")
 
         try:
-            engine = AsyncLLMEngine.from_engine_args(engine_args)
-            print("DEBUG: vLLM engine successfully created.")
+            # --- 해결책: 현재 스레드가 메인 스레드가 아니면 signal 함수를 임시 패치 ---
+            import threading, signal
+            if threading.current_thread() is not threading.main_thread():
+                original_signal = signal.signal
+                signal.signal = lambda s, h: None  # signal 설정 무시
+                print("비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.")
+            # --- 해결책: ------------------------------------------------------ ---
+            engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
+            # 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) ----------------- ---
+            if threading.current_thread() is not threading.main_thread():
+                signal.signal = original_signal
+            # --- 해결책: ------------------------------------------------------ ---
+            print("DEBUG: vLLM engine successfully created.") # Original
+            
         except Exception as e:
             print("DEBUG: Exception during engine creation:", e)
             if "HeaderTooSmall" in str(e):

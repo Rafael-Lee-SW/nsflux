@@ -1,0 +1,3451 @@
+# Project Tree of RAG for company
+
+```
+├─ .dockerignore
+├─ Dockerfile
+├─ RAG.py
+├─ app.py
+├─ config.yaml
+├─ prompt_rag.py
+├─ ray_setup.py
+├─ ray_utils.py
+├─ requirements.txt
+├─ sql.py
+├─ templates/index_test_streaming.html
+├─ tracking.py
+└─ utils.py
+```
+
+--- .dockerignore
+
+```python
+
+huggingface
+YeoJun
+
+# Ignore git files and folders
+.git
+.gitignore
+
+# Ignore Python cache files
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore virtual environments or local build folders
+venv
+env
+*.env
+.env.*
+build/
+dist/
+
+# Ignore logs and temporary files
+*.log
+*.tmp
+
+# If you have any large data or model files that are not needed in build context, ignore them
+data/
+models/
+logs/
+
+```
+
+
+--- config.yaml
+
+```python
+
+# config.yaml
+# Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
+### Model
+model_id : 'google/gemma-2-27b-it'
+
+ray:
+  actor_count: 1                  # 총 Actor 개수(same as num_replicas)
+  num_gpus: 2                     # 각 Actor(Node)가 점유하고 있는 GPU 갯수
+  num_cpus: 48                    # 각 Actor(Node)가 점유하고 있는 CPU 갯수 (1 actor 시에 gpu 48개, 2 actor 시에 gpu 24개 할당)
+  max_batch_size: 10              # max_concurrency(actor 최대 동시 처리량, default 1000)로 대체해도 됨
+  batch_wait_timeout: 0.05        
+  max_ongoing_requests: 100        # ray.serve에서 deployment setting으로 동시 요청 처리 갯수를 의미함(Batch랑 다름)
+
+use_vllm: True # vLLM 사용 여부
+vllm:
+  enable_prefix_caching: True
+  scheduler_delay_factor: 0.1
+  enable_chunked_prefill: True
+  tensor_parallel_size: 2         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
+  max_num_seqs: 192               # v1에 따른 상향
+  max_num_batched_tokens: 24576   # v1에 따른 상향
+  block_size: 128 # 미적용
+  gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
+  disable_custom_all_reduce: true
+  enable_memory_defrag: True      # v1 신규 기능 활성화
+
+model:
+  quantization_4bit : False # Quantize 4-bit
+  quantization_8bit : False # Quantize 8-bit
+  max_new_tokens : 2048      # 생성할 최대 토큰 수
+
+  do_sample : True # True 일때만 아래가 적용
+  temperature : 1.0          # 텍스트 다양성 조정: 높을수록 창의력 향상 (1.0)
+  top_k : 30                 # top-k 샘플링: 상위 k개의 후보 토큰 중 하나를 선택 (50)
+  top_p : 1.0                # top-p 샘플링: 누적 확률을 기준으로 후보 토큰을 선택 (1.0 보다 낮을수록 창의력 증가)
+  repetition_penalty : 1.0   # 같은 단어를 반복해서 출력하지 않도록 패널티를 부여 (1.0 보다 클수록 페널티 증가)
+embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
+# cache_dir : "D:/huggingface" # Windows Local
+# cache_dir : "/media/user/7340afbb-e4ce-4a38-8210-c6362e85eae7/RAG/RAG_application/huggingface" # Local
+cache_dir : "/workspace/huggingface"  # Docker
+
+### Data
+data_path : 'data/1104_NS_DB_old.json' # VectorDB Path
+metadata_path : 'data/Metadata.json' # Metadata.json Path
+sql_data_path : 'data/poc.db'        # SQLite 데이터베이스 Path
+
+### Retrieve
+N : 5 # Retrieve top N chunks
+
+### Others
+beep : '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+seed : 4734                     # Radom Seed
+k : 15                        # SQL Max Rows (None=MAX)
+
+```
+
+
+--- Dockerfile
+
+```python
+
+# 베이스 이미지 선택
+FROM globeai/flux_ns:1.24
+
+# 작업 디렉토리 설정
+WORKDIR /workspace
+
+# requirements.txt만 먼저 복사해서 종속성 설치 (캐시 활용)
+COPY requirements.txt .
+
+# pip 캐시 사용 안 함으로 설치 (임시 파일 최소화)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Solve the C compier
+RUN apt-get update && apt-get install build-essential -y
+
+# 현재 디렉토리의 모든 파일을 컨테이너의 /app 폴더로 복사
+COPY . /workspace
+
+# Flask 앱이 실행될 포트를 열어둠
+EXPOSE 5000
+
+# Ray Dashboard 포트 (8265)와 vLLM 관련 포트 필요 시 추가
+EXPOSE 8265
+# Expose port for the vLLM
+EXPOSE 8000
+
+# Flask 앱 실행 명령어
+CMD ["python", "app.py"]
+
+```
+
+
+--- requirements.txt
+
+```python
+
+# 파일 읽기 오류: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+
+```
+
+
+--- app.py
+
+```python
+
+# app.py
+import os
+# Setting environment variable
+# os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
+os.environ["HF_HOME"] = "/workspace/huggingface"
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# For the Huggingface Token setting
+os.environ["HF_TOKEN_PATH"] = "/root/.cache/huggingface/token"
+# Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA),
+# and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
+# OpenMP: Open-Multi-Processing API
+os.environ["MKL_THREADING_LAYER"] = "GNU"
+# Increase download timeout (in seconds)
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+# Use the vLLM as v1 version
+os.environ["VLLM_USE_V1"] = "1"
+os.environ["VLLM_STANDBY_MEM"] = "0"
+os.environ["VLLM_METRICS_LEVEL"] = "1"
+os.environ["VLLM_PROFILE_MEMORY"]= "1"
+
+from flask import (
+    Flask,
+    request,
+    Response,
+    render_template,
+    jsonify,
+    g,
+    stream_with_context,
+)
+import json
+import yaml
+from box import Box
+from utils import random_seed, error_format
+from datetime import datetime
+
+# Import the Ray modules
+from ray_setup import init_ray
+from ray import serve
+from ray_utils import InferenceActor
+from ray_utils import InferenceService, SSEQueueManager
+
+# ------ checking process of the thread level
+import logging
+
+# 로깅 설정: 요청 처리 시간과 현재 스레드 이름을 기록
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s [%(threadName)s] %(message)s'
+)
+
+# --------------------- Streaming part ----------------------------
+import ray
+import uuid
+import asyncio
+
+# --------------------- Streaming part ----------------------------
+
+# Configuration
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
+random_seed(config.seed)
+
+########## Ray Dashboard 8265 port ##########
+init_ray()  # Initialize the Ray
+sse_manager = SSEQueueManager.options(name="SSEQueueManager").remote()
+serve.start(detached=True)
+
+#### Ray-Actor 다중 ####
+inference_service = InferenceService.options(num_replicas=config.ray.actor_count).bind(config)
+serve.run(inference_service)
+inference_handle = serve.get_deployment_handle("inference", app_name="default")
+
+#### Ray-Actor 단독 ####
+# inference_actor = InferenceActor.options(num_cpus=config.ray.num_cpus, num_gpus=config.ray.num_gpus).remote(config)
+
+########## FLASK APP setting ##########
+app = Flask(__name__)
+content_type = "application/json; charset=utf-8"
+
+
+# 기본 페이지를 불러오는 라우트
+@app.route("/")
+def index():
+    return render_template("index.html")  # index.html을 렌더링
+
+
+# Test 페이지를 불러오는 라우트
+@app.route("/test")
+def test_page():
+    return render_template("index_test_streaming.html")  # index.html을 렌더링
+
+# Query Endpoint (Non-streaming)
+@app.route("/query", methods=["POST"])
+async def query():
+    try:
+        
+        # Log when the query is received
+        receive_time = datetime.now().isoformat()
+        print(f"[APP] Received /query request at {receive_time}")
+        
+        # Optionally, attach the client time if desired:
+        http_query = request.json  # 클라이언트로부터 JSON 요청 수신
+        
+        http_query["server_receive_time"] = receive_time
+        
+        # Ray Serve 배포된 서비스를 통해 추론 요청 (자동으로 로드밸런싱됨)
+        # result = await inference_actor.process_query.remote(http_query) # 단일
+        result = await inference_handle.query.remote(http_query) # 다중
+        if isinstance(result, dict):
+            result = json.dumps(result, ensure_ascii=False)
+        # print("APP.py - 결과: ", result)
+        return Response(result, content_type=content_type)
+    except Exception as e:
+        error_resp = error_format(f"서버 처리 중 오류 발생: {str(e)}", 500)
+        return Response(error_resp, content_type=content_type)
+
+# --------------------- Streaming part ----------------------------
+
+# Streaming Endpoint (POST 방식 SSE) → 동기식 뷰 함수로 변경
+@app.route("/query_stream", methods=["POST"])
+def query_stream():
+    """
+    POST 방식 SSE 스트리밍 엔드포인트.
+    클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
+    """
+    body = request.json or {}
+    user_input = body.get("input", "")
+    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}'")
+    http_query = {"qry_contents": user_input}
+    print(f"[DEBUG] Built http_query={http_query}")
+
+    # Obtain request_id from Ray
+    # request_id = ray.get(inference_actor.process_query_stream.remote(http_query)) # 단일
+    # ----------------------------------------------------------------------------- 다중
+    response = inference_handle.process_query_stream.remote(http_query)
+    obj_ref = response._to_object_ref_sync()
+    request_id = ray.get(obj_ref)
+    # ----------------------------------------------------------------------------- 다중
+    print(f"[DEBUG] streaming request_id={request_id}")
+
+    # def sse_generator():
+    #     print("[DEBUG] sse_generator started: begin pulling partial tokens in a loop")
+    #     while True:
+    #         partial_text = ray.get(inference_actor.pop_sse_token.remote(request_id)) # 단일
+    #         if partial_text is None:
+    #             print("[DEBUG] partial_text is None => no more data => break SSE loop")
+    #             break
+    #         if partial_text == "[[STREAM_DONE]]":
+    #             print("[DEBUG] got [[STREAM_DONE]], ending SSE loop")
+    #             break
+    #         yield f"data: {partial_text}\n\n"
+    #     # close_sse_queue 호출
+    #     ray.get(inference_actor.close_sse_queue.remote(request_id)) # 단일
+    #     print("[DEBUG] SSE closed.")
+    
+    def sse_generator():
+        try:
+            while True:
+                # Retrieve token from SSEQueueManager
+                token = ray.get(sse_manager.get_token.remote(request_id, 120))
+                if token is None or token == "[[STREAM_DONE]]":
+                    break
+                yield f"data: {token}\n\n"
+        except Exception as e:
+            error_token = json.dumps({"type": "error", "message": str(e)})
+            yield f"data: {error_token}\n\n"
+        finally:
+            # Cleanup: close the SSE queue after streaming is done
+            try:
+                obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+                ray.get(obj_ref)
+            except Exception as ex:
+                print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+            print("[DEBUG] SSE closed.")
+
+    return Response(sse_generator(), mimetype="text/event-stream")
+# --------------------- Streaming part ----------------------------
+
+# Flask app 실행
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)
+
+```
+
+
+--- ray_setup.py
+
+```python
+
+# ray_setup.py
+import ray
+from ray import serve
+
+########## Starting Banner ############
+from colorama import init, Fore, Style
+init(autoreset=True)
+
+BANNER = Fore.GREEN + r"""
+'########:'##::::'##:'##:::::::'##::::'##::::::::::'##::: ##::'######::
+ ##.....:: ##:::: ##: ##:::::::. ##::'##::::::::::: ###:: ##:'##... ##:
+ ##::::::: ##:::: ##: ##::::::::. ##'##:::::::::::: ####: ##: ##:::..::
+ ######::: ##:::: ##: ##:::::::::. ###::::::::::::: ## ## ##:. ######::
+ ##...:::: ##:::: ##: ##::::::::: ## ##:::::::::::: ##. ####::..... ##:
+ ##::::::: ##:::: ##: ##:::::::: ##:. ##::::::::::: ##:. ###:'##::: ##:
+ ##:::::::. #######:: ########: ##:::. ##:'#######: ##::. ##:. ######::
+..:::::::::.......:::........::..:::::..::.......::..::::..:::......:::
+"""
+
+def init_ray():
+    print(BANNER)
+    # Ray-Dashboard - GPU 상태, 사용 통계 등을 제공하는 모니터링 툴, host 0.0.0.0로 외부 접속을 허용하고, Default 포트인 8265으로 설정
+    ray.init(
+        include_dashboard=True,
+        dashboard_host="0.0.0.0" # External IP accessable
+        # dashboard_port=8265
+    )
+    print("Ray initialized. DashBoard running at http://192.222.54.254:8265") # New Server(2xH100)
+
+```
+
+
+--- ray_utils.py
+
+```python
+
+# ray_utils.py
+import ray  # Ray library
+from ray import serve
+import json
+import asyncio  # async I/O process module
+from concurrent.futures import ProcessPoolExecutor  # 스레드 컨트롤
+import uuid  # --- NEW OR MODIFIED ---
+import time
+from typing import Dict, Optional  # --- NEW OR MODIFIED ---
+import threading  # To find out the usage of thread
+import datetime
+
+from RAG import (
+    query_sort,
+    execute_rag,
+    generate_answer,
+    generate_answer_stream,
+)  # hypothetically
+from utils import (
+    load_model,
+    load_data,
+    process_format_to_response,
+    process_to_format,
+    error_format,
+)
+
+
+@ray.remote  # From Decorator, Each Actor is allocated 1 GPU
+class InferenceActor:
+    async def __init__(self, config):
+        self.config = config
+        # 액터 내부에서 모델 및 토크나이저를 새로 로드 (GPU에 한 번만 로드)
+        self.model, self.tokenizer, self.embed_model, self.embed_tokenizer = load_model(
+            config
+        )
+        # 데이터는 캐시 파일을 통해 로드
+        self.data = load_data(config.data_path)
+        # 비동기 큐와 배치 처리 설정 (마이크로배칭)
+        self.request_queue = asyncio.Queue()
+        self.max_batch_size = config.ray.max_batch_size  # 최대 배치 수
+        self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간
+
+        # Actor 내부에서 ProcessPoolExecutor 생성 (직렬화 문제 회피)
+        max_workers = int(min(config.ray.num_cpus * 0.8, (26*config.ray.actor_count)-4))
+        self.process_pool = ProcessPoolExecutor(max_workers)
+
+        self.queue_manager = ray.get_actor("SSEQueueManager")
+        # --- NEW OR MODIFIED ---
+        # A dictionary to store SSE queues for streaming requests
+        # Key = request_id, Value = an asyncio.Queue of partial token strings
+        self.active_sse_queues: Dict[str, asyncio.Queue] = {}
+
+        self.batch_counter = 0  # New counter to track batches
+
+        # Micro-batching만 적용
+        # asyncio.create_task(self._batch_processor())
+
+        # In-flight batching까지 추가 적용
+        asyncio.create_task(self._in_flight_batch_processor())
+
+    # --------------------------------------------------------
+    # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
+    # --------------------------------------------------------
+
+    async def process_query(self, http_query):
+        """
+        Existing synchronous method. Returns final string/dict once done.
+        """
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        # There's no SSE queue for normal queries
+        sse_queue = None
+        await self.request_queue.put((http_query, future, sse_queue))
+        # print("self.request_queue : ", self.request_queue)
+        return await future
+
+    # -------------------------------------------------------------------------
+    # Micro_batch_processor
+    # -------------------------------------------------------------------------
+
+    async def _batch_processor(self):
+        """
+        Continuously processes queued requests in batches (micro-batching).
+        We add new logic for streaming partial tokens if a request has an SSE queue.
+        """
+        while True:
+            batch = []
+            batch_start_time = time.time()
+            # 1) get first request from the queue
+            print("=== _batch_processor waiting for request_queue item... ===")
+            item = await self.request_queue.get()
+            print(
+                f"[DEBUG] 첫 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: 1)"
+            )
+            batch.append(item)
+
+            print(f"[DEBUG] Received first request at {time.strftime('%H:%M:%S')}")
+
+            # 2) try to fill the batch up to batch_size or until timeout
+            try:
+                while len(batch) < self.max_batch_size:
+                    print("현재 배치 사이즈 : ", len(batch))
+                    print("최대 배치 사이즈 : ", self.max_batch_size)
+                    item = await asyncio.wait_for(
+                        self.request_queue.get(), timeout=self.batch_wait_timeout
+                    )
+
+                    batch.append(item)
+                    print(
+                        f"[DEBUG] 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})"
+                    )
+            except asyncio.TimeoutError:
+                elapsed = time.time() - batch_start_time
+                print(
+                    f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})"
+                )
+                pass
+
+            print(
+                f"=== _batch_processor: 배치 사이즈 {len(batch)} 처리 시작 ({time.strftime('%H:%M:%S')}) ==="
+            )
+
+            # 각 요청 처리 전후에 로그 추가
+            start_proc = time.time()
+            await asyncio.gather(
+                *(
+                    self._process_single_query(req, fut, sse_queue)
+                    for (req, fut, sse_queue) in batch
+                )
+            )
+            proc_time = time.time() - start_proc
+            print(f"[DEBUG] 해당 배치 처리 완료 (처리시간: {proc_time:.2f}초)")
+
+    # -------------------------------------------------------------------------
+    # In-flight BATCH PROCESSOR
+    # -------------------------------------------------------------------------
+
+    async def _in_flight_batch_processor(self):
+        while True:
+            # Wait for the first item (blocking until at least one is available)
+            print(
+                "=== [In-Flight Batching] Waiting for first item in request_queue... ==="
+            )
+            first_item = await self.request_queue.get()
+            batch = [first_item]
+            batch_start_time = time.time()
+
+            print(
+                "[In-Flight Batching] Got the first request. Attempting to fill a batch..."
+            )
+
+            # Attempt to fill up the batch until we hit max_batch_size or batch_wait_timeout
+            while len(batch) < self.max_batch_size:
+                try:
+                    remain_time = self.batch_wait_timeout - (
+                        time.time() - batch_start_time
+                    )
+                    if remain_time <= 0:
+                        print(
+                            "[In-Flight Batching] Timed out waiting for more requests; proceeding with current batch."
+                        )
+                        break
+                    item = await asyncio.wait_for(
+                        self.request_queue.get(), timeout=remain_time
+                    )
+                    batch.append(item)
+                    print(
+                        f"[In-Flight Batching] +1 request => batch size now {len(batch)} <<< {self.max_batch_size}"
+                    )
+                except asyncio.TimeoutError:
+                    print(
+                        "[In-Flight Batching] Timeout reached => proceeding with the batch."
+                    )
+                    break
+            self.batch_counter += 1
+            print(
+                f"[BATCH {self.batch_counter}] In-Flight batch collected with {len(batch)} requests"
+            )
+
+            # We have a batch of items: each item is ( http_query_or_stream_dict, future, sse_queue )
+            # We'll process them concurrently.
+            tasks = []
+            for request_tuple in batch:
+                request_obj, fut, sse_queue = request_tuple
+                tasks.append(self._process_single_query(request_obj, fut, sse_queue))
+
+            # Actually run them all concurrently
+            await asyncio.gather(*tasks)
+
+    async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
+        """
+        Process a single query from the micro-batch. If 'sse_queue' is given,
+        we do partial-token streaming. Otherwise, normal final result.
+        """
+        print(
+            f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}"
+        )
+        try:
+            # --- NEW OR MODIFIED ---
+            # Distinguish between normal requests vs streaming requests:
+            if (
+                isinstance(http_query_or_stream_dict, dict)
+                and "request_id" in http_query_or_stream_dict
+            ):
+                # It's a streaming request
+                request_id = http_query_or_stream_dict["request_id"]
+                http_query = http_query_or_stream_dict["http_query"]
+                is_streaming = True
+                print(f"[STREAM] _process_single_query: request_id={request_id}")
+            else:
+                # It's a normal synchronous request
+                request_id = None
+                http_query = http_query_or_stream_dict
+                is_streaming = False
+                print("[SYNC] _process_single_query started...")
+
+            # 1) get user query
+            user_input = http_query.get("qry_contents", "")
+            # To Calculate the token
+            tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
+            print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
+
+            # 2) optionally reload data if needed
+            self.data = load_data(
+                self.config.data_path
+            )  # if you want always-latest, else skip
+
+            # 3) classify
+            print("   ... calling query_sort() ...")
+            print(
+                f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}"
+            )
+
+            # 호출부 수정
+            params = {
+                "user_input": user_input,
+                "model": self.model,
+                "tokenizer": self.tokenizer,
+                "embed_model": self.embed_model,
+                "embed_tokenizer": self.embed_tokenizer,
+                "data": self.data,
+                "config": self.config,
+            }
+            QU, KE, TA, TI = await query_sort(params)
+            print(f"   ... query_sort => QU={QU}, KE={KE}, TA={TA}, TI={TI}")
+
+            # 4) RAG
+            if TA == "yes":
+                try:
+                    docs, docs_list = execute_rag(
+                        QU,
+                        KE,
+                        TA,
+                        TI,
+                        model=self.model,
+                        tokenizer=self.tokenizer,
+                        embed_model=self.embed_model,
+                        embed_tokenizer=self.embed_tokenizer,
+                        data=self.data,
+                        config=self.config,
+                    )
+                    try:
+                        retrieval, chart = process_to_format(docs_list, type="SQL")
+                    except Exception as e:
+                        print("[ERROR] process_to_format (SQL) failed:", str(e))
+                        retrieval, chart = [], None
+
+                    # If streaming => partial tokens
+                    if is_streaming:
+                        print(
+                            f"[STREAM] Starting partial generation for request_id={request_id}"
+                        )
+                        await self._stream_partial_answer(
+                            QU, docs, retrieval, chart, request_id, future
+                        )
+                    else:
+                        # normal final result
+                        output = await generate_answer(
+                            QU,
+                            docs,
+                            model=self.model,
+                            tokenizer=self.tokenizer,
+                            config=self.config,
+                        )
+                        answer = process_to_format([output, chart], type="Answer")
+                        outputs = process_format_to_response(retrieval, answer)
+                        future.set_result(outputs)
+
+                except Exception as e:
+                    outputs = error_format("내부 Excel 에 해당 자료가 없습니다.", 551)
+                    future.set_result(outputs)
+
+            else:
+                try:
+                    print("[SOOWAN] TA is No, before make a retrieval")
+                    docs, docs_list = execute_rag(
+                        QU,
+                        KE,
+                        TA,
+                        TI,
+                        model=self.model,
+                        tokenizer=self.tokenizer,
+                        embed_model=self.embed_model,
+                        embed_tokenizer=self.embed_tokenizer,
+                        data=self.data,
+                        config=self.config,
+                    )
+                    retrieval = process_to_format(docs_list, type="Retrieval")
+                    print("[SOOWAN] TA is No, and make a retrieval is successed")
+                    if is_streaming:
+                        print(
+                            f"[STREAM] Starting partial generation for request_id={request_id}"
+                        )
+                        await self._stream_partial_answer(
+                            QU, docs, retrieval, None, request_id, future
+                        )
+                    else:
+                        output = await generate_answer(
+                            QU,
+                            docs,
+                            model=self.model,
+                            tokenizer=self.tokenizer,
+                            config=self.config,
+                        )
+                        print("process_to_format 이후에 OUTPUT 생성 완료")
+                        answer = process_to_format([output], type="Answer")
+                        print("process_to_format 이후에 ANSWER까지 생성 완료")
+                        outputs = process_format_to_response(retrieval, answer)
+                        future.set_result(outputs)
+
+                except Exception as e:
+                    outputs = error_format("내부 PPT에 해당 자료가 없습니다.", 552)
+                    future.set_result(outputs)
+
+        except Exception as e:
+            # If error, set the future
+            err_msg = f"처리 중 오류 발생: {str(e)}"
+            print("[ERROR]", err_msg)
+            future.set_result(error_format(err_msg, 500))
+
+    # ------------------------------------------------------------
+    # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
+    # ------------------------------------------------------------
+    async def _stream_partial_answer(
+        self, QU, docs, retrieval, chart, request_id, future
+    ):
+        """
+        Instead of returning a final string, we generate partial tokens
+        and push them to the SSE queue in real time.
+        We'll do a "delta" approach so each chunk is only what's newly added.
+        """
+        print(
+            f"[STREAM] _stream_partial_answer => request_id={request_id}, chart={chart}"
+        )
+
+        # 단일
+        # queue = self.active_sse_queues.get(request_id)
+        # if not queue:
+        #     print(f"[STREAM] SSE queue not found => fallback to normal final (request_id={request_id})")
+        #     # fallback...
+        #     return
+
+        # This will hold the entire text so far. We'll yield only new pieces.
+        
+        # 먼저, 참조 데이터 전송: type을 "reference"로 명시
+        reference_json = json.dumps({
+            "type": "reference",
+            "status_code": 200,
+            "result": "OK",
+            "detail": "Reference data",
+            "evt_time": datetime.datetime.now().isoformat(),
+            "data_list": retrieval
+        }, ensure_ascii=False)
+        await self.queue_manager.put_token.remote(request_id, reference_json)
+        print(f"[STREAM] Sent reference data for request_id={request_id}")
+        
+        partial_accumulator = ""
+
+        try:
+            print(
+                f"[STREAM] SSE: calling generate_answer_stream for request_id={request_id}"
+            )
+            async for partial_text in generate_answer_stream(
+                QU, docs, self.model, self.tokenizer, self.config
+            ):
+                # print(f"[STREAM] Received partial_text: {partial_text}")
+                new_text = partial_text[len(partial_accumulator) :]
+                partial_accumulator = partial_text
+                if not new_text.strip():
+                    continue
+                    # Wrap answer tokens in a JSON object with type "answer"
+                answer_json = json.dumps({
+                    "type": "answer",
+                    "answer": new_text
+                }, ensure_ascii=False)
+                # Use the central SSEQueueManager to put tokens
+                # print(f"[STREAM] Sending token: {answer_json}")
+                await self.queue_manager.put_token.remote(request_id, answer_json)
+            final_text = partial_accumulator
+            if chart is not None:
+                ans = process_to_format([final_text, chart], type="Answer")
+                final_res = process_format_to_response(retrieval, ans)
+            else:
+                ans = process_to_format([final_text], type="Answer")
+                final_res = process_format_to_response(retrieval, ans)
+            future.set_result(final_res)
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+            print(
+                f"[STREAM] done => placed [[STREAM_DONE]] for request_id={request_id}"
+            )
+        except Exception as e:
+            msg = f"[STREAM] error in partial streaming => {str(e)}"
+            future.set_result(error_format(msg, 500))
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+
+    # ------------------------------------------------------------
+    # NEW METHODS TO SUPPORT SSE
+    # ------------------------------------------------------------
+    # ----------------------
+    # 1) Streaming Entrypoint
+    # ----------------------
+    async def process_query_stream(self, http_query: dict) -> str:
+        """
+        Called from /query_stream route.
+        Create request_id, SSE queue, push to the micro-batch, return request_id.
+        """
+        request_id = str(uuid.uuid4())
+        await self.queue_manager.create_queue.remote(request_id)
+        print(
+            f"[STREAM] process_query_stream => request_id={request_id}, http_query={http_query}"
+        )
+
+        loop = asyncio.get_event_loop()
+        final_future = loop.create_future()
+
+        sse_queue = asyncio.Queue()
+        self.active_sse_queues[request_id] = sse_queue
+        print(f"[STREAM] Created SSE queue for request_id={request_id}")
+
+        # We'll push a special item (dict) onto the micro-batch queue
+        queued_item = {
+            "request_id": request_id,
+            "http_query": http_query,
+        }
+
+        print(f"[STREAM] Putting item into request_queue for request_id={request_id}")
+        await self.request_queue.put((queued_item, final_future, sse_queue))
+        print(f"[STREAM] Done putting item in queue => request_id={request_id}")
+
+        return request_id
+
+    # ----------------------
+    # 2) SSE token popping
+    # ----------------------
+    async def pop_sse_token(self, request_id: str) -> Optional[str]:
+        """
+        The SSE route calls this repeatedly to get partial tokens.
+        If no token is available, we block up to 120s, else return None.
+        """
+        if request_id not in self.active_sse_queues:
+            print(
+                f"[STREAM] pop_sse_token => no SSE queue found for request_id={request_id}"
+            )
+            return None
+
+        queue = self.active_sse_queues[request_id]
+        try:
+            token = await asyncio.wait_for(queue.get(), timeout=120.0)
+            # print(f"[STREAM] pop_sse_token => got token from queue: {token}")
+            return token
+        except asyncio.TimeoutError:
+            print(
+                f"[STREAM] pop_sse_token => timed out waiting for token, request_id={request_id}"
+            )
+            return None
+
+    # ----------------------
+    # 3) SSE queue cleanup
+    # ----------------------
+    async def close_sse_queue(self, request_id: str):
+        """
+        Called by the SSE route after finishing.
+        Remove the queue from memory.
+        """
+        if request_id in self.active_sse_queues:
+            print(
+                f"[STREAM] close_sse_queue => removing SSE queue for request_id={request_id}"
+            )
+            del self.active_sse_queues[request_id]
+        else:
+            print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
+
+
+# Too using about two actor
+
+
+# Ray Serve를 통한 배포
+@serve.deployment(
+    name="inference",
+    max_ongoing_requests=50,
+    )
+class InferenceService:
+    def __init__(self, config):
+        self.config = config
+        self.actor = InferenceActor.options(
+            num_gpus=config.ray.num_gpus, num_cpus=config.ray.num_cpus
+        ).remote(config)
+
+    async def query(self, http_query: dict):
+        result = await self.actor.process_query.remote(http_query)
+        return result
+
+    async def process_query_stream(self, http_query: dict) -> str:
+        req_id = await self.actor.process_query_stream.remote(http_query)
+        return req_id
+
+    async def pop_sse_token(self, req_id: str) -> str:
+        token = await self.actor.pop_sse_token.remote(req_id)
+        return token
+
+    async def close_sse_queue(self, req_id: str) -> str:
+        await self.actor.close_sse_queue.remote(req_id)
+        return "closed"
+
+
+# Ray의 요청을 비동기적으로 관리하기 위해 도입하는 큐-매니저
+@ray.remote
+class SSEQueueManager:
+    def __init__(self):
+        self.active_queues = {}
+        self.lock = asyncio.Lock()
+
+    async def create_queue(self, request_id):
+        async with self.lock:
+            self.active_queues[request_id] = asyncio.Queue()
+            return True
+
+    async def get_queue(self, request_id):
+        return self.active_queues.get(request_id)
+
+    async def get_token(self, request_id, timeout: float):
+        queue = self.active_queues.get(request_id)
+        if queue:
+            try:
+                token = await asyncio.wait_for(queue.get(), timeout=timeout)
+                return token
+            except asyncio.TimeoutError:
+                return None
+        return None
+
+    async def put_token(self, request_id, token):
+        async with self.lock:
+            if request_id in self.active_queues:
+                await self.active_queues[request_id].put(token)
+                return True
+            return False
+
+    async def delete_queue(self, request_id):
+        async with self.lock:
+            if request_id in self.active_queues:
+                del self.active_queues[request_id]
+                return True
+            return False
+
+```
+
+
+--- utils.py
+
+```python
+
+# utils.py
+import json
+import numpy as np
+import torch
+import random
+import shutil
+from datetime import datetime, timedelta
+from transformers import (
+    AutoModel,
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
+    AutoConfig,
+)
+
+import os
+
+# Import vLLM utilities
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+
+# Define the minimum valid file size (e.g., 10MB)
+MIN_WEIGHT_SIZE = 10 * 1024 * 1024
+
+# For tracking execution time of functions
+from tracking import time_tracker
+
+# Logging
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+
+
+# -------------------------------------------------
+# Function: find_weight_directory
+# -------------------------------------------------
+# Recursively searches for weight files (safetensors or pytorch_model.bin) in a given base path.
+# This method Find the files searching the whole directory
+# Because, vLLM not automatically find out the model files.
+# -------------------------------------------------
+@time_tracker
+def find_weight_directory(base_path):
+    # ---- Recursively searches for weight files in a given base path ----
+    for root, dirs, files in os.walk(base_path):
+        for file in files:
+            if ".safetensors" in file or "pytorch_model.bin" in file:
+                file_path = os.path.join(root, file)
+                try:
+                    if os.path.getsize(file_path) >= MIN_WEIGHT_SIZE:
+                        return root, "safetensors" if ".safetensors" in file else "pt"
+                    else:
+                        logging.debug(
+                            f"파일 {file_path}의 크기가 너무 작음: {os.path.getsize(file_path)} bytes"
+                        )
+                except Exception as ex:
+                    logging.debug(f"파일 크기 확인 실패: {file_path} - {ex}")
+    return None, None
+
+
+# -------------------------------------------------
+# Function: load_model
+# -------------------------------------------------
+@time_tracker
+def load_model(config):
+    # Loads the embedding model and the main LLM model (using vLLM if specified in the config).
+    
+    # Get the HF token from the environment variable.
+    logging.info("Starting model loading...")
+    token = os.getenv("HF_TOKEN_PATH")
+    # Check if token is likely a file path.
+    if token is not None and not token.startswith("hf_"):
+        if os.path.exists(token) and os.path.isfile(token):
+            try:
+                with open(token, "r") as f:
+                    token = f.read().strip()
+            except Exception as e:
+                print("DEBUG: Exception while reading token file:", e)
+                logging.warning("Failed to read token from file: %s", e)
+                token = None
+        else:
+            logging.warning("The HF_TOKEN path does not exist: %s", token)
+            token = None
+    else:
+        print("DEBUG: HF_TOKEN appears to be a token string; using it directly:")
+
+    if token is None or token == "":
+        logging.warning("HF_TOKEN is not set. Access to gated models may fail.")
+        token = None
+
+    # -------------------------------
+    # Load the embedding model and tokenizer.
+    # -------------------------------
+    print("Loading embedding model")
+    try:
+        embed_model = AutoModel.from_pretrained(
+            config.embed_model_id,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True,
+            token=token,  # using 'token' parameter
+        )
+    except Exception as e:
+        raise e
+    try:
+        embed_tokenizer = AutoTokenizer.from_pretrained(
+            config.embed_model_id,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True,
+            token=token,
+        )
+    except Exception as e:
+        raise e
+    print(":Embedding tokenizer loaded successfully.")
+    embed_model.eval()
+    embed_tokenizer.model_max_length = 4096
+
+    # -------------------------------
+    # Load the main LLM model via vLLM.
+    # -------------------------------
+    if config.use_vllm:
+        print("vLLM mode enabled. Starting to load main LLM model via vLLM.")
+        if config.model.quantization_4bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+            print("Using 4-bit quantization.")
+        elif config.model.quantization_8bit:
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+            print("Using 8-bit quantization.")
+        else:
+            bnb_config = None
+            print("Using pure option of Model(No quantization)")
+
+        local_model_path = os.path.join(
+            config.cache_dir, "models--" + config.model_id.replace("/", "--")
+        )
+        local_model_path = os.path.abspath(local_model_path)
+
+        config_file = os.path.join(local_model_path, "config.json")
+        need_patch = False
+
+        if not os.path.exists(config_file):
+            os.makedirs(local_model_path, exist_ok=True)
+            try:
+                hf_config = AutoConfig.from_pretrained(
+                    config.model_id,
+                    cache_dir=config.cache_dir,
+                    trust_remote_code=True,
+                    token=token,
+                )
+            except Exception as e:
+                raise e
+            config_dict = hf_config.to_dict()
+            if not config_dict.get("architectures"):
+                config_dict["architectures"] = ["Gemma2ForCausalLM"]
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump(config_dict, f)
+        else:
+            with open(config_file, "r", encoding="utf-8") as f:
+                config_dict = json.load(f)
+            if not config_dict.get("architectures"):
+                config_dict["architectures"] = ["Gemma2ForCausalLM"]
+                with open(config_file, "w", encoding="utf-8") as f:
+                    json.dump(config_dict, f)
+
+        weight_dir, weight_format = find_weight_directory(local_model_path)
+        if weight_dir is None:
+            print("DEBUG: No model weights found. Attempting to download model snapshot.")
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    print(f"DEBUG: Snapshot download attempt {attempt+1}...")
+                    # Attempt to download the model snapshot using the Hugging Face hub function.
+                    from huggingface_hub import snapshot_download
+                    snapshot_download(config.model_id, cache_dir=config.cache_dir, token=token)
+                    break  # If download succeeds, break out of the loop.
+                except Exception as e:
+                    print(f"DEBUG: Snapshot download attempt {attempt+1} failed:", e)
+                    if attempt < max_retries - 1:
+                        print("DEBUG: Retrying snapshot download...")
+                    else:
+                        raise RuntimeError(f"Snapshot download failed after {max_retries} attempts: {e}")
+            # After download, try to find the weights again.
+            weight_dir, weight_format = find_weight_directory(local_model_path)
+            if weight_dir is None:
+                raise RuntimeError(f"Unable to find model weights even after snapshot download in {local_model_path}.")
+
+        snapshot_config = os.path.join(weight_dir, "config.json")
+        if not os.path.exists(snapshot_config):
+            shutil.copy(config_file, snapshot_config)
+        engine_args = AsyncEngineArgs(
+            model=weight_dir,
+            tokenizer=config.model_id,
+            download_dir=config.cache_dir,
+            trust_remote_code=True,
+            config_format="hf",
+            load_format=weight_format,
+        )
+        
+        vllm_conf = config.get("vllm", {})
+        
+        engine_args.enable_prefix_caching = True
+        engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
+        engine_args.enable_chunked_prefill = True
+        engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
+        engine_args.max_num_seqs = vllm_conf.get("max_num_seqs", 128)
+        engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
+        # engine_args.block_size = vllm_conf.get("block_size", 128)
+        engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization", 0.9)
+        
+        if vllm_conf.get("disable_custom_all_reduce", False):
+            engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
+        
+        engine_args.enable_memory_defrag = True # v1
+        
+        # print("Final EngineArgs:", engine_args)
+        print("EngineArgs setting be finished")
+
+        try:
+            # --- 해결책: 현재 스레드가 메인 스레드가 아니면 signal 함수를 임시 패치 ---
+            import threading, signal
+            if threading.current_thread() is not threading.main_thread():
+                original_signal = signal.signal
+                signal.signal = lambda s, h: None  # signal 설정 무시
+                print("비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.")
+            # --- 해결책: ------------------------------------------------------ ---
+            engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
+            # 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) ----------------- ---
+            if threading.current_thread() is not threading.main_thread():
+                signal.signal = original_signal
+            # --- 해결책: ------------------------------------------------------ ---
+            print("DEBUG: vLLM engine successfully created.") # Original
+            
+        except Exception as e:
+            print("DEBUG: Exception during engine creation:", e)
+            if "HeaderTooSmall" in str(e):
+                print("DEBUG: Falling back to PyTorch weights.")
+                fallback_dir = None
+                for root, dirs, files in os.walk(local_model_path):
+                    for file in files:
+                        if (
+                            "pytorch_model.bin" in file
+                            and os.path.getsize(os.path.join(root, file))
+                            >= MIN_WEIGHT_SIZE
+                        ):
+                            fallback_dir = root
+                            break
+                    if fallback_dir:
+                        break
+                if fallback_dir is None:
+                    logging.error(
+                        "DEBUG: No PyTorch weight file found in", local_model_path
+                    )
+                    raise e
+                engine_args.load_format = "pt"
+                engine_args.model = fallback_dir
+                print("DEBUG: New EngineArgs for fallback:", engine_args)
+                engine = AsyncLLMEngine.from_engine_args(engine_args)
+                print("DEBUG: vLLM engine created with PyTorch fallback.")
+            else:
+                logging.error("DEBUG: Engine creation failed:", e)
+                raise e
+
+        engine.is_vllm = True
+
+        print("DEBUG: Loading main LLM tokenizer with token authentication.")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                config.model_id,
+                cache_dir=config.cache_dir,
+                trust_remote_code=True,
+                token=token,
+                local_files_only=True  # Force loading from local cache to avoid hub requests
+            )
+        except Exception as e:
+            print("DEBUG: Exception loading main tokenizer:", e)
+            raise e
+        tokenizer.model_max_length = 4024
+        return engine, tokenizer, embed_model, embed_tokenizer
+
+    else:
+        print("DEBUG: vLLM is not used. Loading model via standard HF method.")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                config.model_id,
+                cache_dir=config.cache_dir,
+                trust_remote_code=True,
+                token=token,
+            )
+        except Exception as e:
+            print("DEBUG: Exception loading tokenizer:", e)
+            raise e
+        tokenizer.model_max_length = 4024
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                config.model_id,
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+                cache_dir=config.cache_dir,
+                quantization_config=bnb_config,
+                trust_remote_code=True,
+                token=token,
+            )
+        except Exception as e:
+            print("DEBUG: Exception loading model:", e)
+            raise e
+        model.eval()
+        return model, tokenizer, embed_model, embed_tokenizer
+
+
+@time_tracker
+def load_data(data_path):
+    with open(data_path, "r", encoding="utf-8") as json_file:
+        data = json.load(json_file)
+    file_names = []
+    titles = []
+    times = []
+    vectors = []
+    texts = []
+    texts_short = []
+    texts_vis = []
+    tmp = 0
+    for file in data:
+        for chunk in file["chunks"]:
+            file_names.append(file["file_name"])
+            vectors.append(np.array(chunk["vector"]))
+            titles.append(chunk["title"])
+            if chunk["date"] != None:
+                times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
+            else:
+                tmp += 1
+                times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+            texts.append(chunk["text"])
+            texts_short.append(chunk["text_short"])
+            texts_vis.append(chunk["text_vis"])
+    vectors = np.array(vectors)
+    vectors = torch.from_numpy(vectors).to(torch.float32)
+    data_ = {
+        "file_names": file_names,
+        "titles": titles,
+        "times": times,
+        "vectors": vectors,
+        "texts": texts,
+        "texts_short": texts_short,
+        "texts_vis": texts_vis,
+    }
+    print(f"Data Loaded! Full length:{len(titles)}, Time Missing:{tmp}")
+    print(f"Time Max:{max(times)}, Time Min:{min(times)}")
+    return data_
+
+
+@time_tracker
+def random_seed(seed):
+    # Set random seed for Python's built-in random module
+    random.seed(seed)
+
+    # Set random seed for NumPy
+    np.random.seed(seed)
+
+    # Set random seed for PyTorch
+    torch.manual_seed(seed)
+
+    # Ensure the same behavior on different devices (CPU vs GPU)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # If using multi-GPU.
+
+    # Enable deterministic algorithms
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+@time_tracker
+def process_to_format(qry_contents, type):
+    # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
+    # 예제 응답 형식
+    ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
+    # print("[SOOWAN] process_to_format 진입")
+    if type == "Retrieval":
+        print("[SOOWAN] 타입 : 리트리버")
+        tmp_format = {"rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []}
+        for i, form in enumerate(qry_contents):
+            tmp_format_ = {
+                "rsp_tit": f"{i+1}번째 검색데이터: {form['title']} (출처:{form['file_name']})",
+                "rsp_data": form["contents"],
+            }
+            tmp_format["rsp_data"].append(tmp_format_)
+        return tmp_format
+
+    elif type == "SQL":
+        # print("[SOOWAN] 타입 : SQL")
+        tmp_format = {
+            "rsp_type": "R",
+            "rsp_tit": "남성 내부 데이터",
+            "rsp_data": [{"rsp_tit": "SQL Query 결과표", "rsp_data": []}],
+        }
+        tmp_format_sql = {
+            "rsp_type": "TB",
+            "rsp_tit": qry_contents[0]["title"],
+            "rsp_data": qry_contents[0]["data"],
+        }
+        tmp_format_chart = {
+            "rsp_type": "CT",
+            "rsp_tit": qry_contents[1]["title"],
+            "rsp_data": {"chart_tp": "BAR", "chart_data": qry_contents[1]["data"]},
+        }
+        tmp_format["rsp_data"][0]["rsp_data"].append(tmp_format_sql)
+        # tmp_format['rsp_data'].append(tmp_format_chart)
+        return tmp_format, tmp_format_chart
+
+    elif type == "Answer":
+        print("[SOOWAN] 타입 : 대답")
+        tmp_format = {"rsp_type": "A", "rsp_tit": "답변", "rsp_data": []}
+        for i, form in enumerate(qry_contents):
+            if i == 0:
+                tmp_format_ = {"rsp_type": "TT", "rsp_data": form}
+                tmp_format["rsp_data"].append(tmp_format_)
+            elif i == 1:
+                tmp_format["rsp_data"].append(form)
+            else:
+                None
+
+        return tmp_format
+
+    else:
+        print("Error! Type Not supported!")
+        return None
+
+
+@time_tracker
+def process_format_to_response(*formats):
+    # Get multiple formats to tuple
+
+    ans_format = {
+        "status_code": 200,
+        "result": "OK",
+        "detail": "",
+        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+        "data_list": [],
+    }
+
+    for format in formats:
+        ans_format["data_list"].append(format)
+
+    return ans_format
+
+
+@time_tracker
+def error_format(message, status):
+    ans_format = {
+        "status_code": status,
+        "result": message,
+        "detail": "",
+        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+    }
+    return json.dumps(ans_format)
+
+```
+
+
+--- RAG.py
+
+```python
+
+# RAG.py
+import torch
+import re
+import numpy as np
+import rank_bm25
+import random
+import uuid
+from datetime import datetime, timedelta
+from sql import generate_sql
+
+# Tracking
+from tracking import time_tracker
+
+# Import the vLLM to use the AsyncLLMEngine
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+
+# In RAG.py (at the top, add an import for prompts)
+from prompt_rag import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE
+
+global beep
+beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+
+@time_tracker
+def execute_rag(QU, KE, TA, TI, **kwargs):
+    # print("[SOOWAN]: execute_rag : 진입")
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    embed_model = kwargs.get("embed_model")
+    embed_tokenizer = kwargs.get("embed_tokenizer")
+    data = kwargs.get("data")
+    config = kwargs.get("config")
+
+    if TA == "yes":  # Table 이 필요하면
+        # print("[SOOWAN]: execute_rag : 테이블 필요")
+        # SQL
+        final_sql_query, title, explain, table_json, chart_json = generate_sql(
+            QU, model, tokenizer, config
+        )
+
+        # docs : 다음 LLM Input 으로 만들것 (String)
+        PROMPT = f"""\ 
+다음은 SQL 추출에 사용된 쿼리문이야 : {final_sql_query}. \
+추가 설명 : {explain}. \
+실제 SQL 추출된 데이터 : {str(table_json)}. \
+"""
+        # docs_list : 사용자들에게 보여줄 정보 (List)
+        docs_list = [
+            {"title": title, "data": table_json},
+            {"title": "시각화 차트", "data": chart_json},
+        ]
+
+        return PROMPT, docs_list
+
+    else:
+        # print("[SOOWAN]: execute_rag : 테이블 필요없음")
+        # RAG
+        data = sort_by_time(TI, data)
+        docs, docs_list = retrieve(KE, data, config.N, embed_model, embed_tokenizer)
+        return docs, docs_list
+
+
+@time_tracker
+async def generate_answer(query, docs, **kwargs):
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    config = kwargs.get("config")
+    
+    answer = await generate(docs, query, model, tokenizer, config)
+    return answer
+
+
+@time_tracker
+async def query_sort(params):
+    # params: 딕셔너리로 전달된 값들
+    query = params["user_input"]
+    model = params["model"]
+    tokenizer = params["tokenizer"]
+    embed_model = params["embed_model"]
+    embed_tokenizer = params["embed_tokenizer"]
+    data = params["data"]
+    config = params["config"]
+
+    # prompts/prompt_rag.py에서 프롬프트 별도 관리
+    PROMPT = QUERY_SORT_PROMPT.format(user_query=query)
+    
+    # Get Answer from LLM
+    print("##### query_sort is starting #####")
+    if config.use_vllm:  # use_vllm = True case 
+        from vllm import SamplingParams
+
+        sampling_params = SamplingParams(
+            max_tokens=config.model.max_new_tokens,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        accepted_request_id = str(uuid.uuid4())
+        answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+    else:
+        input_ids = tokenizer(
+            PROMPT, return_tensors="pt", truncation=True, max_length=4024
+        ).to("cuda")
+        token_count = input_ids["input_ids"].shape[1]
+        outputs = model.generate(
+            **input_ids,
+            max_new_tokens=config.model.max_new_tokens,
+            do_sample=config.model.do_sample,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
+
+    print("[DEBUG query_sort] Generated answer:")
+    print(answer)
+    
+    # Regular expressions for tags
+    query_pattern = r"<query.*?>(.*?)<query.*?>"
+    keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
+    table_pattern = r"<table.*?>(.*?)<table.*?>"
+    time_pattern = r"<time.*?>(.*?)<time.*?>"
+    
+    # [DEBUG-CHANGE]: Check each match before calling group(1)
+    m_query = re.search(query_pattern, answer, re.DOTALL)
+    m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
+    m_table = re.search(table_pattern, answer, re.DOTALL)
+    m_time = re.search(time_pattern, answer, re.DOTALL)
+    
+    if not m_query:
+        print("[ERROR query_sort] query_pattern not found in answer:")
+        print(answer)
+        raise ValueError("Missing <query> tag in generated answer.")
+    if not m_keyword:
+        print("[ERROR query_sort] keyword_pattern not found in answer:")
+        print(answer)
+        raise ValueError("Missing <keyword> tag in generated answer.")
+    if not m_table:
+        print("[ERROR query_sort] table_pattern not found in answer:")
+        print(answer)
+        raise ValueError("Missing <table> tag in generated answer.")
+    if not m_time:
+        print("[ERROR query_sort] time_pattern not found in answer:")
+        print(answer)
+        raise ValueError("Missing <time> tag in generated answer.")
+
+    QU = m_query.group(1)
+    KE = m_keyword.group(1)
+    TA = m_table.group(1)
+    TI = m_time.group(1)
+
+    if TI == "all":
+        TI = "1900-01-01:2099-01-01"
+    print(beep)
+    print(f"구체화 질문: {QU}, 키워드 : {KE}, 테이블 필요 유무: {TA}, 시간: {TI}")
+    print(beep)
+    return QU, KE, TA, TI
+
+
+@time_tracker
+def sort_by_time(time_bound, data):
+    date_format = "%Y-%m-%d"
+    target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
+    target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
+
+    matching_indices = [
+        i
+        for i, date in enumerate(data["times"])
+        if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
+    ]
+
+    (
+        data["file_names"],
+        data["titles"],
+        data["times"],
+        data["vectors"],
+        data["texts"],
+        data["texts_short"],
+        data["texts_vis"],
+    ) = (
+        [lst[i] for i in matching_indices]
+        for lst in (
+            data["file_names"],
+            data["titles"],
+            data["times"],
+            data["vectors"],
+            data["texts"],
+            data["texts_short"],
+            data["texts_vis"],
+        )
+    )
+    return data
+
+
+@time_tracker
+def retrieve(query, data, N, embed_model, embed_tokenizer):
+    # print("[SOOWAN] retrieve : 진입")
+    # print("[SOOWAN] retrieve : 진입 정보 :", query)
+    
+    sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
+    # print("[SOOWAN] retrieve : sim_score")
+    
+    try:
+        bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
+    except Exception as e:
+        # print("[SOOWAN] retrieve : BM25 score exception, using zeros", e)
+        bm25_score = np.zeros(len(data["texts_short"]))
+    # print("[SOOWAN] retrieve : bm25_score")
+    
+    scaled_sim_score = min_max_scaling(sim_score)
+    scaled_bm25_score = min_max_scaling(bm25_score)
+    score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+    top_k = score[:, 0, 0].argsort()[-N:][::-1]
+    documents = ""
+    documents_list = []
+    for i, index in enumerate(top_k):
+        documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
+        documents_list.append({
+            "file_name": data["file_names"][index],
+            "title": data["titles"][index],
+            "contents": data["texts_vis"][index],
+        })
+        print("\n" + beep)
+    print("-------------자료 검색 성공--------------")
+    return documents, documents_list
+
+
+@time_tracker
+def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
+    query_V = embed(query, embed_model, embed_tokenizer)
+    if len(query_V.shape) == 1:
+        query_V = query_V.unsqueeze(0)
+    score = []
+    for chunk in chunks:
+        if len(chunk.shape) == 1:
+            chunk = chunk.unsqueeze(0)
+        query_norm = query_V / query_V.norm(dim=1)[:, None]
+        chunk_norm = chunk / chunk.norm(dim=1)[:, None]
+        tmp = torch.mm(query_norm, chunk_norm.transpose(0, 1)) * 100
+        score.append(tmp.detach())
+    return np.array(score)
+
+
+@time_tracker
+def cal_bm25_score(query, indexes, embed_tokenizer):
+    # print("[SOOWAN] cal_bm25_score : 진입")
+    try:
+        tokenized_corpus = [
+            embed_tokenizer(
+                text,
+                return_token_type_ids=False,
+                return_attention_mask=False,
+                return_offsets_mapping=False,
+            )
+            for text in indexes
+        ]
+        tokenized_corpus = [
+            embed_tokenizer.convert_ids_to_tokens(corpus["input_ids"])
+            for corpus in tokenized_corpus
+        ]
+        # print(f"[SOOWAN] cal_bm25_score : Tokenized corpus (first 2 items): {tokenized_corpus[:2]}")
+    except Exception as e:
+        # print(f"[SOOWAN ERROR BM25] Error tokenizing corpus: {str(e)}")
+        return np.zeros(len(indexes))
+    if not tokenized_corpus or all(len(tokens) == 0 for tokens in tokenized_corpus):
+        # print("[SOOWAN] cal_bm25_score: Empty tokenized corpus, returning zeros.")
+        return np.zeros(len(indexes))
+    try:
+        bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
+    except Exception as e:
+        # print(f"[SOOWAN ERROR BM25] Error initializing BM25: {str(e)}")
+        return np.zeros(len(indexes))
+    try:
+        tokenized_query = embed_tokenizer(query)
+        tokenized_query = embed_tokenizer.convert_ids_to_tokens(tokenized_query["input_ids"])
+        # print(f"[SOOWAN] cal_bm25_score : Tokenized query: {tokenized_query}")
+    except Exception as e:
+        # print(f"[SOOWAN ERROR BM25] Error tokenizing query: {str(e)}")
+        return np.zeros(len(indexes))
+    try:
+        bm25_score = bm25.get_scores(tokenized_query)
+        # print(f"[SOOWAN] cal_bm25_score : BM25 score: {bm25_score}")
+    except Exception as e:
+        # print(f"[SOOWAN ERROR BM25] Error computing BM25 scores: {str(e)}")
+        return np.zeros(len(indexes))
+    return np.array(bm25_score)
+
+
+@time_tracker
+def embed(query, embed_model, embed_tokenizer):
+    inputs = embed_tokenizer(query, padding=True, truncation=True, return_tensors="pt")
+    embeddings, _ = embed_model(**inputs, return_dict=False)
+    return embeddings[0][0]
+
+
+@time_tracker
+def min_max_scaling(arr):
+    arr_min = arr.min()
+    arr_max = arr.max()
+    if arr_max == arr_min:
+        # print("[SOOWAN] min_max_scaling: Zero range detected, returning zeros.")
+        return np.zeros_like(arr)
+    return (arr - arr_min) / (arr_max - arr_min)
+
+
+@time_tracker
+async def generate(docs, query, model, tokenizer, config):
+    PROMPT = GENERATE_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    print("Inference steps")
+    if config.use_vllm:
+        from vllm import SamplingParams
+        sampling_params = SamplingParams(
+            max_tokens=config.model.max_new_tokens,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        accepted_request_id = str(uuid.uuid4())
+        answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+    else:
+        input_ids = tokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
+        token_count = input_ids["input_ids"].shape[1]
+        outputs = model.generate(
+            **input_ids,
+            max_new_tokens=config.model.max_new_tokens,
+            do_sample=config.model.do_sample,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        generated_tokens = outputs[0].shape[0]
+        answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
+        print(answer)
+        print(">>> decode done, returning answer")
+    return answer
+
+
+@time_tracker
+async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id):
+    import asyncio, concurrent.futures
+    outputs = []
+    async for output in model.generate(PROMPT, request_id=accepted_request_id, sampling_params=sampling_params):
+        outputs.append(output)
+    if not outputs:
+        raise RuntimeError("No outputs were generated by the model.")
+    final_output = next((o for o in outputs if getattr(o, "finished", False)), outputs[-1])
+    answer = "".join([getattr(comp, "text", "") for comp in getattr(final_output, "outputs", [])])
+    return answer
+
+
+@time_tracker
+async def generate_answer_stream(query, docs, model, tokenizer, config):
+    prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    if config.use_vllm:
+        from vllm import SamplingParams
+        sampling_params = SamplingParams(
+            max_tokens=config.model.max_new_tokens,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        request_id = str(uuid.uuid4())
+        async for partial_chunk in collect_vllm_text_stream(prompt, model, sampling_params, request_id):
+            # print(f"[STREAM] generate_answer_stream yielded: {partial_chunk}")
+            yield partial_chunk
+    else:
+        import torch
+        from transformers import TextIteratorStreamer
+        input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
+        streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
+        generation_kwargs = dict(
+            **input_ids,
+            streamer=streamer,
+            max_new_tokens=config.model.max_new_tokens,
+            do_sample=config.model.do_sample,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        import threading
+        t = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+        t.start()
+        for new_token in streamer:
+            yield new_token
+
+@time_tracker
+async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_params, request_id) -> str:
+    async for request_output in engine.generate(prompt, request_id=request_id, sampling_params=sampling_params):
+        if not request_output.outputs:
+            continue
+        for completion in request_output.outputs:
+            # print(f"[STREAM] collect_vllm_text_stream yielding: {completion.text}")
+            yield completion.text
+
+
+if __name__ == "__main__":
+    import asyncio
+    # engine = AsyncLLMEngine.from_engine_args(engine_args, start_engine_loop=False)
+    # if not engine.is_running:
+    #     engine.start_background_loop()
+    
+    async def main():
+        status = True
+        while status:
+            query = input("질문 : ")
+            QU, TA, TI = await query_sort({"user_input": query, "model": None, "tokenizer": None, "embed_model": None, "embed_tokenizer": None, "data": None, "config": None})
+            print("query_sort result done")
+            if TA == "yes":
+                print("\n" + beep)
+                SQL_results = generate_sql(QU)
+                answer = await generate(SQL_results, query)
+                print(answer)
+                print("\n" + beep)
+            else:
+                file_names, titles, times, vectors, texts, texts_short = sort_by_time(TI, file_names, titles, times, vectors, texts, texts_short)
+                print("\n" + beep)
+                docs = retrieve(QU, vectors, texts, texts_short, file_names, N)
+                print("\n" + beep)
+                answer = await generate(docs, query)
+                print(answer)
+                print("\n" + beep)
+    asyncio.run(main())
+
+```
+
+
+--- prompt_rag.py
+
+```python
+
+# prompts/prompt_rag.py
+from datetime import datetime
+
+# Get today's date (this is computed when the module is loaded)
+TODAY = datetime.today()
+
+# Prompt for query sorting
+QUERY_SORT_PROMPT = f"""
+<bos><start_of_turn>user
+너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. 
+query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. 
+keyword는 질문의 키워드를 뽑는거야. 
+table은 질문에 대한 답을 할때 표형식 데이터가 필요한지 여부야, 현재는 매출액 관련 질문만 대응 가능하니 이때만 yes로 답해줘.
+time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는 {TODAY.year}년 {TODAY.month}월 {TODAY.day}일). 
+시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) 
+또한, '최근'이라는 말이 들어가면 2024-06-01:{TODAY.year}-{TODAY.month}-{TODAY.day}로 설정해줘.
+
+내가 먼저 예시를 줄게
+
+질문: 최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?
+답변:
+<query/>최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?<query>
+<keyword/>일본발 베트남착 매출 기여도 화주 고객<keyword>
+<table/>yes<table>
+<time/>2024-08-01:2024-{TODAY.month}-{TODAY.day}<time>
+
+질문: 올해 3월에 중국 시장 전망에 대해 조사했던 내용을 정리해줘
+답변:
+<query/>2024년 3월 중국시장 전망에 대한 조사내용을 알려주고 정리해줘<query>
+<keyword/>2024년 3월 중국시장 전망<keyword>
+<table/>no<table>
+<time/>2024-02-01:2024-05-01<time>
+
+질문: 부산발 인도네시아착 경쟁사 서비스 및 항차수를 알려줘
+답변:
+<query/>부산 출발 인도네시아 도착 경쟁사 서비스 및 항차수<query>
+<keyword/>부산발 인도네시아착 경쟁사 서비스 항차수<keyword>
+<table/>no<table>
+<time/>all<time>
+
+질문: 남성해운의 인도 대리점 선정 과정은 어떻게 돼?
+답변:
+<query/>인도 대리점 선정과정을 보기 좋게 정리해줘<query>
+<keyword/>인도 대리점 선정과정<keyword>
+<table/>no<table>
+<time/>all<time>
+
+### 아래 구분자를 추가하여 실제 사용자 질문을 명확히 구분합니다.
+### 새로운 질문: {{user_query}}<end_of_turn>
+<start_of_turn>model
+답변:
+"""
+
+# Template for generating an answer based on internal documents
+GENERATE_PROMPT_TEMPLATE = """
+<bos><start_of_turn>user
+너는 남성해운의 도움을 주는 데이터 분석가야.
+주어진 내부 자료에 기반해서 내 질문에 대답해줘. 답변 형식은 보고서처럼 길고 자세하며 논리정연하게 사실만을 가지고 작성해줘.
+만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
+또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
+내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
+내부 자료: {docs}
+질문: {query}<end_of_turn>
+<start_of_turn>model
+답변:
+"""
+
+# Template for the streaming version of answer generation
+STREAM_PROMPT_TEMPLATE = """
+<bos><start_of_turn>user
+... same instructions ...
+내부 자료: {docs}
+질문: {query}<end_of_turn>
+<start_of_turn>model
+답변:
+"""
+
+```
+
+
+--- sql.py
+
+```python
+
+# sql.py
+import json
+import sqlite3
+import re
+
+def generate_sql(query, model, tokenizer, config):
+    with open(config.metadata_path, 'r', encoding='utf-8') as file:
+        Metadata = json.load(file)
+    column_usage = Metadata['column_usage']
+
+    # first_LLM
+    outputs_1, filter_conditions, aggregations, orders, sql_query, parsed_columns = first_llm(model, tokenizer, column_usage, query, config)
+    print(f'FirstLLM\n필터:{filter_conditions}\n집계:{aggregations}\n정렬:{orders}\nSQL:{sql_query}\n컬럼:{parsed_columns}')
+    print(config.beep)
+
+    relevant_metadata = extract_relevant_metadata(parsed_columns, column_usage) # 추출된 컬럼에 해당하는 메타데이터 가져오기
+    retrival_metadata = parse_and_augment_filter_conditions(filter_conditions, Metadata)   # Metadata와 매핑하여 구체화된 필터 조건 찾기
+    print(f'MetaData\n관련:{relevant_metadata}\n검색:{retrival_metadata}')
+    print(config.beep)
+    # second_LLM
+    final_sql_query, title, explain, outputs_2 = second_llm(model, tokenizer, relevant_metadata, sql_query, query, retrival_metadata, parsed_columns, config)
+    print(f'SecondLLM\n제목:{title}\n설명:{explain}\nSQL:{final_sql_query}')
+    print(config.beep)
+    columns, results = execute_sql_query(final_sql_query, config)   # SQL 쿼리 실행 (데이터 조회)
+    print(f'Result\n컬럼:{columns}\n결과:{results}')
+    print(config.beep)
+
+    # result -> json
+    table_json = create_table_json(columns, results)
+    chart_json = create_chart_json(columns, results)
+    
+    # 결과 출력
+    if results:
+        print("조회된 컬럼:\n", columns)
+        for row in results:
+            print(row)
+        return final_sql_query, title, explain, table_json, chart_json
+    else:
+        print("조회 결과가 없습니다.")
+        return None
+    
+def first_llm(model, tokenizer, column_usage, user_query, config):
+    PROMPT =\
+    f'''
+    <bos><start_of_turn>user
+    너는 남성 해운 회사의 데이터로 SQL 쿼리를 작성하는 데 도움을 주는 시스템이야. 사용자로부터 받은 질문을 분석하여, 필터 조건, 집계 함수, 정렬 조건, SQL 쿼리 초안, SQL 쿼리에 사용된 모든 컬럼을 추출해줘.
+    
+    ### 참고 사항:
+    1. 다음은 해운 회사 데이터의 메타데이터야. 테이블은 "revenue" 하나뿐이야.: 
+    "{column_usage}"
+    2. 사용자가 입력한 질문을 분석하여 필요한 컬럼을 식별하고, SQL 쿼리에서 사용할 필터 조건, 집계 함수, 정렬 기준을 제공해줘.
+    3. 사용되는 프로그램은 SQLite 야. 이 프로그램에 맞는 언어를 사용해줘 (SQLite 날짜 형식 사용 예시 : strftime('%Y', OUTOBD) AS Year )
+    
+    ### 사용자가 입력한 질문:
+    "{user_query}"
+    
+    ### 필요한 정보:
+    1. 필터 조건 (필요한 경우, 예: <filter/>OUTPOL = '부산', OUTPOD = '일본', OUTBOR = '2024-08-01 이후'<filter/>)
+    2. 집계 함수 (필요한 경우, 예: <aggregation/>화주(고객)별 매출액의 합계<aggregation/>)
+    3. 정렬 조건 (필요한 경우, 예: <order/>매출액 기준 내림차순<order/>)
+    4. SQL 쿼리 초안 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE OUTPOL = \'한국\' AND OUTPOD = \'베트남\' AND OUTOBD >= \'2023-01-01\'    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
+    5. SQL 쿼리에 사용된 모든 컬럼 (예: <columns/>OUTPOL,OUTPOD,OUTBOR,OUTSHC,OUTSTL<columns/>)
+    
+    ### 출력 형식:
+    1. 필터 조건: <filter/><filter/>
+    2. 집계 함수:<aggregation/><aggregation/>
+    3. 정렬 조건:<order/><order/>
+    4. SQL 쿼리 초안 : <sql_query/><sql_query/>
+    5. SQL 쿼리에 사용된 모든 컬럼:<columns/><columns/>
+    6. 날짜는 YYYY-MM-DD 형식을 사용 (ex: "2023-05-01")
+    
+    <end_of_turn>
+    <start_of_turn>model
+    '''
+
+    # Get Answer
+    input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
+    input_length = input_ids['input_ids'].shape[1]
+    outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
+    outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
+
+    # Regular expression to extract content between <query/> and <query>
+    filter_pattern = r'<filter.*?>(.*?)<filter.*?>'
+    aggregation_pattern = r'<aggregation.*?>(.*?)<aggregation.*?>'
+    order_pattern = r'<order.*?>(.*?)<order.*?>'
+    sql_pattern = r'<sql_query.*?>(.*?)<sql_query.*?>'
+    columns_pattern = r'<columns.*?>(.*?)<columns.*?>'
+    
+    filter_conditions = re.search(filter_pattern, outputs_result, re.DOTALL).group(1)
+    aggregations = re.search(aggregation_pattern, outputs_result, re.DOTALL).group(1)
+    orders = re.search(order_pattern, outputs_result, re.DOTALL).group(1)
+    sql_queries = re.search(sql_pattern, outputs_result, re.DOTALL).group(1)
+    parsed_columns = [col.strip() for col in re.search(columns_pattern, outputs_result, re.DOTALL).group(1).split(",")]
+    return outputs_result, filter_conditions, aggregations, orders, sql_queries, parsed_columns
+
+# 추출된 컬럼에 해당하는 메타데이터만 가져오는 함수
+def extract_relevant_metadata(columns, metadata):
+    relevant_metadata = {}
+    for column in columns:
+        if column in metadata["column_usage"]:
+            relevant_metadata[column] = metadata["column_usage"][column]
+    return relevant_metadata
+
+# def parse_and_augment_filter_conditions(filter_conditions, Metadata):
+#     pattern = r"(\w+)\s*=\s*'([^']+)'"  # ex: OUTPOL = '부산' 과 같은 패턴 추출
+#     matches = re.findall(pattern, filter_conditions)
+    
+#     augmented_filters = []
+    
+#     for col, val in matches:
+#         if col == 'OUTPOL' or col == 'OUTPOD':
+#             location_code = Metadata['location_code']
+#             mapped_value = search_location_db(val, location_code)
+#             if mapped_value != "UNKNOWN":
+#                 augmented_filters.append(f"컬럼 {col}에 대한 값 '{val}' -> '{mapped_value}'로 매핑되었습니다.")
+#             else:
+#                 augmented_filters.append(f"컬럼 {col}의 값 '{val}'에 대한 매핑 정보를 찾을 수 없습니다.")
+#     return "\n".join(augmented_filters)
+
+def parse_and_augment_filter_conditions(filter_conditions, Metadata):
+    # '컬럼명 = '값'' 또는 '컬럼명 IN ('값1', '값2', ...)' 패턴에 대응하는 정규식
+    pattern = r"(\w+)\s*=\s*'([^']+)'|\b(\w+)\s+IN\s+\(([^)]+)\)"
+    matches = re.findall(pattern, filter_conditions)
+    
+    augmented_filters = []
+    for match in matches:
+        # 매칭 결과에서 'IN' 조건과 '=' 조건을 구분하여 처리
+        if match[0]:  # '=' 조건
+            col, val = match[0], match[1]
+            if col == 'OUTPOL' or col == 'OUTPOD':
+                location_code = Metadata['location_code']
+                mapped_value = search_location_db(val, location_code)
+                if mapped_value != "UNKNOWN":
+                    augmented_filters.append(f"컬럼 {col}에 대한 값 '{val}' -> '{mapped_value}'로 매핑되었습니다.")
+                else:
+                    augmented_filters.append(f"컬럼 {col}의 값 '{val}'에 대한 매핑 정보를 찾을 수 없습니다.")
+                    
+        elif match[2]:  # 'IN' 조건
+            col, val_list = match[2], match[3]
+            if col == 'OUTPOL' or col == 'OUTPOD':
+                location_code = Metadata['location_code']
+                values = [val.strip().strip("'") for val in val_list.split(",")]
+                
+                mapped_values = []
+                for val in values:
+                    mapped_value = search_location_db(val, location_code)
+                    if mapped_value != "UNKNOWN":
+                        mapped_values.append(f"'{val}' -> '{mapped_value}'")
+                    else:
+                        mapped_values.append(f"'{val}' (매핑 정보 없음)")
+                
+                augmented_filters.append(f"컬럼 {col}에 대한 값들: {', '.join(mapped_values)}")
+
+    return "\n".join(augmented_filters)
+
+# Location 검색 알고리즘 (매핑 정보 검색)
+def search_location_db(location, location_code):
+    return location_code.get(location, "Mapping error")
+
+def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retrival_metadata, parsed_columns, config):
+    PROMPT =\
+    f'''
+    <bos><start_of_turn>user
+    너는 남성 해운 회사의 데이터로 정확한 SQL 쿼리를 작성해주는 시스템이야. 너가 참고해야 할 정보가 있는 경우에는 이를 참고해서 SQL 쿼리 초안을 구체화해서 정확한 SQL 쿼리를 만들어줘. 그리고 이 SQL 쿼리가 어떤 정보를 추출해주는지 짧게 제목을 짓고, 어떻게 사용자의 질문에 답할 수 있는 정보를 추출하는지 설명해줘. 참고해야 할 정보가 없고 SQL 쿼리 초안이 이미 정확하다면, 그대로 출력해줘.
+
+    ### 참고 사항:
+    1. 다음은 너가 참고해야 할 정보야:
+    "{retrival_metadata}"
+    2. SQL 쿼리 초안:
+    "{sql_query}"    
+    3. 다음은 사용한 데이터의 메타데이터야:
+    "{relevant_metadata}"
+    4. 다음은 사용자가 입력한 질문이야:
+    "{user_query}"    
+
+
+    ### 필요한 정보:
+    1. 정확한 SQL 쿼리 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE WHERE OUTPOL = \'KRPUS\' AND OUTPOD LIKE \'CN%\' AND OUTOBD >= \'2023-01-01\'\n    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
+    2. SQL가 조회하는 데이터 요약 (예: 부산발 중국착 매출 순위 (화주별))
+    3. SQL 쿼리 설명
+
+    ### 출력 형식(아래 출력 형식을 꼭 지켜야 해 시작부분에 / 이 들어가고 끝부분에는 없어):
+    1. 정확한 SQL 쿼리: <sql_query/>SQL 명령어<sql_query>
+    2. SQL가 조회하는 데이터 요약: <title/>데이터 설명문<title>
+    3. SQL 쿼리 설명: <explain/>SQL 설명문<explain>
+    
+    ### 참고자료
+    1. 만약 참고자료에 KR% 같은 조건이 있으면 LIKE 를, KRCRD 같은 정확한 정보는 = 를 사용.
+    2. 만약 여러개의 LIKE 조건이 있으면 (예시: WHERE OUTPOL LIKE 'KR%' OR OUTPOL LIKE 'CN%' OR OUTPOL LIKE 'JP%') 를 사용.
+    3. 날짜는 YYYY-MM-DD 형식을 사용 (ex: "2023-05-01")
+    4. LIKE 로 들어간 컬럼들은 다음과 같이 보기좋게 해줘.
+    예시 : 
+    SELECT 
+        CASE 
+            WHEN OUTPOL LIKE 'KR%' THEN '한국'
+            WHEN OUTPOL LIKE 'JP%' THEN '일본'
+            WHEN OUTPOL LIKE 'CN%' THEN '중국'
+            ELSE '기타' 
+        END AS 국가,
+        SUM(OUTSTL) AS TotalRevenue
+
+    <end_of_turn>
+    <start_of_turn>model
+    '''
+
+    # Get Answer
+    input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
+    input_length = input_ids['input_ids'].shape[1]
+    outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
+    outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
+    print(f'2번째 LLM Output:{outputs_result}')
+    sql_pattern = r'<sql_query.*?>(.*?)<sql_query.*?>'
+    title_pattern = r'<title.*?>(.*?)<title.*?>'
+    explain_pattern = r'<explain.*?>(.*?)<explain.*?>'
+    
+    sql_queries = re.search(sql_pattern, outputs_result, re.DOTALL).group(1)
+    title = re.search(title_pattern, outputs_result, re.DOTALL).group(1)
+    explain = re.search(explain_pattern, outputs_result, re.DOTALL).group(1)
+    
+    return sql_queries, title, explain, outputs_result
+
+def execute_sql_query(sql_query, config):
+    try:
+        conn = sqlite3.connect(config.sql_data_path)        # SQLite 데이터베이스에 연결
+        cursor = conn.cursor()
+
+        if (config.k is not None) and ("LIMIT" not in sql_query):
+            sql_query = sql_query.split(";")[0].strip()
+            sql_query += f"\nLIMIT {config.k};"
+                 
+        cursor.execute(sql_query)        # SQL 쿼리 실행
+        
+        result = cursor.fetchall()        # 결과 가져오기
+        column_names = [description[0] for description in cursor.description]        # 컬럼 이름도 포함하기 위해 description을 사용
+
+        cursor.close()
+        conn.close()
+        
+        return column_names, result
+
+    except sqlite3.Error as e:
+        print(f"데이터베이스 오류 발생: {e}")
+        return None, None
+
+def create_table_json(columns, results):
+    head = "||".join(columns)
+    body = "^ ".join("||".join(map(str, row)) for row in results)
+    table = {"head": head, "body": body}
+    return table
+
+def create_chart_json(columns, results):
+    chart = [
+        {"label": f"{row[-2]}", "data": [{"x": "매출액", "y": str(row[-1])}]}
+        for i, row in enumerate(results)
+    ]
+    return chart
+
+```
+
+
+--- tracking.py
+
+```python
+
+# tracking.py
+import time
+import logging
+
+# Configure logging however you like
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
+def time_tracker(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        logging.info(f"Entering {func.__name__}()")
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        elapsed = end_time - start_time
+        logging.info(f"Exiting {func.__name__}() -- Elapsed: {elapsed:.2f}s")
+        return result
+    return wrapper
+
+```
+
+
+--- templates/index_test_streaming.html
+
+```python
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Simple RAG Query Interface - Test</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 900px;
+        margin: 20px auto;
+        padding: 20px;
+        background: #f9f9f9;
+        color: #333;
+      }
+      h1, h2 {
+        text-align: center;
+      }
+      input[type='text'] {
+        width: 80%;
+        padding: 10px;
+        margin-bottom: 20px;
+        font-size: 16px;
+      }
+      button {
+        padding: 8px 14px;
+        font-size: 14px;
+        cursor: pointer;
+        margin: 5px;
+      }
+      .output {
+        margin-top: 20px;
+        font-size: 16px;
+        color: #333;
+        text-align: left;
+        word-wrap: break-word;
+        background: #fff;
+        padding: 15px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+      }
+      .output pre {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        background: #eee;
+        padding: 10px;
+        border-radius: 3px;
+      }
+      /* Test section styling */
+      .test-section {
+        margin-top: 40px;
+        padding: 20px;
+        background: #eef;
+        border: 1px solid #99c;
+        border-radius: 5px;
+      }
+      .test-section h2 {
+        margin-bottom: 20px;
+      }
+      .test-summary table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 20px;
+      }
+      .test-summary th,
+      .test-summary td {
+        border: 1px solid #ccc;
+        padding: 8px;
+        text-align: center;
+      }
+      .test-summary th {
+        background: #ddd;
+      }
+      .test-details .test-item {
+        margin-bottom: 20px;
+        padding: 10px;
+        background: #fff;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+      }
+      .test-details .test-item h4 {
+        margin-top: 0;
+      }
+      .partial-chunk {
+        margin: 4px 0;
+        padding: 4px;
+        background-color: #fafafa;
+        border-radius: 3px;
+      }
+      /* Hidden retrieval data in non-streaming output */
+      .hidden-retrieval {
+        display: none;
+        margin-top: 5px;
+        background: #fff9c4;
+        padding: 8px;
+        border: 1px solid #ccc;
+        border-radius: 3px;
+      }
+      /* For the main property table in simultaneous streaming */
+      #simul-main-table table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+      }
+      #simul-main-table th,
+      #simul-main-table td {
+        border: 1px solid #ccc;
+        padding: 8px;
+        text-align: center;
+      }
+      #simul-main-table th {
+        background: #ddd;
+      }
+      .partial-text-block {
+        margin-top: 10px;
+        background: #fff;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        padding: 10px;
+      }
+      .partial-text-block h4 {
+        margin: 0 0 5px 0;
+        font-weight: bold;
+      }
+      /* Info box style for single streaming times */
+      .stream-info-box {
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid #bbb;
+        border-radius: 4px;
+        background: #fff;
+        line-height: 1.4em;
+        font-size: 14px;
+      }
+      /* The references are hidden initially */
+      #referenceData {
+        display: none;
+        margin-top: 10px;
+        padding: 10px;
+        border: 1px solid #ccc;
+        background: #fff;
+      }
+      /* Test set selector styling */
+      .test-set-selector {
+        margin-bottom: 20px;
+        text-align: center;
+      }
+      .test-set-selector label {
+        font-weight: bold;
+        margin-right: 10px;
+        cursor: pointer;
+      }
+      .test-set-selector select {
+        padding: 5px;
+        font-size: 14px;
+      }
+      /* Progress indicator styling */
+      .progress-indicator {
+        font-weight: bold;
+        margin-bottom: 10px;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Simple RAG Query Interface</h1>
+    
+    <!-- Test Set Selector -->
+    <div class="test-set-selector">
+      <label for="testSetSelect" title="옵션별 설명:
+• 20 Multi SET1: SET1의 20개 질문
+• 20 Multi SET2: SET2의 20개 질문
+• Different Three Question Sets: 서로 다른 3개 질문 세트
+• Same Question 100 Times: 동일한 질문 ('디지털 전략') 100회 반복
+• 5 Questions Circulate 20 Times: 5개의 다른 질문을 20회씩 반복 (총 100개)
+• 100 Mixed: 100개의 다양한 혼합 질문 (Mix Test Set)">Test Set:</label>
+      <select id="testSetSelect">
+        <option value="set1" title="20개의 다른 질문 SET1" selected>20개의 다른 질문 세트 1번</option>
+        <option value="set2" title="20개의 다른 질문 SET2">20개의 다른 질문 세트 2번</option>
+        <option value="set3" title="서로 다른 3개 질문 세트">Different Three Question Sets</option>
+        <option value="same100" title="동일한 질문 '디지털 전략'을 100회 반복">같은 질문('디지털 전략') 100개</option>
+        <option value="circulate5x20" title="5개의 다른 질문을 20회씩 반복 (총 100개)">5개의 다른 질문 세트 20번 반복</option>
+        <option value="mixed100" title="100개의 다양한 혼합 질문 (Mix Test Set)">100개의 다른 질문</option>
+      </select>
+    </div>
+    
+    <!-- (1) Non-Streaming Query -->
+    <input type="text" id="userInput" placeholder="Type your query here..." />
+    <button onclick="sendQuery()">단일 전송(스트리밍 X)</button>
+    <div class="output" id="output"></div>
+
+    <!-- (2) Concurrency Test (Non-Streaming POST) - 50 queries -->
+    <div class="test-section">
+      <h2>한 번에 질문 여러개 전송하기 테스트</h2>
+      <h5>Testing the POST requests concurrently (display results as they arrive)</h5>
+      <div id="progressIndicator" class="progress-indicator"></div>
+      <button style="font-size: 16px; padding: 10px 20px;" onclick="testQueries()">Test</button>
+      <div class="output" id="testResults"></div>
+    </div>
+
+    <!-- (3) Single Streaming Test (POST-based) -->
+    <div class="test-section">
+      <h2>스트리밍 테스트(단일 - POST)</h2>
+      <h5>Streaming Test (Single via POST)</h5>
+      <p>
+        이 테스트는 POST 기반 fetch를 사용하여 응답을 스트리밍합니다.
+        서버는 SSE 스타일의 청크를 전송하며, 참조 데이터와 답변 텍스트를 분리하여 처리합니다.
+      </p>
+      <input type="text" id="streamInput" placeholder="Type your streaming query here..." />
+      <button onclick="startStreamPOST()">Start Streaming (POST)</button>
+      <!-- 답변 텍스트 영역 -->
+      <pre id="streamOutput" style="max-height: 250px; overflow-y: auto; white-space: pre-wrap; background: #fafafa;"></pre>
+      <!-- 스트리밍 타이밍 정보 -->
+      <div class="stream-info-box" id="streamTiming"></div>
+      <!-- 참조 데이터 영역 -->
+      <button onclick="toggleReferences()">Show References</button>
+      <div id="referenceData"></div>
+    </div>
+
+    <!-- (4) Simultaneous Streaming Test (POST-based) -->
+    <div class="test-section">
+      <h2>스트리밍 테스트(동시에, POST-based)</h2>
+      <h5>Simultaneous Streaming Test (POST-based streaming)</h5>
+      <p>
+        여러 스트리밍 쿼리를 POST 방식으로 동시에 실행합니다.
+      </p>
+      <button onclick="testSimulStreamPOST()">Start Simultaneous Streaming (POST)</button>
+      <div class="output" id="simul-partials"></div>
+      <div class="output" id="simul-results"></div>
+    </div>
+
+    <!-- (5) Continuous Sync Test -->
+    <div class="test-section">
+      <h2>연속 질문 테스트(단일 평균 시간 테스트)</h2>
+      <h5>Continuous Sync Test</h5>
+      <p>
+        선택한 테스트 셋에 따라 100개의 연속 쿼리를 실행하고 평균 응답 시간을 계산합니다.
+      </p>
+      <div id="continuousProgress" class="progress-indicator"></div>
+      <button onclick="continuousTest('nonstream')">Start Continuous Non-Streaming Test (100 queries)</button>
+      <button onclick="continuousTest('stream')">Start Continuous Streaming Test (100 queries)</button>
+      <div class="output" id="continuousTestResults"></div>
+    </div>
+
+    <script>
+      /************************************************************
+       *  Common Utility Functions
+       ************************************************************/
+      // Helper: Format time => "HH:MM:SS.ms"
+      function formatTime(d) {
+        if (!d) return '';
+        const ms = d.getMilliseconds().toString().padStart(3, '0');
+        return d.toLocaleTimeString() + '.' + ms;
+      }
+
+      // Toggle retrieval or reference data blocks
+      function toggleHiddenDiv(divId) {
+        const div = document.getElementById(divId);
+        if (!div) return;
+        div.style.display = (div.style.display === "none" || div.style.display === "") ? "block" : "none";
+      }
+
+      // Toggle the reference data block
+      function toggleReferences() {
+        const refDiv = document.getElementById("referenceData");
+        if (refDiv.style.display === "none" || refDiv.style.display === "") {
+          refDiv.style.display = "block";
+        } else {
+          refDiv.style.display = "none";
+        }
+      }
+
+      // Build JSON output for non-streaming response
+      function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
+        let formattedOutput = `
+          <strong>Send Time:</strong> ${sendTime} <br>
+          <strong>Receive Time:</strong> ${receiveTime} <br>
+          <strong>Elapsed Time:</strong> ${elapsed} ms <br>
+          <hr>
+        `;
+        if (data.status_code !== undefined) {
+          formattedOutput += `
+            <strong>Status Code:</strong> ${data.status_code} <br>
+            <strong>Result:</strong> ${data.result} <br>
+            <strong>Detail:</strong> ${data.detail} <br>
+            <strong>Event Time:</strong> ${data.evt_time} <br>
+            <strong>Data List:</strong><br>
+            <ul>
+          `;
+          if (data.data_list) {
+            let answerHTML = "";
+            let retrievalHTML = "";
+            data.data_list.forEach((item, idx) => {
+              if (item.rsp_type === "A") {
+                answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
+              } else if (item.rsp_type === "R") {
+                const hiddenId = `retrieval_${uniquePrefix}_${idx}`;
+                retrievalHTML += `
+                  <div>
+                    <button onclick="toggleHiddenDiv('${hiddenId}')">Show Retrieval</button>
+                    <div id="${hiddenId}" class="hidden-retrieval" style="display:none;">
+                      <pre>${JSON.stringify(item, null, 4)}</pre>
+                    </div>
+                  </div>
+                `;
+              } else {
+                answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
+              }
+            });
+            if (answerHTML)
+              formattedOutput += `<li><strong>Answer(s):</strong> ${answerHTML}</li>`;
+            if (retrievalHTML)
+              formattedOutput += `<li><strong>Retrieval(s):</strong> ${retrievalHTML}</li>`;
+          } else {
+            formattedOutput += "<li>No data available</li>";
+          }
+          formattedOutput += "</ul>";
+        } else {
+          formattedOutput += "<pre>" + JSON.stringify(data, null, 2) + "</pre>";
+        }
+        return formattedOutput;
+      }
+
+      // Used by multiple tests to show concurrency progress
+      function updateProgressIndicator(elementId, current, total, successCount = 0, failCount = 0) {
+        const elem = document.getElementById(elementId);
+        if (elem) {
+          const successRate = current > 0 ? ((successCount / current) * 100).toFixed(1) : 0;
+          elem.innerText = `완료: ${current} / ${total} queries | 성공: ${successCount}, 실패: ${failCount}, 성공률: ${successRate}%`;
+        }
+      }
+
+      /************************************************************
+       * (1) Non-Streaming Query
+       ************************************************************/
+      function sendQuery() {
+        const userInput = document.getElementById('userInput').value;
+        const sendTime = new Date();
+        const sendTimeStr = formatTime(sendTime);
+        const startTimestamp = Date.now();
+
+        fetch('/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ qry_contents: userInput })
+        })
+          .then((response) => {
+            const receiveTime = new Date();
+            const receiveTimeStr = formatTime(receiveTime);
+            const elapsed = Date.now() - startTimestamp;
+            if (!response.ok) {
+              return response.text().then((errorData) => {
+                throw new Error(`${response.status} ${response.statusText}: ${errorData}`);
+              });
+            }
+            return response.json().then((data) => {
+              document.getElementById('output').innerHTML =
+                formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
+            });
+          })
+          .catch((error) => {
+            const receiveTime = new Date();
+            const receiveTimeStr = formatTime(receiveTime);
+            const elapsed = Date.now() - startTimestamp;
+            console.error('Error:', error);
+            document.getElementById('output').innerHTML =
+              formatJsonOutput({ error: error.message }, sendTimeStr, receiveTimeStr, elapsed);
+          });
+      }
+
+      /************************************************************
+       * (2) Concurrency Test (Non-Streaming POST) - 50 queries
+       ************************************************************/
+      function testQueries() {
+        const queries = buildTestQueries();
+        document.getElementById('testResults').innerHTML = 'Testing in progress...';
+        const totalQueries = queries.length;
+        let arrivalCounter = 0;
+        let successCount = 0;
+        let failCount = 0;
+
+        updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+
+        const results = [];
+
+        queries.forEach((query) => {
+          const sendTime = new Date();
+          const sendTimeStr = formatTime(sendTime);
+          const startTimestamp = Date.now();
+
+          fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qry_contents: query.text })
+          })
+            .then((response) => {
+              const receiveTime = new Date();
+              const receiveTimeStr = formatTime(receiveTime);
+              const elapsed = Date.now() - startTimestamp;
+
+              // Check success or fail
+              if (!response.ok) {
+                failCount++;
+                return response.text().then((errorData) => {
+                  arrivalCounter++;
+                  const errMsg = `${response.status} ${response.statusText}: ${errorData}`;
+                  results.push({
+                    id: query.id,
+                    text: query.text,
+                    sendTime: sendTimeStr,
+                    receiveTime: receiveTimeStr,
+                    elapsed: elapsed,
+                    success: false,
+                    error: errMsg,
+                    arrival: arrivalCounter
+                  });
+                  updateTestResults(results);
+                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+                });
+              } else {
+                successCount++;
+                return response.json().then((data) => {
+                  arrivalCounter++;
+                  results.push({
+                    id: query.id,
+                    text: query.text,
+                    sendTime: sendTimeStr,
+                    receiveTime: receiveTimeStr,
+                    elapsed: elapsed,
+                    success: true,
+                    data: data,
+                    arrival: arrivalCounter
+                  });
+                  updateTestResults(results);
+                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+                });
+              }
+            })
+            .catch((error) => {
+              // Real fetch error (network or something)
+              const receiveTime = new Date();
+              const receiveTimeStr = formatTime(receiveTime);
+              const elapsed = Date.now() - startTimestamp;
+              failCount++;
+              arrivalCounter++;
+              results.push({
+                id: query.id,
+                text: query.text,
+                sendTime: sendTimeStr,
+                receiveTime: receiveTimeStr,
+                elapsed: elapsed,
+                success: false,
+                error: error.message,
+                arrival: arrivalCounter
+              });
+              updateTestResults(results);
+              updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+            });
+        });
+      }
+
+      function updateTestResults(results) {
+        document.getElementById('testResults').innerHTML = formatTestResults(results);
+      }
+
+      function formatTestResults(results) {
+        let summaryHTML = `
+          <div class="test-summary">
+            <h3>Test Summary</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>Arrival Order</th>
+                  <th>Test ID</th>
+                  <th>Query</th>
+                  <th>Send Time</th>
+                  <th>Receive Time</th>
+                  <th>Elapsed (ms)</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+        results.forEach((result) => {
+          const statusText = result.success ? 'Success' : 'Fail';
+          summaryHTML += `
+            <tr>
+              <td>${result.arrival}</td>
+              <td>${result.id}</td>
+              <td>${result.text}</td>
+              <td>${result.sendTime}</td>
+              <td>${result.receiveTime}</td>
+              <td>${result.elapsed}</td>
+              <td>${statusText}</td>
+            </tr>
+          `;
+        });
+        summaryHTML += `
+              </tbody>
+            </table>
+          </div>
+        `;
+
+        let detailsHTML = '<div class="test-details"><h3>Individual Test Details</h3>';
+        results.forEach((result) => {
+          const safeResultOutput = result.success
+            ? formatJsonOutput(
+                result.data || {},
+                result.sendTime,
+                result.receiveTime,
+                result.elapsed,
+                result.id
+              )
+            : `<pre style="color:red;">Error: ${result.error || 'Unknown error'}</pre>`;
+
+          detailsHTML += `
+            <div class="test-item">
+              <h4>${result.id} - ${result.text}</h4>
+              <p><strong>Arrival Order:</strong> ${result.arrival}</p>
+              <p><strong>Send Time:</strong> ${result.sendTime}</p>
+              <p><strong>Receive Time:</strong> ${result.receiveTime}</p>
+              <p><strong>Elapsed Time:</strong> ${result.elapsed} ms</p>
+              <p><strong>Status:</strong> ${result.success ? 'Success' : 'Fail'}</p>
+              <p><strong>Response Data:</strong></p>
+              ${safeResultOutput}
+            </div>
+          `;
+        });
+        detailsHTML += "</div>";
+        return summaryHTML + detailsHTML;
+      }
+
+      /************************************************************
+       * (3) Single Streaming Test (POST-based streaming)
+       ************************************************************/
+      let postStreamFirstChunkTime = null;
+      let postStreamEndTime = null;
+      let postStreamStartTime = null;
+      let streamingInProgress = false;
+      let answerAccumulated = "";
+      let sseBuffer = "";
+
+      async function startStreamPOST() {
+        if (streamingInProgress) {
+          alert("Streaming is already in progress.");
+          return;
+        }
+        streamingInProgress = true;
+        const userQuery = document.getElementById('streamInput').value.trim();
+        if (!userQuery) {
+          alert('Please type a streaming query.');
+          streamingInProgress = false;
+          return;
+        }
+        // Reset variables
+        answerAccumulated = "";
+        sseBuffer = "";
+        postStreamFirstChunkTime = null;
+        postStreamEndTime = null;
+        document.getElementById('streamOutput').textContent = "";
+        document.getElementById('streamTiming').innerHTML = "";
+        document.getElementById('referenceData').innerHTML = "";
+        document.getElementById('referenceData').style.display = "none";
+
+        postStreamStartTime = performance.now();
+
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: userQuery })
+          });
+          if (!response.ok) {
+            const errTxt = await response.text();
+            throw new Error('Response not OK: ' + response.status + " " + errTxt);
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              postStreamEndTime = performance.now();
+              updatePostStreamTiming();
+              break;
+            }
+            const chunk = decoder.decode(value, { stream: true });
+            processPostSseChunk(chunk);
+            document.getElementById('streamOutput').textContent = answerAccumulated;
+          }
+        } catch (err) {
+          console.error('POST-based streaming error:', err);
+          postStreamEndTime = performance.now();
+          updatePostStreamTiming();
+        } finally {
+          streamingInProgress = false;
+        }
+      }
+
+      function processPostSseChunk(chunk) {
+        sseBuffer += chunk;
+        let lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop(); // leftover
+        for (let line of lines) {
+          line = line.trim();
+          if (!line) continue;
+          if (line.startsWith("data:")) {
+            const sseData = line.slice(5).trim();
+            if (!postStreamFirstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
+              postStreamFirstChunkTime = performance.now();
+              updatePostStreamTiming();
+            }
+            if (sseData === "[[STREAM_DONE]]") {
+              postStreamEndTime = performance.now();
+              updatePostStreamTiming();
+              return;
+            }
+            try {
+              const jsonData = JSON.parse(sseData);
+              if (jsonData.type === "reference") {
+                let refHTML = `<h4>Reference Data</h4><ul>`;
+                if (Array.isArray(jsonData.data_list)) {
+                  jsonData.data_list.forEach((ref, idx) => {
+                    refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                  });
+                } else {
+                  refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
+                }
+                refHTML += `</ul>`;
+                document.getElementById("referenceData").innerHTML = refHTML;
+                document.getElementById("referenceData").style.display = "block";
+              } else if (jsonData.type === "answer") {
+                answerAccumulated += jsonData.answer;
+              }
+            } catch (e) {
+              // Not valid JSON, treat as plain text
+              answerAccumulated += sseData;
+            }
+          }
+        }
+        updatePostStreamTiming();
+      }
+
+      function updatePostStreamTiming() {
+        let msg = "";
+        if (postStreamStartTime !== null) {
+          msg += `Started: ${postStreamStartTime.toFixed(1)} ms\n`;
+        }
+        if (postStreamFirstChunkTime !== null) {
+          msg += `First chunk: ${postStreamFirstChunkTime.toFixed(1)} ms (delta: ${(postStreamFirstChunkTime - postStreamStartTime).toFixed(1)} ms)\n`;
+        } else {
+          msg += "First chunk: not yet\n";
+        }
+        if (postStreamEndTime !== null) {
+          msg += `End: ${postStreamEndTime.toFixed(1)} ms (delta: ${(postStreamEndTime - postStreamStartTime).toFixed(1)} ms)\n`;
+          if (postStreamFirstChunkTime !== null) {
+            msg += `Chunk→End: ${(postStreamEndTime - postStreamFirstChunkTime).toFixed(1)} ms\n`;
+          }
+        } else {
+          msg += "End: not yet\n";
+        }
+        document.getElementById('streamTiming').innerHTML = msg;
+      }
+
+      /************************************************************
+       * (4) Simultaneous Streaming Test (POST-based streaming)
+       ************************************************************/
+      async function startSimulStreamPOST(queryObj, containerId) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = `
+          <h4>${queryObj.id} - ${queryObj.text}</h4>
+          <pre class="stream-output" style="background:#fafafa; padding:10px;"></pre>
+          <div class="stream-info-box"></div>
+          <button onclick="toggleReferencesInContainer('${containerId}')">Toggle References</button>
+          <div class="reference-output" style="display:none; border:1px solid #ccc; padding:10px; margin-top:10px;"></div>
+        `;
+
+        let answerAccumulated = "";
+        let sseBuffer = "";
+        let chunkCount = 0;
+        const streamStartTime = performance.now();
+        let firstChunkTime = null;
+        let endTime = null;
+        let success = true;
+        let errorMessage = "";
+
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: queryObj.text })
+          });
+          if (!response.ok) {
+            success = false;
+            errorMessage = `Response not OK: ${response.status}`;
+            return {
+              id: queryObj.id,
+              query: queryObj.text,
+              sendTime: streamStartTime,
+              firstChunkTime,
+              endTime,
+              duration: 0,
+              success,
+              error: errorMessage,
+              chunkCount
+            };
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              endTime = performance.now();
+              updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+              break;
+            }
+            const chunk = decoder.decode(value, { stream: true });
+            sseBuffer += chunk;
+            let lines = sseBuffer.split("\n");
+            sseBuffer = lines.pop();
+            for (let line of lines) {
+              line = line.trim();
+              if (!line) continue;
+              if (line.startsWith("data:")) {
+                const sseData = line.slice(5).trim();
+                // Count every SSE line as a 'chunk' for demonstration
+                chunkCount++;
+                if (!firstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
+                  firstChunkTime = performance.now();
+                  updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
+                }
+                if (sseData === "[[STREAM_DONE]]") {
+                  endTime = performance.now();
+                  updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+                  return {
+                    id: queryObj.id,
+                    query: queryObj.text,
+                    sendTime: streamStartTime,
+                    firstChunkTime,
+                    endTime,
+                    duration: endTime - streamStartTime,
+                    success,
+                    error: errorMessage,
+                    chunkCount
+                  };
+                }
+                try {
+                  const jsonData = JSON.parse(sseData);
+                  if (jsonData.type === "reference") {
+                    const refDiv = container.querySelector(".reference-output");
+                    let refHTML = `<h4>Reference Data</h4><ul>`;
+                    if (Array.isArray(jsonData.data_list)) {
+                      jsonData.data_list.forEach((ref, idx) => {
+                        refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                      });
+                    } else {
+                      refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
+                    }
+                    refHTML += `</ul>`;
+                    refDiv.innerHTML = refHTML;
+                  } else if (jsonData.type === "answer") {
+                    answerAccumulated += jsonData.answer;
+                    container.querySelector(".stream-output").textContent = answerAccumulated;
+                  }
+                } catch (e) {
+                  // Not valid JSON => treat as text
+                  answerAccumulated += sseData;
+                  container.querySelector(".stream-output").textContent = answerAccumulated;
+                }
+              }
+            }
+            updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
+          }
+        } catch (err) {
+          success = false;
+          errorMessage = err.message;
+          container.querySelector(".stream-output").textContent += "\nError: " + err;
+        }
+
+        // If we exit the loop or have an error:
+        endTime = endTime || performance.now();
+        updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+        return {
+          id: queryObj.id,
+          query: queryObj.text,
+          sendTime: streamStartTime,
+          firstChunkTime,
+          endTime,
+          duration: endTime - streamStartTime,
+          success,
+          error: errorMessage,
+          chunkCount
+        };
+      }
+
+      function updateContainerTiming(container, start, first, end, chunkCount) {
+        const infoBox = container.querySelector(".stream-info-box");
+        let infoMsg = `Started: ${start.toFixed(1)} ms\n`;
+        if (first) {
+          infoMsg += `First chunk: ${first.toFixed(1)} ms (delta: ${(first - start).toFixed(1)} ms)\n`;
+        } else {
+          infoMsg += "First chunk: not yet\n";
+        }
+        if (end) {
+          infoMsg += `End: ${end.toFixed(1)} ms (delta: ${(end - start).toFixed(1)} ms)\n`;
+          if (first) {
+            infoMsg += `Chunk→End: ${(end - first).toFixed(1)} ms\n`;
+          }
+        } else {
+          infoMsg += "End: not yet\n";
+        }
+        infoMsg += `Chunk Count: ${chunkCount}\n`;
+        infoBox.textContent = infoMsg;
+      }
+
+      function toggleReferencesInContainer(containerId) {
+        const container = document.getElementById(containerId);
+        const refDiv = container.querySelector(".reference-output");
+        if (refDiv.style.display === "none" || refDiv.style.display === "") {
+          refDiv.style.display = "block";
+        } else {
+          refDiv.style.display = "none";
+        }
+      }
+
+      async function testSimulStreamPOST() {
+        const queries = buildTestQueries();
+        // Use all queries in the test set
+        const simulQueries = queries;
+        const simulPartialsContainer = document.getElementById("simul-partials");
+        const simulResultsContainer = document.getElementById("simul-results");
+        simulPartialsContainer.innerHTML = ""; // Clear previous streams
+        simulResultsContainer.innerHTML = "";   // Clear previous result table
+
+        // Fire all streaming requests in parallel
+        const promises = simulQueries.map((q, index) => {
+          const containerId = "simul-stream-" + index;
+          const div = document.createElement("div");
+          div.id = containerId;
+          simulPartialsContainer.appendChild(div);
+          return startSimulStreamPOST(q, containerId);
+        });
+
+        let results = await Promise.all(promises);
+        let summaryTable = buildSimulSummaryTable(results);
+        simulResultsContainer.innerHTML = summaryTable;
+      }
+
+      function buildSimulSummaryTable(results) {
+        // Calculate success/fail stats
+        let successCount = 0;
+        let failCount = 0;
+        results.forEach(r => {
+          if (r.success) successCount++;
+          else failCount++;
+        });
+
+        // Build summary table
+        let html = `<div class="test-summary">
+                      <h3>Simultaneous Streaming Results</h3>
+                      <p>Total: ${results.length}, Success: ${successCount}, Fail: ${failCount}</p>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>ID</th>
+                            <th>Query</th>
+                            <th>Send Time (ms)</th>
+                            <th>First Chunk (ms)</th>
+                            <th>End Time (ms)</th>
+                            <th>Duration (ms)</th>
+                            <th>Chunk Count</th>
+                            <th>Status</th>
+                            <th>Error</th>
+                          </tr>
+                        </thead>
+                        <tbody>`;
+
+        results.forEach(r => {
+          const statusText = r.success ? "Success" : "Fail";
+          const errorText = r.error || "";
+          const firstTimeStr = r.firstChunkTime ? r.firstChunkTime.toFixed(1) : "n/a";
+          const endTimeStr = r.endTime ? r.endTime.toFixed(1) : "n/a";
+          const durationStr = r.duration ? r.duration.toFixed(1) : "n/a";
+          html += `<tr>
+                     <td>${r.id}</td>
+                     <td>${r.query}</td>
+                     <td>${r.sendTime.toFixed(1)}</td>
+                     <td>${firstTimeStr}</td>
+                     <td>${endTimeStr}</td>
+                     <td>${durationStr}</td>
+                     <td>${r.chunkCount}</td>
+                     <td>${statusText}</td>
+                     <td style="color:red;">${errorText}</td>
+                   </tr>`;
+        });
+
+        html += `</tbody></table></div>`;
+        return html;
+      }
+
+      /************************************************************
+       * (5) Continuous Sync Test
+       ************************************************************/
+      async function continuousTest(mode) {
+        const queries = buildTestQueries();
+        const results = [];
+        const total = queries.length;
+        document.getElementById('continuousTestResults').innerHTML = `Running ${mode} test...<br>`;
+        updateProgressIndicator('continuousProgress', 0, total);
+
+        for (let i = 0; i < queries.length; i++) {
+          if (mode === 'nonstream') {
+            const r = await runNonStreamingQuery(queries[i]);
+            results.push(r);
+          } else {
+            const r = await runStreamingQuery(queries[i]);
+            results.push(r);
+          }
+          updateProgressIndicator('continuousProgress', i + 1, total);
+        }
+
+        let sum = 0;
+        results.forEach(r => sum += r.duration);
+        const avg = (sum / results.length).toFixed(2);
+
+        let html = `<h3>Continuous ${mode === 'nonstream' ? 'Non-Streaming' : 'Streaming'} Test (${total} queries) Results</h3>`;
+        html += `<p>Average Duration: <strong>${avg} ms</strong></p>`;
+        html += "<ul>";
+        results.forEach((r) => {
+          html += `<li><strong>${r.id}</strong> [${r.query}] - Start: ${r.startTime}, End: ${r.endTime}, Duration: ${r.duration} ms</li>`;
+        });
+        html += "</ul>";
+        document.getElementById('continuousTestResults').innerHTML = html;
+      }
+
+      async function runNonStreamingQuery(qObj) {
+        const sendTime = new Date();
+        const startTs = Date.now();
+        try {
+          const resp = await fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qry_contents: qObj.text })
+          });
+          await resp.json();
+        } catch (e) {
+          console.error("Non-stream error:", e);
+        }
+        const endTime = new Date();
+        const duration = Date.now() - startTs;
+        return {
+          id: qObj.id,
+          query: qObj.text,
+          startTime: formatTime(sendTime),
+          endTime: formatTime(endTime),
+          duration: duration
+        };
+      }
+
+      // 기존의 runStreamingQuery 함수는 GET 방식을 사용했으나, 이제 POST 방식으로 변경합니다.
+      // POST 방식으로 요청을 보내고, 응답 스트림을 처리하여 SSE 청크를 읽습니다.
+      function runStreamingQuery(qObj) {
+        return new Promise((resolve, reject) => {
+          const sendTime = new Date();
+          const startTs = Date.now();
+          let accumulatedText = "";
+          // POST 방식으로 /query_stream에 요청 (Content-Type은 JSON)
+          fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: qObj.text })
+          })
+            .then(response => {
+              const reader = response.body.getReader();
+              const decoder = new TextDecoder();
+              // 함수: 응답 스트림을 재귀적으로 읽어 처리
+              function processStream({ done, value }) {
+                if (done) {
+                  const endTime = new Date();
+                  const duration = Date.now() - startTs;
+                  resolve({
+                    id: qObj.id,
+                    query: qObj.text,
+                    startTime: formatTime(sendTime),
+                    endTime: formatTime(endTime),
+                    duration: duration,
+                    result: accumulatedText
+                  });
+                  return;
+                }
+                // 수신한 청크를 디코딩하여 누적
+                accumulatedText += decoder.decode(value, { stream: true });
+                // 추가 청크 읽기
+                reader.read().then(processStream).catch(reject);
+              }
+              return reader.read().then(processStream);
+            })
+            .catch(err => {
+              reject(err);
+            });
+        });
+      }
+      
+      /************************************************************
+       * Helper: Build Test Queries from the selector
+       ************************************************************/
+      function buildTestQueries() {
+        const testSet = document.getElementById('testSetSelect').value;
+        let queries = [];
+        if (testSet === 'set1') {
+          const mixed20Queries1 = [
+            { id: "ask1", text: "남성해운의 중국 시장 동향" },
+            { id: "ask2", text: "남성해운의 일본 시장 영업 전략" },
+            { id: "ask3", text: "남성해운의 동남아 시장 발전 가능성" },
+            { id: "ask4", text: "남성해운의 중국 시장 동향" },
+            { id: "ask5", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "ask6", text: "디지털화 근황" },
+            { id: "ask7", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask8", text: "남성해운 운임 동향" },
+            { id: "ask9", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask10", text: "최근 해운업계 동향" },
+            { id: "ask11", text: "디지털화 근황" },
+            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask13", text: "남성해운 운임 동향" },
+            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask15", text: "최근 해운업계 동향" },
+            { id: "ask16", text: "디지털화 근황" },
+            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask18", text: "남성해운 운임 동향" },
+            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask20", text: "최근 해운업계 동향" }
+          ];
+          queries = mixed20Queries1;
+        } else if (testSet === 'set2') {
+          const mixed20Queries2 = [
+            { id: "ask1", text: "타운사의 전략" },
+            { id: "ask2", text: "남성해운과 타운사의 차별점" },
+            { id: "ask3", text: "남성해운의 수익 구조" },
+            { id: "ask4", text: "해운사의 특징과 남성해운이 가진 고유의 특징" },
+            { id: "ask5", text: "지난해 매출과 앞으로의 전망" },
+            { id: "ask6", text: "남성해운의 AI 추진 과제 현황" },
+            { id: "ask7", text: "동영해운과 남성해운의 공통점과 차이점" },
+            { id: "ask8", text: "남성해운의 새로운 전략과 먹거리" },
+            { id: "ask9", text: "신입사원 채용 계획 및 교육 일정" },
+            { id: "ask10", text: "해운업계의 큰 흐름과 현재 남성해운의 판단" },
+            { id: "ask11", text: "디지털화 근황" },
+            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask13", text: "남성해운 운임 동향" },
+            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask15", text: "최근 해운업계 동향" },
+            { id: "ask16", text: "디지털화 근황" },
+            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask18", text: "남성해운 운임 동향" },
+            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask20", text: "최근 해운업계 동향" }
+          ];
+          queries = mixed20Queries2;
+        } else if (testSet === 'set3') {
+          const differentThreeQueries = [
+            { id: "only3-1", text: "남성해운 중국 시장 근황" },
+            { id: "only3-2", text: "공 컨테이너 수송 전략" },
+            { id: "only3-3", text: "남성해운의 새로운 전략" }
+          ];
+          queries = differentThreeQueries;
+        } else if (testSet === 'same100') {
+          for (let i = 1; i <= 100; i++) {
+            queries.push({ id: `same100-${i}`, text: "디지털 전략" });
+          }
+        } else if (testSet === 'circulate5x20') {
+          const baseQueries = [
+            { id: "q1", text: "남성해운 영업 전략" },
+            { id: "q2", text: "디지털화 근황" },
+            { id: "q3", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "q4", text: "주간회의 특징 및 주요 말씀" },
+            { id: "q5", text: "해운업계의 경쟁 구도" }
+          ];
+          for (let k = 1; k <= 20; k++) {
+            baseQueries.forEach((q) => {
+              queries.push({ id: `circulate${k}-${q.id}`, text: q.text });
+            });
+          }
+        } else if (testSet === 'mixed100') {
+          const mixedQueries = [
+            { id: "mix-ask1", text: "타운사의 전략" },
+            { id: "mix-ask2", text: "남성해운의 중국 시장 동향" },
+            { id: "mix-ask3", text: "해운업계의 경쟁 구도" },
+            { id: "mix-ask4", text: "디지털화의 최신 트렌드" },
+            { id: "mix-ask5", text: "IOT 컨테이너 사업의 전망" },
+            { id: "mix-ask6", text: "타운사의 시장 점유율 분석" },
+            { id: "mix-ask7", text: "남성해운의 일본 시장 영업 전략" },
+            { id: "mix-ask8", text: "해운업계의 글로벌 시장 동향" },
+            { id: "mix-ask9", text: "디지털 전환의 성공 사례" },
+            { id: "mix-ask10", text: "IOT 기술을 활용한 물류 혁신" },
+            { id: "mix-ask11", text: "타운사의 경쟁 우위" },
+            { id: "mix-ask12", text: "남성해운의 동남아 시장 발전 가능성" },
+            { id: "mix-ask13", text: "해운업계의 기술 혁신 현황" },
+            { id: "mix-ask14", text: "디지털 기술이 기업에 미치는 영향" },
+            { id: "mix-ask15", text: "IOT와 빅데이터의 결합 사례" },
+            { id: "mix-ask16", text: "타운사의 성장 동력" },
+            { id: "mix-ask17", text: "남성해운의 미국 시장 진출 전략" },
+            { id: "mix-ask18", text: "해운업계의 운임 변동 요인" },
+            { id: "mix-ask19", text: "디지털화 도입의 비용 효율성" },
+            { id: "mix-ask20", text: "IOT 기술 도입의 장단점" },
+            { id: "mix-ask21", text: "타운사의 혁신 사례" },
+            { id: "mix-ask22", text: "남성해운의 수익 구조 분석" },
+            { id: "mix-ask23", text: "해운업계의 환경 규제 대응" },
+            { id: "mix-ask24", text: "디지털 전환 전략 수립 방법" },
+            { id: "mix-ask25", text: "IOT 컨테이너의 운영 효율성" },
+            { id: "mix-ask26", text: "타운사의 고객 만족도" },
+            { id: "mix-ask27", text: "남성해운의 비용 절감 전략" },
+            { id: "mix-ask28", text: "해운업계의 디지털 전환" },
+            { id: "mix-ask29", text: "디지털화와 빅데이터 활용" },
+            { id: "mix-ask30", text: "IOT 기반 실시간 모니터링 시스템" },
+            { id: "mix-ask31", text: "타운사의 재무 구조" },
+            { id: "mix-ask32", text: "남성해운의 신규 서비스 도입" },
+            { id: "mix-ask33", text: "해운업계의 물류 효율성 개선" },
+            { id: "mix-ask34", text: "디지털화의 보안 이슈" },
+            { id: "mix-ask35", text: "IOT와 인공지능의 결합 효과" },
+            { id: "mix-ask36", text: "타운사의 리스크 관리" },
+            { id: "mix-ask37", text: "남성해운의 고객 만족도 조사" },
+            { id: "mix-ask38", text: "해운업계의 비용 구조" },
+            { id: "mix-ask39", text: "디지털 트랜스포메이션의 장단점" },
+            { id: "mix-ask40", text: "IOT 기술을 활용한 비용 절감" },
+            { id: "mix-ask41", text: "타운사의 해외 진출 전략" },
+            { id: "mix-ask42", text: "남성해운의 운임 변동 분석" },
+            { id: "mix-ask43", text: "해운업계의 신규 시장 개척" },
+            { id: "mix-ask44", text: "디지털화 추진을 위한 조직 문화" },
+            { id: "mix-ask45", text: "IOT 컨테이너 사업의 경쟁력" },
+            { id: "mix-ask46", text: "타운사의 신규 사업 계획" },
+            { id: "mix-ask47", text: "남성해운의 미래 성장 전략" },
+            { id: "mix-ask48", text: "해운업계의 고객 서비스 혁신" },
+            { id: "mix-ask49", text: "디지털 전환과 고객 경험 혁신" },
+            { id: "mix-ask50", text: "IOT 기술 도입을 위한 투자 전략" },
+            { id: "mix-ask51", text: "타운사의 브랜드 가치" },
+            { id: "mix-ask52", text: "남성해운의 경쟁사 비교" },
+            { id: "mix-ask53", text: "해운업계의 글로벌 네트워크" },
+            { id: "mix-ask54", text: "디지털화와 인공지능의 결합" },
+            { id: "mix-ask55", text: "IOT와 클라우드 컴퓨팅의 연계" },
+            { id: "mix-ask56", text: "타운사의 공급망 관리" },
+            { id: "mix-ask57", text: "남성해운의 글로벌 네트워크" },
+            { id: "mix-ask58", text: "해운업계의 재무 안정성" },
+            { id: "mix-ask59", text: "디지털 전환의 글로벌 사례" },
+            { id: "mix-ask60", text: "IOT 기반 물류 자동화 사례" },
+            { id: "mix-ask61", text: "타운사의 인재 육성 전략" },
+            { id: "mix-ask62", text: "남성해운의 혁신 기술 도입" },
+            { id: "mix-ask63", text: "해운업계의 기술 투자" },
+            { id: "mix-ask64", text: "디지털화 추진 시 장애 요인" },
+            { id: "mix-ask65", text: "IOT 기술의 보안 이슈" },
+            { id: "mix-ask66", text: "타운사의 사회적 책임 활동" },
+            { id: "mix-ask67", text: "남성해운의 운영 효율성" },
+            { id: "mix-ask68", text: "해운업계의 공급망 관리" },
+            { id: "mix-ask69", text: "디지털화에 따른 비용 절감 효과" },
+            { id: "mix-ask70", text: "IOT 컨테이너 사업의 글로벌 동향" },
+            { id: "mix-ask71", text: "타운사의 기술 혁신" },
+            { id: "mix-ask72", text: "남성해운의 재무 건전성" },
+            { id: "mix-ask73", text: "해운업계의 미래 전망" },
+            { id: "mix-ask74", text: "디지털 트랜스포메이션의 미래 전망" },
+            { id: "mix-ask75", text: "IOT와 데이터 분석의 시너지 효과" },
+            { id: "mix-ask76", text: "타운사의 마케팅 전략" },
+            { id: "mix-ask77", text: "남성해운의 리스크 관리 전략" },
+            { id: "mix-ask78", text: "해운업계의 혁신 사례" },
+            { id: "mix-ask79", text: "디지털화 전략 수립 시 고려사항" },
+            { id: "mix-ask80", text: "IOT 기술 도입 시 장애 요인" },
+            { id: "mix-ask81", text: "타운사의 고객 서비스 개선" },
+            { id: "mix-ask82", text: "남성해운의 신규 투자 계획" },
+            { id: "mix-ask83", text: "해운업계의 위험 요인" },
+            { id: "mix-ask84", text: "디지털 전환이 기업 경쟁력에 미치는 영향" },
+            { id: "mix-ask85", text: "IOT 컨테이너의 미래 전략" },
+            { id: "mix-ask86", text: "타운사의 경쟁사 비교" },
+            { id: "mix-ask87", text: "남성해운의 시장 점유율 변화" },
+            { id: "mix-ask88", text: "해운업계의 인재 육성" },
+            { id: "mix-ask89", text: "디지털화와 클라우드 컴퓨팅" },
+            { id: "mix-ask90", text: "IOT 기술을 활용한 혁신 사례" },
+            { id: "mix-ask91", text: "타운사의 시장 성장 전망" },
+            { id: "mix-ask92", text: "남성해운의 고객 서비스 전략" },
+            { id: "mix-ask93", text: "해운업계의 시장 성장 동력" },
+            { id: "mix-ask94", text: "디지털 전환의 성공 요인" },
+            { id: "mix-ask95", text: "IOT 기반 스마트 물류 솔루션" },
+            { id: "mix-ask96", text: "타운사의 미래 비전" },
+            { id: "mix-ask97", text: "남성해운의 미래 비전" },
+            { id: "mix-ask98", text: "해운업계의 신기술 도입 현황" },
+            { id: "mix-ask99", text: "디지털 트랜스포메이션이 해운업계에 미치는 영향" },
+            { id: "mix-ask100", text: "IOT 기술이 해운업계에 미치는 영향" }
+          ];
+          queries = mixedQueries;
+        }
+        return queries;
+      }
+    </script>
+  </body>
+</html>
+
+```
+
+
+-----------------
+
+# Requirements
+
+
+Base-Knowledge:
+ - 위 파일들은 Gemma2 모델을 활용한 RAG 서비스의 소스 코드입니다.
+ - 파일 트리와 각 파일의 내용이 ```python``` 코드 블록 내에 포함되며, 프로젝트의 현재 구조와 상태를 한눈에 파악할 수 있습니다.
+ - vLLM과 ray를 활용하여 사용성 및 추론 성능을 개선하였습니다.
+ - 에러 발생 시 로깅을 통해 문제를 추적할 수 있도록 설계되었습니다.
+
+My-Requirements:
+ 1. User requirements.
+ 2. My requirements.
+ 3. 추후 소스 코드 개선, 구조 변경, 에러 로그 추가 등 다양한 요구사항을 반영할 수 있는 확장성을 고려합니다.
+ 4. 전체 코드는 한국어로 주석 및 설명이 포함되어, 이해와 유지보수가 용이하도록 작성됩니다.

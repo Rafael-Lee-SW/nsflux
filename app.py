@@ -12,6 +12,11 @@ os.environ["HF_TOKEN_PATH"] = "/root/.cache/huggingface/token"
 os.environ["MKL_THREADING_LAYER"] = "GNU"
 # Increase download timeout (in seconds)
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+# Use the vLLM as v1 version
+os.environ["VLLM_USE_V1"] = "1"
+os.environ["VLLM_STANDBY_MEM"] = "0"
+os.environ["VLLM_METRICS_LEVEL"] = "1"
+os.environ["VLLM_PROFILE_MEMORY"]= "1"
 
 from flask import (
     Flask,
