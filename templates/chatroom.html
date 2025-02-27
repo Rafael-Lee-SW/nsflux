@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>ChatGPT 스타일 채팅방 테스트</title>
+  <style>
+    /* 간단한 스타일 정의 */
+    body { font-family: Arial, sans-serif; padding: 20px; background-color: #f5f5f5; }
+    .chat-container { width: 600px; margin: 0 auto; }
+    .chat-box { border: 1px solid #ccc; padding: 10px; height: 400px; overflow-y: auto; background-color: #fff; }
+    .input-container { margin-top: 10px; }
+    .input-container input { width: 80%; padding: 10px; font-size: 16px; }
+    .input-container button { padding: 10px 15px; font-size: 16px; }
+    #chatRoomId { margin-bottom: 10px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <h2>채팅방 생성 및 접속</h2>
+    <!-- 생성된 채팅방의 고유 request_id 표시 -->
+    <div id="chatRoomId"></div>
+    <!-- 채팅 메시지를 표시할 영역 -->
+    <div class="chat-box" id="chatBox"></div>
+    <!-- 채팅 메시지 입력 영역 -->
+    <div class="input-container">
+      <input type="text" id="userMessage" placeholder="메시지를 입력하세요..." />
+      <button onclick="sendMessage()">전송</button>
+    </div>
+    <!-- 채팅방 생성 버튼 -->
+    <button onclick="createChatRoom()">채팅방 생성</button>
+  </div>
+
+  <script>
+    // 전역 변수로 채팅방 ID(request_id)를 저장합니다.
+    let requestId = null;
+
+    // 채팅방 생성 함수 (클릭 시 고유한 request_id 생성)
+    function createChatRoom() {
+      requestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
+      document.getElementById("chatRoomId").innerText = "채팅방 ID: " + requestId;
+      appendMessage("시스템", "채팅방이 생성되었습니다. (ID: " + requestId + ")");
+    }
+
+    // 채팅 박스에 메시지를 추가하는 헬퍼 함수
+    function appendMessage(sender, message) {
+      const chatBox = document.getElementById("chatBox");
+      const msgDiv = document.createElement("div");
+      msgDiv.innerHTML = "<strong>" + sender + ":</strong> " + message;
+      chatBox.appendChild(msgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // 사용자의 메시지를 백엔드에 전송하는 함수
+    async function sendMessage() {
+      const messageInput = document.getElementById("userMessage");
+      const message = messageInput.value.trim();
+      if (!message) return;
+      appendMessage("사용자", message);
+      messageInput.value = "";
+      
+      // 백엔드에 전송할 JSON payload 구성
+      const payload = { input: message };
+      // 만약 이미 채팅방(request_id)가 생성되어 있다면 함께 전송
+      if (requestId) {
+        payload.request_id = requestId;
+      }
+      
+      try {
+        const response = await fetch('/query_stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          throw new Error("응답 오류: " + response.status);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let done = false;
+        while (!done) {
+          const { value, done: doneReading } = await reader.read();
+          done = doneReading;
+          const chunk = decoder.decode(value);
+          appendMessage("AI", chunk);
+        }
+      } catch (err) {
+        appendMessage("시스템", "오류 발생: " + err.message);
+      }
+    }
+  </script>
+</body>
+</html>

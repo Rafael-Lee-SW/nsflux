@@ -88,7 +88,12 @@ def index():
 # Test 페이지를 불러오는 라우트
 @app.route("/test")
 def test_page():
-    return render_template("index_test_streaming.html")  # index.html을 렌더링
+    return render_template("index_test_streaming.html")
+
+# chatroomPage 페이지를 불러오는 라우트
+@app.route("/chat")
+def chat_page():
+    return render_template("chatroom.html")
 
 # Query Endpoint (Non-streaming)
 @app.route("/query", methods=["POST"])
@@ -126,8 +131,14 @@ def query_stream():
     """
     body = request.json or {}
     user_input = body.get("input", "")
-    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}'")
+    # request_id 파트 추가
+    client_request_id = body.get("request_id")
+    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', request_id='{client_request_id}'")
+    
     http_query = {"qry_contents": user_input}
+    # request_id 파트 추가
+    if client_request_id:
+        http_query["request_id"] = client_request_id
     print(f"[DEBUG] Built http_query={http_query}")
 
     # Obtain request_id from Ray
