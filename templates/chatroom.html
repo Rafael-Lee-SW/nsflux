@@ -1,91 +1,473 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <title>ChatGPT 스타일 채팅방 테스트</title>
+  <meta charset="UTF-8" />
+  <title>FLUX_NS 채팅방 테스트 (SSE + Reference)</title>
   <style>
-    /* 간단한 스타일 정의 */
-    body { font-family: Arial, sans-serif; padding: 20px; background-color: #f5f5f5; }
-    .chat-container { width: 600px; margin: 0 auto; }
-    .chat-box { border: 1px solid #ccc; padding: 10px; height: 400px; overflow-y: auto; background-color: #fff; }
-    .input-container { margin-top: 10px; }
-    .input-container input { width: 80%; padding: 10px; font-size: 16px; }
-    .input-container button { padding: 10px 15px; font-size: 16px; }
-    #chatRoomId { margin-bottom: 10px; font-weight: bold; }
+    /* 
+      기본적인 리셋 및 바디 스타일 
+      - 실제 프로덕션 환경에서는 리셋 CSS 또는 normalize.css 등을 활용 가능
+    */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      height: 100vh;
+      display: flex;
+      background-color: #f0f0f0;
+    }
+
+    /* 
+      좌측 사이드바 스타일 
+      - 채팅방 목록 및 새 채팅방 생성 버튼을 배치
+    */
+    .sidebar {
+      width: 250px;
+      background-color: #202123; /* ChatGPT 비슷한 어두운 톤 */
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      overflow-y: auto;
+    }
+    .sidebar h2 {
+      margin-bottom: 20px;
+      font-size: 1.2rem;
+    }
+    .sidebar button {
+      width: 100%;
+      background-color: #3e3f4b;
+      color: #fff;
+      border: none;
+      padding: 10px;
+      margin-bottom: 15px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      border-radius: 5px;
+    }
+    .sidebar button:hover {
+      background-color: #565869;
+    }
+    .chat-room-list {
+      list-style: none;
+      width: 100%;
+    }
+    .chat-room-list li {
+      margin-bottom: 10px;
+    }
+    .chat-room-list button {
+      width: 100%;
+      background-color: #2b2c34;
+      color: #fff;
+      border: none;
+      padding: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      border-radius: 3px;
+      text-align: left;
+    }
+    .chat-room-list button:hover {
+      background-color: #444654;
+    }
+
+    /* 
+      메인 컨테이너(채팅 영역) 스타일 
+      - 상단 채팅방 정보, 채팅 내용, 입력 영역
+    */
+    .main-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background-color: #f8f8f8;
+      overflow: hidden;
+    }
+    /* 채팅방 상단 영역 (예: 채팅방 이름/ID 표시) */
+    .chat-header {
+      background-color: #fff;
+      padding: 10px 20px;
+      border-bottom: 1px solid #ccc;
+    }
+    .chat-header h2 {
+      font-size: 1rem;
+      color: #444;
+    }
+
+    /* 채팅 메시지들이 표시되는 영역 */
+    .chat-box {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      background-color: #f0f0f0;
+    }
+    .message-line {
+      margin-bottom: 10px;
+      line-height: 1.4;
+    }
+    .message-line strong {
+      margin-right: 5px;
+    }
+    /* 사용자 메시지와 AI(시스템) 메시지 구분 위해 간단한 색상 차이 부여 */
+    .message-user {
+      color: #333;        /* 사용자: 일반 텍스트 */
+    }
+    .message-ai {
+      color: #1d4ed8;     /* AI: 파란색 계열 */
+    }
+    .message-system {
+      color: #dc2626;     /* 시스템: 붉은 계열 */
+    }
+
+    /* 입력 영역 스타일 */
+    .input-container {
+      background-color: #fff;
+      border-top: 1px solid #ccc;
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+    }
+    .input-container input {
+      flex: 1;
+      padding: 10px;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+    .input-container button {
+      padding: 10px 15px;
+      font-size: 1rem;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      background-color: #4c82ff;
+      color: #fff;
+    }
+    .input-container button:hover {
+      background-color: #365da8;
+    }
+
+    /* 참조 데이터 토글 영역 */
+    #referenceContainer {
+      display: none; /* 처음에는 감춰둠 */
+      margin: 10px;
+      background-color: #fff;
+      padding: 10px;
+      border: 1px solid #ccc;
+      max-height: 250px;
+      overflow-y: auto;
+    }
+    #toggleRefBtn {
+      display: none; /* 참고 데이터가 있을 때만 보임 */
+      margin: 0 20px 10px 20px;
+      padding: 8px 12px;
+      background-color: #eaeaea;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
   </style>
 </head>
+
 <body>
-  <div class="chat-container">
-    <h2>채팅방 생성 및 접속</h2>
-    <!-- 생성된 채팅방의 고유 request_id 표시 -->
-    <div id="chatRoomId"></div>
-    <!-- 채팅 메시지를 표시할 영역 -->
+  <!-- 왼쪽 사이드바 -->
+  <div class="sidebar">
+    <h2>FLUX_NS</h2>
+    <button onclick="createNewChatFromSidebar()">새 채팅방 생성</button>
+    <ul id="chatRoomList" class="chat-room-list"></ul>
+  </div>
+
+  <!-- 메인 컨테이너 (채팅 영역) -->
+  <div class="main-container">
+    <!-- 채팅방 상단 정보 -->
+    <div class="chat-header">
+      <h2 id="chatRoomId">채팅방 ID: -</h2>
+    </div>
+
+    <!-- 토글 버튼 (참고 데이터 보기/숨기기)-->
+    <button id="toggleRefBtn" onclick="toggleReferences()">Show References</button>
+
+    <!-- 참조 데이터 표시 영역 -->
+    <div id="referenceContainer">
+      <!-- 여기에 참고 데이터를 표시 -->
+    </div>
+
+    <!-- 채팅 메시지가 표시되는 박스 -->
     <div class="chat-box" id="chatBox"></div>
-    <!-- 채팅 메시지 입력 영역 -->
+
+    <!-- 입력 영역 -->
     <div class="input-container">
       <input type="text" id="userMessage" placeholder="메시지를 입력하세요..." />
       <button onclick="sendMessage()">전송</button>
     </div>
-    <!-- 채팅방 생성 버튼 -->
-    <button onclick="createChatRoom()">채팅방 생성</button>
   </div>
 
   <script>
-    // 전역 변수로 채팅방 ID(request_id)를 저장합니다.
-    let requestId = null;
+    /************************************************************************
+     * 전역 변수 및 데이터 구조
+     ************************************************************************/
+    let currentRequestId = null;      // 현재 활성 채팅방의 requestId
+    let chatRooms = [];              // [{ requestId, messages: [{sender, text}] }]
+    let referenceList = [];          // 이번 쿼리에서 수집한 reference 데이터
 
-    // 채팅방 생성 함수 (클릭 시 고유한 request_id 생성)
-    function createChatRoom() {
-      requestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
-      document.getElementById("chatRoomId").innerText = "채팅방 ID: " + requestId;
-      appendMessage("시스템", "채팅방이 생성되었습니다. (ID: " + requestId + ")");
+    /************************************************************************
+     * 페이지 로드 시 자동으로 채팅방 생성 (처음 접속하면 바로 시작하도록)
+     ************************************************************************/
+    window.addEventListener('load', () => {
+      createNewChatRoom(); 
+    });
+
+    /************************************************************************
+     * 사이드바 및 채팅방 생성
+     ************************************************************************/
+    function createNewChatRoom() {
+      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
+      chatRooms.push({ requestId: newRequestId, messages: [] });
+      setActiveChatRoom(newRequestId);
+      renderChatRoomList();
     }
 
-    // 채팅 박스에 메시지를 추가하는 헬퍼 함수
-    function appendMessage(sender, message) {
+    function createNewChatFromSidebar() {
+      createNewChatRoom();
+    }
+
+    function renderChatRoomList() {
+      const ul = document.getElementById("chatRoomList");
+      ul.innerHTML = "";
+      chatRooms.forEach(room => {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.innerText = `ChatRoom: ${room.requestId}`;
+        btn.onclick = () => setActiveChatRoom(room.requestId);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+    }
+
+    function setActiveChatRoom(requestId) {
+      currentRequestId = requestId;
+      document.getElementById("chatRoomId").innerText = `채팅방 ID: ${requestId}`;
+
+      // 채팅 박스 다시 그리기
+      const chatBox = document.getElementById("chatBox");
+      chatBox.innerHTML = "";
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (room) {
+        room.messages.forEach(msg => {
+          appendMessageToChatBox(msg.sender, msg.text);
+        });
+      }
+
+      // 참조 영역은 새 채팅방 선택 시 초기화(접속 전방의 참조는 별개)
+      clearReferenceData();
+    }
+
+    /************************************************************************
+     * 채팅 메시지 표시 헬퍼
+     ************************************************************************/
+    function appendMessageToChatBox(sender, message) {
       const chatBox = document.getElementById("chatBox");
       const msgDiv = document.createElement("div");
-      msgDiv.innerHTML = "<strong>" + sender + ":</strong> " + message;
+      msgDiv.classList.add("message-line");
+
+      let senderClass = "message-system";
+      if (sender === "사용자") senderClass = "message-user";
+      else if (sender === "AI") senderClass = "message-ai";
+
+      msgDiv.innerHTML = `<strong class="${senderClass}">${sender}:</strong> ${message}`;
       chatBox.appendChild(msgDiv);
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
-    // 사용자의 메시지를 백엔드에 전송하는 함수
+    // 메시지를 chatRooms에도 저장
+    function storeMessageInRoom(requestId, sender, text) {
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (room) {
+        room.messages.push({ sender, text });
+      }
+    }
+
+    /************************************************************************
+     * 스트리밍 (SSE) 메시지 전송 및 수신
+     ************************************************************************/
     async function sendMessage() {
       const messageInput = document.getElementById("userMessage");
       const message = messageInput.value.trim();
       if (!message) return;
-      appendMessage("사용자", message);
+
+      // 사용자 메시지 표시
+      appendMessageToChatBox("사용자", message);
+      storeMessageInRoom(currentRequestId, "사용자", message);
       messageInput.value = "";
-      
-      // 백엔드에 전송할 JSON payload 구성
+
+      // 이번 요청마다 참조 리스트 초기화
+      clearReferenceData();
+
+      // payload 준비
       const payload = { input: message };
-      // 만약 이미 채팅방(request_id)가 생성되어 있다면 함께 전송
-      if (requestId) {
-        payload.request_id = requestId;
+      if (currentRequestId) {
+        payload.request_id = currentRequestId;
       }
-      
+
       try {
         const response = await fetch('/query_stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
+
         if (!response.ok) {
           throw new Error("응답 오류: " + response.status);
         }
+
         const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let done = false;
-        while (!done) {
-          const { value, done: doneReading } = await reader.read();
-          done = doneReading;
-          const chunk = decoder.decode(value);
-          appendMessage("AI", chunk);
+        const decoder = new TextDecoder("utf-8");
+
+        let sseBuffer = "";
+        let partialAnswer = "";
+
+        startAIStreamingMessage();  // AI가 답변 중임을 표시
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          sseBuffer += chunk;
+
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop(); // 남은 라인은 덜 끊긴 조각일 수 있음
+
+          for (let line of lines) {
+            line = line.trim();
+            if (!line) continue;
+
+            // SSE는 보통 "data: ..." 형태
+            if (line.startsWith("data:")) {
+              const jsonStr = line.slice(5).trim();
+              if (jsonStr === "[[STREAM_DONE]]") {
+                finalizeAIMessage(partialAnswer);
+                return;
+              }
+              try {
+                const sseData = JSON.parse(jsonStr);
+                if (sseData.type === "answer") {
+                  partialAnswer += sseData.answer;
+                  updateAIStreamingMessage(partialAnswer);
+                }
+                else if (sseData.type === "reference") {
+                  // 참조 데이터 수집
+                  addReferenceData(sseData);
+                }
+                else {
+                  // 그 외 타입
+                  console.log("기타 SSE 데이터:", sseData);
+                }
+              } catch (err) {
+                // JSON 파싱 실패 -> 그냥 텍스트로 처리
+                partialAnswer += jsonStr;
+                updateAIStreamingMessage(partialAnswer);
+              }
+            }
+          }
         }
+        // while 루프 끝 (done=true)
+        if (sseBuffer.trim()) {
+          // 남은 sseBuffer 처리할 로직 (필요시 구현)
+        }
+        finalizeAIMessage(partialAnswer);
       } catch (err) {
-        appendMessage("시스템", "오류 발생: " + err.message);
+        appendMessageToChatBox("시스템", "오류 발생: " + err.message);
+        storeMessageInRoom(currentRequestId, "시스템", "오류 발생: " + err.message);
       }
+    }
+
+    /************************************************************************
+     * AI 스트리밍 표시 (임시 메시지) 
+     ************************************************************************/
+    let tempAiMsgDiv = null;
+
+    function startAIStreamingMessage() {
+      const chatBox = document.getElementById("chatBox");
+      tempAiMsgDiv = document.createElement("div");
+      tempAiMsgDiv.classList.add("message-line");
+      tempAiMsgDiv.innerHTML = `<strong class="message-ai">AI:</strong> <span id="aiTempText"></span>`;
+      chatBox.appendChild(tempAiMsgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function updateAIStreamingMessage(text) {
+      if (!tempAiMsgDiv) return;
+      const span = tempAiMsgDiv.querySelector("#aiTempText");
+      if (span) {
+        span.textContent = text;
+      }
+      const chatBox = document.getElementById("chatBox");
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function finalizeAIMessage(finalText) {
+      // 최종 AI 메시지를 chatRooms에 저장
+      storeMessageInRoom(currentRequestId, "AI", finalText);
+      tempAiMsgDiv = null;
+
+      // 참조 데이터가 하나라도 있으면 Show 버튼 표시
+      if (referenceList.length > 0) {
+        document.getElementById("toggleRefBtn").style.display = "block";
+      }
+    }
+
+    /************************************************************************
+     * 참조 데이터(Reference) 관련
+     ************************************************************************/
+    function addReferenceData(refData) {
+      // 여기선 단순히 배열에 push
+      referenceList.push(refData);
+      // 콘솔 찍어볼 수도 있음
+      console.log("Reference data received:", refData);
+    }
+
+    function clearReferenceData() {
+      referenceList = [];
+      document.getElementById("toggleRefBtn").style.display = "none";
+      document.getElementById("referenceContainer").style.display = "none";
+      document.getElementById("referenceContainer").innerHTML = "";
+    }
+
+    // 토글 버튼 클릭 시, 참조 정보를 표시하거나 숨기는 함수
+    function toggleReferences() {
+      const container = document.getElementById("referenceContainer");
+      if (container.style.display === "none" || container.style.display === "") {
+        // 보이게
+        container.style.display = "block";
+        // 이미 렌더링되어 있다면 스킵, 없으면 렌더링
+        if (!container.innerHTML.trim()) {
+          renderReferenceData();
+        }
+        document.getElementById("toggleRefBtn").textContent = "Hide References";
+      } else {
+        // 숨기기
+        container.style.display = "none";
+        document.getElementById("toggleRefBtn").textContent = "Show References";
+      }
+    }
+
+    // 참조 데이터를 화면에 렌더링
+    function renderReferenceData() {
+      const container = document.getElementById("referenceContainer");
+      container.innerHTML = ""; // 초기화
+
+      referenceList.forEach((refObj, idx) => {
+        // 간단히 JSON.stringify 등으로 출력
+        // 실제로는 refObj.data_list 등 더 구체적으로 표시 가능
+        const div = document.createElement("div");
+        div.style.marginBottom = "10px";
+        div.innerHTML = `<strong>Reference #${idx + 1}</strong><br>
+                         <pre style="white-space: pre-wrap;">${JSON.stringify(refObj, null, 2)}</pre>`;
+        container.appendChild(div);
+      });
     }
   </script>
 </body>

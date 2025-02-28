@@ -11,7 +11,7 @@
 ├─ ray_utils.py
 ├─ requirements.txt
 ├─ sql.py
-├─ templates/index_test_streaming.html
+├─ templates/chatroom.html
 ├─ tracking.py
 └─ utils.py
 ```
@@ -248,7 +248,6 @@ content_type = "application/json; charset=utf-8"
 @app.route("/")
 def index():
     return render_template("index.html")  # index.html을 렌더링
-
 
 # Test 페이지를 불러오는 라우트
 @app.route("/test")
@@ -2246,1201 +2245,483 @@ def time_tracker(func):
 ```
 
 
---- templates/index_test_streaming.html
+--- templates/chatroom.html
 
 ```python
 
 <!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Simple RAG Query Interface - Test</title>
-    <style>
-      body {
-        font-family: Arial, sans-serif;
-        max-width: 900px;
-        margin: 20px auto;
-        padding: 20px;
-        background: #f9f9f9;
-        color: #333;
-      }
-      h1, h2 {
-        text-align: center;
-      }
-      input[type='text'] {
-        width: 80%;
-        padding: 10px;
-        margin-bottom: 20px;
-        font-size: 16px;
-      }
-      button {
-        padding: 8px 14px;
-        font-size: 14px;
-        cursor: pointer;
-        margin: 5px;
-      }
-      .output {
-        margin-top: 20px;
-        font-size: 16px;
-        color: #333;
-        text-align: left;
-        word-wrap: break-word;
-        background: #fff;
-        padding: 15px;
-        border: 1px solid #ddd;
-        border-radius: 5px;
-      }
-      .output pre {
-        white-space: pre-wrap;
-        word-wrap: break-word;
-        background: #eee;
-        padding: 10px;
-        border-radius: 3px;
-      }
-      /* Test section styling */
-      .test-section {
-        margin-top: 40px;
-        padding: 20px;
-        background: #eef;
-        border: 1px solid #99c;
-        border-radius: 5px;
-      }
-      .test-section h2 {
-        margin-bottom: 20px;
-      }
-      .test-summary table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-bottom: 20px;
-      }
-      .test-summary th,
-      .test-summary td {
-        border: 1px solid #ccc;
-        padding: 8px;
-        text-align: center;
-      }
-      .test-summary th {
-        background: #ddd;
-      }
-      .test-details .test-item {
-        margin-bottom: 20px;
-        padding: 10px;
-        background: #fff;
-        border: 1px solid #ccc;
-        border-radius: 5px;
-      }
-      .test-details .test-item h4 {
-        margin-top: 0;
-      }
-      .partial-chunk {
-        margin: 4px 0;
-        padding: 4px;
-        background-color: #fafafa;
-        border-radius: 3px;
-      }
-      /* Hidden retrieval data in non-streaming output */
-      .hidden-retrieval {
-        display: none;
-        margin-top: 5px;
-        background: #fff9c4;
-        padding: 8px;
-        border: 1px solid #ccc;
-        border-radius: 3px;
-      }
-      /* For the main property table in simultaneous streaming */
-      #simul-main-table table {
-        border-collapse: collapse;
-        width: 100%;
-        font-size: 14px;
-      }
-      #simul-main-table th,
-      #simul-main-table td {
-        border: 1px solid #ccc;
-        padding: 8px;
-        text-align: center;
-      }
-      #simul-main-table th {
-        background: #ddd;
-      }
-      .partial-text-block {
-        margin-top: 10px;
-        background: #fff;
-        border: 1px solid #ccc;
-        border-radius: 5px;
-        padding: 10px;
-      }
-      .partial-text-block h4 {
-        margin: 0 0 5px 0;
-        font-weight: bold;
-      }
-      /* Info box style for single streaming times */
-      .stream-info-box {
-        margin-top: 10px;
-        padding: 10px;
-        border: 1px solid #bbb;
-        border-radius: 4px;
-        background: #fff;
-        line-height: 1.4em;
-        font-size: 14px;
-      }
-      /* The references are hidden initially */
-      #referenceData {
-        display: none;
-        margin-top: 10px;
-        padding: 10px;
-        border: 1px solid #ccc;
-        background: #fff;
-      }
-      /* Test set selector styling */
-      .test-set-selector {
-        margin-bottom: 20px;
-        text-align: center;
-      }
-      .test-set-selector label {
-        font-weight: bold;
-        margin-right: 10px;
-        cursor: pointer;
-      }
-      .test-set-selector select {
-        padding: 5px;
-        font-size: 14px;
-      }
-      /* Progress indicator styling */
-      .progress-indicator {
-        font-weight: bold;
-        margin-bottom: 10px;
-        text-align: center;
-      }
-    </style>
-  </head>
-  <body>
-    <h1>Simple RAG Query Interface</h1>
-    
-    <!-- Test Set Selector -->
-    <div class="test-set-selector">
-      <label for="testSetSelect" title="옵션별 설명:
-• 20 Multi SET1: SET1의 20개 질문
-• 20 Multi SET2: SET2의 20개 질문
-• Different Three Question Sets: 서로 다른 3개 질문 세트
-• Same Question 100 Times: 동일한 질문 ('디지털 전략') 100회 반복
-• 5 Questions Circulate 20 Times: 5개의 다른 질문을 20회씩 반복 (총 100개)
-• 100 Mixed: 100개의 다양한 혼합 질문 (Mix Test Set)">Test Set:</label>
-      <select id="testSetSelect">
-        <option value="set1" title="20개의 다른 질문 SET1" selected>20개의 다른 질문 세트 1번</option>
-        <option value="set2" title="20개의 다른 질문 SET2">20개의 다른 질문 세트 2번</option>
-        <option value="set3" title="서로 다른 3개 질문 세트">Different Three Question Sets</option>
-        <option value="same100" title="동일한 질문 '디지털 전략'을 100회 반복">같은 질문('디지털 전략') 100개</option>
-        <option value="circulate5x20" title="5개의 다른 질문을 20회씩 반복 (총 100개)">5개의 다른 질문 세트 20번 반복</option>
-        <option value="mixed100" title="100개의 다양한 혼합 질문 (Mix Test Set)">100개의 다른 질문</option>
-      </select>
-    </div>
-    
-    <!-- (1) Non-Streaming Query -->
-    <input type="text" id="userInput" placeholder="Type your query here..." />
-    <button onclick="sendQuery()">단일 전송(스트리밍 X)</button>
-    <div class="output" id="output"></div>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>FLUX_NS 채팅방 테스트 (SSE + Reference)</title>
+  <style>
+    /* 
+      기본적인 리셋 및 바디 스타일 
+      - 실제 프로덕션 환경에서는 리셋 CSS 또는 normalize.css 등을 활용 가능
+    */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      height: 100vh;
+      display: flex;
+      background-color: #f0f0f0;
+    }
 
-    <!-- (2) Concurrency Test (Non-Streaming POST) - 50 queries -->
-    <div class="test-section">
-      <h2>한 번에 질문 여러개 전송하기 테스트</h2>
-      <h5>Testing the POST requests concurrently (display results as they arrive)</h5>
-      <div id="progressIndicator" class="progress-indicator"></div>
-      <button style="font-size: 16px; padding: 10px 20px;" onclick="testQueries()">Test</button>
-      <div class="output" id="testResults"></div>
+    /* 
+      좌측 사이드바 스타일 
+      - 채팅방 목록 및 새 채팅방 생성 버튼을 배치
+    */
+    .sidebar {
+      width: 250px;
+      background-color: #202123; /* ChatGPT 비슷한 어두운 톤 */
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      overflow-y: auto;
+    }
+    .sidebar h2 {
+      margin-bottom: 20px;
+      font-size: 1.2rem;
+    }
+    .sidebar button {
+      width: 100%;
+      background-color: #3e3f4b;
+      color: #fff;
+      border: none;
+      padding: 10px;
+      margin-bottom: 15px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      border-radius: 5px;
+    }
+    .sidebar button:hover {
+      background-color: #565869;
+    }
+    .chat-room-list {
+      list-style: none;
+      width: 100%;
+    }
+    .chat-room-list li {
+      margin-bottom: 10px;
+    }
+    .chat-room-list button {
+      width: 100%;
+      background-color: #2b2c34;
+      color: #fff;
+      border: none;
+      padding: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      border-radius: 3px;
+      text-align: left;
+    }
+    .chat-room-list button:hover {
+      background-color: #444654;
+    }
+
+    /* 
+      메인 컨테이너(채팅 영역) 스타일 
+      - 상단 채팅방 정보, 채팅 내용, 입력 영역
+    */
+    .main-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background-color: #f8f8f8;
+      overflow: hidden;
+    }
+    /* 채팅방 상단 영역 (예: 채팅방 이름/ID 표시) */
+    .chat-header {
+      background-color: #fff;
+      padding: 10px 20px;
+      border-bottom: 1px solid #ccc;
+    }
+    .chat-header h2 {
+      font-size: 1rem;
+      color: #444;
+    }
+
+    /* 채팅 메시지들이 표시되는 영역 */
+    .chat-box {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      background-color: #f0f0f0;
+    }
+    .message-line {
+      margin-bottom: 10px;
+      line-height: 1.4;
+    }
+    .message-line strong {
+      margin-right: 5px;
+    }
+    /* 사용자 메시지와 AI(시스템) 메시지 구분 위해 간단한 색상 차이 부여 */
+    .message-user {
+      color: #333;        /* 사용자: 일반 텍스트 */
+    }
+    .message-ai {
+      color: #1d4ed8;     /* AI: 파란색 계열 */
+    }
+    .message-system {
+      color: #dc2626;     /* 시스템: 붉은 계열 */
+    }
+
+    /* 입력 영역 스타일 */
+    .input-container {
+      background-color: #fff;
+      border-top: 1px solid #ccc;
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+    }
+    .input-container input {
+      flex: 1;
+      padding: 10px;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+    .input-container button {
+      padding: 10px 15px;
+      font-size: 1rem;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      background-color: #4c82ff;
+      color: #fff;
+    }
+    .input-container button:hover {
+      background-color: #365da8;
+    }
+
+    /* 참조 데이터 토글 영역 */
+    #referenceContainer {
+      display: none; /* 처음에는 감춰둠 */
+      margin: 10px;
+      background-color: #fff;
+      padding: 10px;
+      border: 1px solid #ccc;
+      max-height: 250px;
+      overflow-y: auto;
+    }
+    #toggleRefBtn {
+      display: none; /* 참고 데이터가 있을 때만 보임 */
+      margin: 0 20px 10px 20px;
+      padding: 8px 12px;
+      background-color: #eaeaea;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- 왼쪽 사이드바 -->
+  <div class="sidebar">
+    <h2>FLUX_NS</h2>
+    <button onclick="createNewChatFromSidebar()">새 채팅방 생성</button>
+    <ul id="chatRoomList" class="chat-room-list"></ul>
+  </div>
+
+  <!-- 메인 컨테이너 (채팅 영역) -->
+  <div class="main-container">
+    <!-- 채팅방 상단 정보 -->
+    <div class="chat-header">
+      <h2 id="chatRoomId">채팅방 ID: -</h2>
     </div>
 
-    <!-- (3) Single Streaming Test (POST-based) -->
-    <div class="test-section">
-      <h2>스트리밍 테스트(단일 - POST)</h2>
-      <h5>Streaming Test (Single via POST)</h5>
-      <p>
-        이 테스트는 POST 기반 fetch를 사용하여 응답을 스트리밍합니다.
-        서버는 SSE 스타일의 청크를 전송하며, 참조 데이터와 답변 텍스트를 분리하여 처리합니다.
-      </p>
-      <input type="text" id="streamInput" placeholder="Type your streaming query here..." />
-      <button onclick="startStreamPOST()">Start Streaming (POST)</button>
-      <!-- 답변 텍스트 영역 -->
-      <pre id="streamOutput" style="max-height: 250px; overflow-y: auto; white-space: pre-wrap; background: #fafafa;"></pre>
-      <!-- 스트리밍 타이밍 정보 -->
-      <div class="stream-info-box" id="streamTiming"></div>
-      <!-- 참조 데이터 영역 -->
-      <button onclick="toggleReferences()">Show References</button>
-      <div id="referenceData"></div>
+    <!-- 토글 버튼 (참고 데이터 보기/숨기기)-->
+    <button id="toggleRefBtn" onclick="toggleReferences()">Show References</button>
+
+    <!-- 참조 데이터 표시 영역 -->
+    <div id="referenceContainer">
+      <!-- 여기에 참고 데이터를 표시 -->
     </div>
 
-    <!-- (4) Simultaneous Streaming Test (POST-based) -->
-    <div class="test-section">
-      <h2>스트리밍 테스트(동시에, POST-based)</h2>
-      <h5>Simultaneous Streaming Test (POST-based streaming)</h5>
-      <p>
-        여러 스트리밍 쿼리를 POST 방식으로 동시에 실행합니다.
-      </p>
-      <button onclick="testSimulStreamPOST()">Start Simultaneous Streaming (POST)</button>
-      <div class="output" id="simul-partials"></div>
-      <div class="output" id="simul-results"></div>
+    <!-- 채팅 메시지가 표시되는 박스 -->
+    <div class="chat-box" id="chatBox"></div>
+
+    <!-- 입력 영역 -->
+    <div class="input-container">
+      <input type="text" id="userMessage" placeholder="메시지를 입력하세요..." />
+      <button onclick="sendMessage()">전송</button>
     </div>
+  </div>
 
-    <!-- (5) Continuous Sync Test -->
-    <div class="test-section">
-      <h2>연속 질문 테스트(단일 평균 시간 테스트)</h2>
-      <h5>Continuous Sync Test</h5>
-      <p>
-        선택한 테스트 셋에 따라 100개의 연속 쿼리를 실행하고 평균 응답 시간을 계산합니다.
-      </p>
-      <div id="continuousProgress" class="progress-indicator"></div>
-      <button onclick="continuousTest('nonstream')">Start Continuous Non-Streaming Test (100 queries)</button>
-      <button onclick="continuousTest('stream')">Start Continuous Streaming Test (100 queries)</button>
-      <div class="output" id="continuousTestResults"></div>
-    </div>
+  <script>
+    /************************************************************************
+     * 전역 변수 및 데이터 구조
+     ************************************************************************/
+    let currentRequestId = null;      // 현재 활성 채팅방의 requestId
+    let chatRooms = [];              // [{ requestId, messages: [{sender, text}] }]
+    let referenceList = [];          // 이번 쿼리에서 수집한 reference 데이터
 
-    <script>
-      /************************************************************
-       *  Common Utility Functions
-       ************************************************************/
-      // Helper: Format time => "HH:MM:SS.ms"
-      function formatTime(d) {
-        if (!d) return '';
-        const ms = d.getMilliseconds().toString().padStart(3, '0');
-        return d.toLocaleTimeString() + '.' + ms;
+    /************************************************************************
+     * 페이지 로드 시 자동으로 채팅방 생성 (처음 접속하면 바로 시작하도록)
+     ************************************************************************/
+    window.addEventListener('load', () => {
+      createNewChatRoom(); 
+    });
+
+    /************************************************************************
+     * 사이드바 및 채팅방 생성
+     ************************************************************************/
+    function createNewChatRoom() {
+      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
+      chatRooms.push({ requestId: newRequestId, messages: [] });
+      setActiveChatRoom(newRequestId);
+      renderChatRoomList();
+    }
+
+    function createNewChatFromSidebar() {
+      createNewChatRoom();
+    }
+
+    function renderChatRoomList() {
+      const ul = document.getElementById("chatRoomList");
+      ul.innerHTML = "";
+      chatRooms.forEach(room => {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.innerText = `ChatRoom: ${room.requestId}`;
+        btn.onclick = () => setActiveChatRoom(room.requestId);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+    }
+
+    function setActiveChatRoom(requestId) {
+      currentRequestId = requestId;
+      document.getElementById("chatRoomId").innerText = `채팅방 ID: ${requestId}`;
+
+      // 채팅 박스 다시 그리기
+      const chatBox = document.getElementById("chatBox");
+      chatBox.innerHTML = "";
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (room) {
+        room.messages.forEach(msg => {
+          appendMessageToChatBox(msg.sender, msg.text);
+        });
       }
 
-      // Toggle retrieval or reference data blocks
-      function toggleHiddenDiv(divId) {
-        const div = document.getElementById(divId);
-        if (!div) return;
-        div.style.display = (div.style.display === "none" || div.style.display === "") ? "block" : "none";
+      // 참조 영역은 새 채팅방 선택 시 초기화(접속 전방의 참조는 별개)
+      clearReferenceData();
+    }
+
+    /************************************************************************
+     * 채팅 메시지 표시 헬퍼
+     ************************************************************************/
+    function appendMessageToChatBox(sender, message) {
+      const chatBox = document.getElementById("chatBox");
+      const msgDiv = document.createElement("div");
+      msgDiv.classList.add("message-line");
+
+      let senderClass = "message-system";
+      if (sender === "사용자") senderClass = "message-user";
+      else if (sender === "AI") senderClass = "message-ai";
+
+      msgDiv.innerHTML = `<strong class="${senderClass}">${sender}:</strong> ${message}`;
+      chatBox.appendChild(msgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // 메시지를 chatRooms에도 저장
+    function storeMessageInRoom(requestId, sender, text) {
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (room) {
+        room.messages.push({ sender, text });
+      }
+    }
+
+    /************************************************************************
+     * 스트리밍 (SSE) 메시지 전송 및 수신
+     ************************************************************************/
+    async function sendMessage() {
+      const messageInput = document.getElementById("userMessage");
+      const message = messageInput.value.trim();
+      if (!message) return;
+
+      // 사용자 메시지 표시
+      appendMessageToChatBox("사용자", message);
+      storeMessageInRoom(currentRequestId, "사용자", message);
+      messageInput.value = "";
+
+      // 이번 요청마다 참조 리스트 초기화
+      clearReferenceData();
+
+      // payload 준비
+      const payload = { input: message };
+      if (currentRequestId) {
+        payload.request_id = currentRequestId;
       }
 
-      // Toggle the reference data block
-      function toggleReferences() {
-        const refDiv = document.getElementById("referenceData");
-        if (refDiv.style.display === "none" || refDiv.style.display === "") {
-          refDiv.style.display = "block";
-        } else {
-          refDiv.style.display = "none";
-        }
-      }
-
-      // Build JSON output for non-streaming response
-      function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
-        let formattedOutput = `
-          <strong>Send Time:</strong> ${sendTime} <br>
-          <strong>Receive Time:</strong> ${receiveTime} <br>
-          <strong>Elapsed Time:</strong> ${elapsed} ms <br>
-          <hr>
-        `;
-        if (data.status_code !== undefined) {
-          formattedOutput += `
-            <strong>Status Code:</strong> ${data.status_code} <br>
-            <strong>Result:</strong> ${data.result} <br>
-            <strong>Detail:</strong> ${data.detail} <br>
-            <strong>Event Time:</strong> ${data.evt_time} <br>
-            <strong>Data List:</strong><br>
-            <ul>
-          `;
-          if (data.data_list) {
-            let answerHTML = "";
-            let retrievalHTML = "";
-            data.data_list.forEach((item, idx) => {
-              if (item.rsp_type === "A") {
-                answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
-              } else if (item.rsp_type === "R") {
-                const hiddenId = `retrieval_${uniquePrefix}_${idx}`;
-                retrievalHTML += `
-                  <div>
-                    <button onclick="toggleHiddenDiv('${hiddenId}')">Show Retrieval</button>
-                    <div id="${hiddenId}" class="hidden-retrieval" style="display:none;">
-                      <pre>${JSON.stringify(item, null, 4)}</pre>
-                    </div>
-                  </div>
-                `;
-              } else {
-                answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
-              }
-            });
-            if (answerHTML)
-              formattedOutput += `<li><strong>Answer(s):</strong> ${answerHTML}</li>`;
-            if (retrievalHTML)
-              formattedOutput += `<li><strong>Retrieval(s):</strong> ${retrievalHTML}</li>`;
-          } else {
-            formattedOutput += "<li>No data available</li>";
-          }
-          formattedOutput += "</ul>";
-        } else {
-          formattedOutput += "<pre>" + JSON.stringify(data, null, 2) + "</pre>";
-        }
-        return formattedOutput;
-      }
-
-      // Used by multiple tests to show concurrency progress
-      function updateProgressIndicator(elementId, current, total, successCount = 0, failCount = 0) {
-        const elem = document.getElementById(elementId);
-        if (elem) {
-          const successRate = current > 0 ? ((successCount / current) * 100).toFixed(1) : 0;
-          elem.innerText = `완료: ${current} / ${total} queries | 성공: ${successCount}, 실패: ${failCount}, 성공률: ${successRate}%`;
-        }
-      }
-
-      /************************************************************
-       * (1) Non-Streaming Query
-       ************************************************************/
-      function sendQuery() {
-        const userInput = document.getElementById('userInput').value;
-        const sendTime = new Date();
-        const sendTimeStr = formatTime(sendTime);
-        const startTimestamp = Date.now();
-
-        fetch('/query', {
+      try {
+        const response = await fetch('/query_stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ qry_contents: userInput })
-        })
-          .then((response) => {
-            const receiveTime = new Date();
-            const receiveTimeStr = formatTime(receiveTime);
-            const elapsed = Date.now() - startTimestamp;
-            if (!response.ok) {
-              return response.text().then((errorData) => {
-                throw new Error(`${response.status} ${response.statusText}: ${errorData}`);
-              });
-            }
-            return response.json().then((data) => {
-              document.getElementById('output').innerHTML =
-                formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
-            });
-          })
-          .catch((error) => {
-            const receiveTime = new Date();
-            const receiveTimeStr = formatTime(receiveTime);
-            const elapsed = Date.now() - startTimestamp;
-            console.error('Error:', error);
-            document.getElementById('output').innerHTML =
-              formatJsonOutput({ error: error.message }, sendTimeStr, receiveTimeStr, elapsed);
-          });
-      }
-
-      /************************************************************
-       * (2) Concurrency Test (Non-Streaming POST) - 50 queries
-       ************************************************************/
-      function testQueries() {
-        const queries = buildTestQueries();
-        document.getElementById('testResults').innerHTML = 'Testing in progress...';
-        const totalQueries = queries.length;
-        let arrivalCounter = 0;
-        let successCount = 0;
-        let failCount = 0;
-
-        updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
-
-        const results = [];
-
-        queries.forEach((query) => {
-          const sendTime = new Date();
-          const sendTimeStr = formatTime(sendTime);
-          const startTimestamp = Date.now();
-
-          fetch('/query', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ qry_contents: query.text })
-          })
-            .then((response) => {
-              const receiveTime = new Date();
-              const receiveTimeStr = formatTime(receiveTime);
-              const elapsed = Date.now() - startTimestamp;
-
-              // Check success or fail
-              if (!response.ok) {
-                failCount++;
-                return response.text().then((errorData) => {
-                  arrivalCounter++;
-                  const errMsg = `${response.status} ${response.statusText}: ${errorData}`;
-                  results.push({
-                    id: query.id,
-                    text: query.text,
-                    sendTime: sendTimeStr,
-                    receiveTime: receiveTimeStr,
-                    elapsed: elapsed,
-                    success: false,
-                    error: errMsg,
-                    arrival: arrivalCounter
-                  });
-                  updateTestResults(results);
-                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
-                });
-              } else {
-                successCount++;
-                return response.json().then((data) => {
-                  arrivalCounter++;
-                  results.push({
-                    id: query.id,
-                    text: query.text,
-                    sendTime: sendTimeStr,
-                    receiveTime: receiveTimeStr,
-                    elapsed: elapsed,
-                    success: true,
-                    data: data,
-                    arrival: arrivalCounter
-                  });
-                  updateTestResults(results);
-                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
-                });
-              }
-            })
-            .catch((error) => {
-              // Real fetch error (network or something)
-              const receiveTime = new Date();
-              const receiveTimeStr = formatTime(receiveTime);
-              const elapsed = Date.now() - startTimestamp;
-              failCount++;
-              arrivalCounter++;
-              results.push({
-                id: query.id,
-                text: query.text,
-                sendTime: sendTimeStr,
-                receiveTime: receiveTimeStr,
-                elapsed: elapsed,
-                success: false,
-                error: error.message,
-                arrival: arrivalCounter
-              });
-              updateTestResults(results);
-              updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
-            });
+          body: JSON.stringify(payload)
         });
-      }
 
-      function updateTestResults(results) {
-        document.getElementById('testResults').innerHTML = formatTestResults(results);
-      }
-
-      function formatTestResults(results) {
-        let summaryHTML = `
-          <div class="test-summary">
-            <h3>Test Summary</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>Arrival Order</th>
-                  <th>Test ID</th>
-                  <th>Query</th>
-                  <th>Send Time</th>
-                  <th>Receive Time</th>
-                  <th>Elapsed (ms)</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-        `;
-        results.forEach((result) => {
-          const statusText = result.success ? 'Success' : 'Fail';
-          summaryHTML += `
-            <tr>
-              <td>${result.arrival}</td>
-              <td>${result.id}</td>
-              <td>${result.text}</td>
-              <td>${result.sendTime}</td>
-              <td>${result.receiveTime}</td>
-              <td>${result.elapsed}</td>
-              <td>${statusText}</td>
-            </tr>
-          `;
-        });
-        summaryHTML += `
-              </tbody>
-            </table>
-          </div>
-        `;
-
-        let detailsHTML = '<div class="test-details"><h3>Individual Test Details</h3>';
-        results.forEach((result) => {
-          const safeResultOutput = result.success
-            ? formatJsonOutput(
-                result.data || {},
-                result.sendTime,
-                result.receiveTime,
-                result.elapsed,
-                result.id
-              )
-            : `<pre style="color:red;">Error: ${result.error || 'Unknown error'}</pre>`;
-
-          detailsHTML += `
-            <div class="test-item">
-              <h4>${result.id} - ${result.text}</h4>
-              <p><strong>Arrival Order:</strong> ${result.arrival}</p>
-              <p><strong>Send Time:</strong> ${result.sendTime}</p>
-              <p><strong>Receive Time:</strong> ${result.receiveTime}</p>
-              <p><strong>Elapsed Time:</strong> ${result.elapsed} ms</p>
-              <p><strong>Status:</strong> ${result.success ? 'Success' : 'Fail'}</p>
-              <p><strong>Response Data:</strong></p>
-              ${safeResultOutput}
-            </div>
-          `;
-        });
-        detailsHTML += "</div>";
-        return summaryHTML + detailsHTML;
-      }
-
-      /************************************************************
-       * (3) Single Streaming Test (POST-based streaming)
-       ************************************************************/
-      let postStreamFirstChunkTime = null;
-      let postStreamEndTime = null;
-      let postStreamStartTime = null;
-      let streamingInProgress = false;
-      let answerAccumulated = "";
-      let sseBuffer = "";
-
-      async function startStreamPOST() {
-        if (streamingInProgress) {
-          alert("Streaming is already in progress.");
-          return;
+        if (!response.ok) {
+          throw new Error("응답 오류: " + response.status);
         }
-        streamingInProgress = true;
-        const userQuery = document.getElementById('streamInput').value.trim();
-        if (!userQuery) {
-          alert('Please type a streaming query.');
-          streamingInProgress = false;
-          return;
-        }
-        // Reset variables
-        answerAccumulated = "";
-        sseBuffer = "";
-        postStreamFirstChunkTime = null;
-        postStreamEndTime = null;
-        document.getElementById('streamOutput').textContent = "";
-        document.getElementById('streamTiming').innerHTML = "";
-        document.getElementById('referenceData').innerHTML = "";
-        document.getElementById('referenceData').style.display = "none";
 
-        postStreamStartTime = performance.now();
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
 
-        try {
-          const response = await fetch('/query_stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: userQuery })
-          });
-          if (!response.ok) {
-            const errTxt = await response.text();
-            throw new Error('Response not OK: ' + response.status + " " + errTxt);
-          }
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              postStreamEndTime = performance.now();
-              updatePostStreamTiming();
-              break;
-            }
-            const chunk = decoder.decode(value, { stream: true });
-            processPostSseChunk(chunk);
-            document.getElementById('streamOutput').textContent = answerAccumulated;
-          }
-        } catch (err) {
-          console.error('POST-based streaming error:', err);
-          postStreamEndTime = performance.now();
-          updatePostStreamTiming();
-        } finally {
-          streamingInProgress = false;
-        }
-      }
-
-      function processPostSseChunk(chunk) {
-        sseBuffer += chunk;
-        let lines = sseBuffer.split("\n");
-        sseBuffer = lines.pop(); // leftover
-        for (let line of lines) {
-          line = line.trim();
-          if (!line) continue;
-          if (line.startsWith("data:")) {
-            const sseData = line.slice(5).trim();
-            if (!postStreamFirstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
-              postStreamFirstChunkTime = performance.now();
-              updatePostStreamTiming();
-            }
-            if (sseData === "[[STREAM_DONE]]") {
-              postStreamEndTime = performance.now();
-              updatePostStreamTiming();
-              return;
-            }
-            try {
-              const jsonData = JSON.parse(sseData);
-              if (jsonData.type === "reference") {
-                let refHTML = `<h4>Reference Data</h4><ul>`;
-                if (Array.isArray(jsonData.data_list)) {
-                  jsonData.data_list.forEach((ref, idx) => {
-                    refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
-                  });
-                } else {
-                  refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
-                }
-                refHTML += `</ul>`;
-                document.getElementById("referenceData").innerHTML = refHTML;
-                document.getElementById("referenceData").style.display = "block";
-              } else if (jsonData.type === "answer") {
-                answerAccumulated += jsonData.answer;
-              }
-            } catch (e) {
-              // Not valid JSON, treat as plain text
-              answerAccumulated += sseData;
-            }
-          }
-        }
-        updatePostStreamTiming();
-      }
-
-      function updatePostStreamTiming() {
-        let msg = "";
-        if (postStreamStartTime !== null) {
-          msg += `Started: ${postStreamStartTime.toFixed(1)} ms\n`;
-        }
-        if (postStreamFirstChunkTime !== null) {
-          msg += `First chunk: ${postStreamFirstChunkTime.toFixed(1)} ms (delta: ${(postStreamFirstChunkTime - postStreamStartTime).toFixed(1)} ms)\n`;
-        } else {
-          msg += "First chunk: not yet\n";
-        }
-        if (postStreamEndTime !== null) {
-          msg += `End: ${postStreamEndTime.toFixed(1)} ms (delta: ${(postStreamEndTime - postStreamStartTime).toFixed(1)} ms)\n`;
-          if (postStreamFirstChunkTime !== null) {
-            msg += `Chunk→End: ${(postStreamEndTime - postStreamFirstChunkTime).toFixed(1)} ms\n`;
-          }
-        } else {
-          msg += "End: not yet\n";
-        }
-        document.getElementById('streamTiming').innerHTML = msg;
-      }
-
-      /************************************************************
-       * (4) Simultaneous Streaming Test (POST-based streaming)
-       ************************************************************/
-      async function startSimulStreamPOST(queryObj, containerId) {
-        const container = document.getElementById(containerId);
-        container.innerHTML = `
-          <h4>${queryObj.id} - ${queryObj.text}</h4>
-          <pre class="stream-output" style="background:#fafafa; padding:10px;"></pre>
-          <div class="stream-info-box"></div>
-          <button onclick="toggleReferencesInContainer('${containerId}')">Toggle References</button>
-          <div class="reference-output" style="display:none; border:1px solid #ccc; padding:10px; margin-top:10px;"></div>
-        `;
-
-        let answerAccumulated = "";
         let sseBuffer = "";
-        let chunkCount = 0;
-        const streamStartTime = performance.now();
-        let firstChunkTime = null;
-        let endTime = null;
-        let success = true;
-        let errorMessage = "";
+        let partialAnswer = "";
 
-        try {
-          const response = await fetch('/query_stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: queryObj.text })
-          });
-          if (!response.ok) {
-            success = false;
-            errorMessage = `Response not OK: ${response.status}`;
-            return {
-              id: queryObj.id,
-              query: queryObj.text,
-              sendTime: streamStartTime,
-              firstChunkTime,
-              endTime,
-              duration: 0,
-              success,
-              error: errorMessage,
-              chunkCount
-            };
-          }
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
+        startAIStreamingMessage();  // AI가 답변 중임을 표시
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              endTime = performance.now();
-              updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
-              break;
-            }
-            const chunk = decoder.decode(value, { stream: true });
-            sseBuffer += chunk;
-            let lines = sseBuffer.split("\n");
-            sseBuffer = lines.pop();
-            for (let line of lines) {
-              line = line.trim();
-              if (!line) continue;
-              if (line.startsWith("data:")) {
-                const sseData = line.slice(5).trim();
-                // Count every SSE line as a 'chunk' for demonstration
-                chunkCount++;
-                if (!firstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
-                  firstChunkTime = performance.now();
-                  updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          sseBuffer += chunk;
+
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop(); // 남은 라인은 덜 끊긴 조각일 수 있음
+
+          for (let line of lines) {
+            line = line.trim();
+            if (!line) continue;
+
+            // SSE는 보통 "data: ..." 형태
+            if (line.startsWith("data:")) {
+              const jsonStr = line.slice(5).trim();
+              if (jsonStr === "[[STREAM_DONE]]") {
+                finalizeAIMessage(partialAnswer);
+                return;
+              }
+              try {
+                const sseData = JSON.parse(jsonStr);
+                if (sseData.type === "answer") {
+                  partialAnswer += sseData.answer;
+                  updateAIStreamingMessage(partialAnswer);
                 }
-                if (sseData === "[[STREAM_DONE]]") {
-                  endTime = performance.now();
-                  updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
-                  return {
-                    id: queryObj.id,
-                    query: queryObj.text,
-                    sendTime: streamStartTime,
-                    firstChunkTime,
-                    endTime,
-                    duration: endTime - streamStartTime,
-                    success,
-                    error: errorMessage,
-                    chunkCount
-                  };
+                else if (sseData.type === "reference") {
+                  // 참조 데이터 수집
+                  addReferenceData(sseData);
                 }
-                try {
-                  const jsonData = JSON.parse(sseData);
-                  if (jsonData.type === "reference") {
-                    const refDiv = container.querySelector(".reference-output");
-                    let refHTML = `<h4>Reference Data</h4><ul>`;
-                    if (Array.isArray(jsonData.data_list)) {
-                      jsonData.data_list.forEach((ref, idx) => {
-                        refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
-                      });
-                    } else {
-                      refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
-                    }
-                    refHTML += `</ul>`;
-                    refDiv.innerHTML = refHTML;
-                  } else if (jsonData.type === "answer") {
-                    answerAccumulated += jsonData.answer;
-                    container.querySelector(".stream-output").textContent = answerAccumulated;
-                  }
-                } catch (e) {
-                  // Not valid JSON => treat as text
-                  answerAccumulated += sseData;
-                  container.querySelector(".stream-output").textContent = answerAccumulated;
+                else {
+                  // 그 외 타입
+                  console.log("기타 SSE 데이터:", sseData);
                 }
+              } catch (err) {
+                // JSON 파싱 실패 -> 그냥 텍스트로 처리
+                partialAnswer += jsonStr;
+                updateAIStreamingMessage(partialAnswer);
               }
             }
-            updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
           }
-        } catch (err) {
-          success = false;
-          errorMessage = err.message;
-          container.querySelector(".stream-output").textContent += "\nError: " + err;
         }
-
-        // If we exit the loop or have an error:
-        endTime = endTime || performance.now();
-        updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
-        return {
-          id: queryObj.id,
-          query: queryObj.text,
-          sendTime: streamStartTime,
-          firstChunkTime,
-          endTime,
-          duration: endTime - streamStartTime,
-          success,
-          error: errorMessage,
-          chunkCount
-        };
-      }
-
-      function updateContainerTiming(container, start, first, end, chunkCount) {
-        const infoBox = container.querySelector(".stream-info-box");
-        let infoMsg = `Started: ${start.toFixed(1)} ms\n`;
-        if (first) {
-          infoMsg += `First chunk: ${first.toFixed(1)} ms (delta: ${(first - start).toFixed(1)} ms)\n`;
-        } else {
-          infoMsg += "First chunk: not yet\n";
+        // while 루프 끝 (done=true)
+        if (sseBuffer.trim()) {
+          // 남은 sseBuffer 처리할 로직 (필요시 구현)
         }
-        if (end) {
-          infoMsg += `End: ${end.toFixed(1)} ms (delta: ${(end - start).toFixed(1)} ms)\n`;
-          if (first) {
-            infoMsg += `Chunk→End: ${(end - first).toFixed(1)} ms\n`;
-          }
-        } else {
-          infoMsg += "End: not yet\n";
+        finalizeAIMessage(partialAnswer);
+      } catch (err) {
+        appendMessageToChatBox("시스템", "오류 발생: " + err.message);
+        storeMessageInRoom(currentRequestId, "시스템", "오류 발생: " + err.message);
+      }
+    }
+
+    /************************************************************************
+     * AI 스트리밍 표시 (임시 메시지) 
+     ************************************************************************/
+    let tempAiMsgDiv = null;
+
+    function startAIStreamingMessage() {
+      const chatBox = document.getElementById("chatBox");
+      tempAiMsgDiv = document.createElement("div");
+      tempAiMsgDiv.classList.add("message-line");
+      tempAiMsgDiv.innerHTML = `<strong class="message-ai">AI:</strong> <span id="aiTempText"></span>`;
+      chatBox.appendChild(tempAiMsgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function updateAIStreamingMessage(text) {
+      if (!tempAiMsgDiv) return;
+      const span = tempAiMsgDiv.querySelector("#aiTempText");
+      if (span) {
+        span.textContent = text;
+      }
+      const chatBox = document.getElementById("chatBox");
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function finalizeAIMessage(finalText) {
+      // 최종 AI 메시지를 chatRooms에 저장
+      storeMessageInRoom(currentRequestId, "AI", finalText);
+      tempAiMsgDiv = null;
+
+      // 참조 데이터가 하나라도 있으면 Show 버튼 표시
+      if (referenceList.length > 0) {
+        document.getElementById("toggleRefBtn").style.display = "block";
+      }
+    }
+
+    /************************************************************************
+     * 참조 데이터(Reference) 관련
+     ************************************************************************/
+    function addReferenceData(refData) {
+      // 여기선 단순히 배열에 push
+      referenceList.push(refData);
+      // 콘솔 찍어볼 수도 있음
+      console.log("Reference data received:", refData);
+    }
+
+    function clearReferenceData() {
+      referenceList = [];
+      document.getElementById("toggleRefBtn").style.display = "none";
+      document.getElementById("referenceContainer").style.display = "none";
+      document.getElementById("referenceContainer").innerHTML = "";
+    }
+
+    // 토글 버튼 클릭 시, 참조 정보를 표시하거나 숨기는 함수
+    function toggleReferences() {
+      const container = document.getElementById("referenceContainer");
+      if (container.style.display === "none" || container.style.display === "") {
+        // 보이게
+        container.style.display = "block";
+        // 이미 렌더링되어 있다면 스킵, 없으면 렌더링
+        if (!container.innerHTML.trim()) {
+          renderReferenceData();
         }
-        infoMsg += `Chunk Count: ${chunkCount}\n`;
-        infoBox.textContent = infoMsg;
+        document.getElementById("toggleRefBtn").textContent = "Hide References";
+      } else {
+        // 숨기기
+        container.style.display = "none";
+        document.getElementById("toggleRefBtn").textContent = "Show References";
       }
+    }
 
-      function toggleReferencesInContainer(containerId) {
-        const container = document.getElementById(containerId);
-        const refDiv = container.querySelector(".reference-output");
-        if (refDiv.style.display === "none" || refDiv.style.display === "") {
-          refDiv.style.display = "block";
-        } else {
-          refDiv.style.display = "none";
-        }
-      }
+    // 참조 데이터를 화면에 렌더링
+    function renderReferenceData() {
+      const container = document.getElementById("referenceContainer");
+      container.innerHTML = ""; // 초기화
 
-      async function testSimulStreamPOST() {
-        const queries = buildTestQueries();
-        // Use all queries in the test set
-        const simulQueries = queries;
-        const simulPartialsContainer = document.getElementById("simul-partials");
-        const simulResultsContainer = document.getElementById("simul-results");
-        simulPartialsContainer.innerHTML = ""; // Clear previous streams
-        simulResultsContainer.innerHTML = "";   // Clear previous result table
-
-        // Fire all streaming requests in parallel
-        const promises = simulQueries.map((q, index) => {
-          const containerId = "simul-stream-" + index;
-          const div = document.createElement("div");
-          div.id = containerId;
-          simulPartialsContainer.appendChild(div);
-          return startSimulStreamPOST(q, containerId);
-        });
-
-        let results = await Promise.all(promises);
-        let summaryTable = buildSimulSummaryTable(results);
-        simulResultsContainer.innerHTML = summaryTable;
-      }
-
-      function buildSimulSummaryTable(results) {
-        // Calculate success/fail stats
-        let successCount = 0;
-        let failCount = 0;
-        results.forEach(r => {
-          if (r.success) successCount++;
-          else failCount++;
-        });
-
-        // Build summary table
-        let html = `<div class="test-summary">
-                      <h3>Simultaneous Streaming Results</h3>
-                      <p>Total: ${results.length}, Success: ${successCount}, Fail: ${failCount}</p>
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>ID</th>
-                            <th>Query</th>
-                            <th>Send Time (ms)</th>
-                            <th>First Chunk (ms)</th>
-                            <th>End Time (ms)</th>
-                            <th>Duration (ms)</th>
-                            <th>Chunk Count</th>
-                            <th>Status</th>
-                            <th>Error</th>
-                          </tr>
-                        </thead>
-                        <tbody>`;
-
-        results.forEach(r => {
-          const statusText = r.success ? "Success" : "Fail";
-          const errorText = r.error || "";
-          const firstTimeStr = r.firstChunkTime ? r.firstChunkTime.toFixed(1) : "n/a";
-          const endTimeStr = r.endTime ? r.endTime.toFixed(1) : "n/a";
-          const durationStr = r.duration ? r.duration.toFixed(1) : "n/a";
-          html += `<tr>
-                     <td>${r.id}</td>
-                     <td>${r.query}</td>
-                     <td>${r.sendTime.toFixed(1)}</td>
-                     <td>${firstTimeStr}</td>
-                     <td>${endTimeStr}</td>
-                     <td>${durationStr}</td>
-                     <td>${r.chunkCount}</td>
-                     <td>${statusText}</td>
-                     <td style="color:red;">${errorText}</td>
-                   </tr>`;
-        });
-
-        html += `</tbody></table></div>`;
-        return html;
-      }
-
-      /************************************************************
-       * (5) Continuous Sync Test
-       ************************************************************/
-      async function continuousTest(mode) {
-        const queries = buildTestQueries();
-        const results = [];
-        const total = queries.length;
-        document.getElementById('continuousTestResults').innerHTML = `Running ${mode} test...<br>`;
-        updateProgressIndicator('continuousProgress', 0, total);
-
-        for (let i = 0; i < queries.length; i++) {
-          if (mode === 'nonstream') {
-            const r = await runNonStreamingQuery(queries[i]);
-            results.push(r);
-          } else {
-            const r = await runStreamingQuery(queries[i]);
-            results.push(r);
-          }
-          updateProgressIndicator('continuousProgress', i + 1, total);
-        }
-
-        let sum = 0;
-        results.forEach(r => sum += r.duration);
-        const avg = (sum / results.length).toFixed(2);
-
-        let html = `<h3>Continuous ${mode === 'nonstream' ? 'Non-Streaming' : 'Streaming'} Test (${total} queries) Results</h3>`;
-        html += `<p>Average Duration: <strong>${avg} ms</strong></p>`;
-        html += "<ul>";
-        results.forEach((r) => {
-          html += `<li><strong>${r.id}</strong> [${r.query}] - Start: ${r.startTime}, End: ${r.endTime}, Duration: ${r.duration} ms</li>`;
-        });
-        html += "</ul>";
-        document.getElementById('continuousTestResults').innerHTML = html;
-      }
-
-      async function runNonStreamingQuery(qObj) {
-        const sendTime = new Date();
-        const startTs = Date.now();
-        try {
-          const resp = await fetch('/query', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ qry_contents: qObj.text })
-          });
-          await resp.json();
-        } catch (e) {
-          console.error("Non-stream error:", e);
-        }
-        const endTime = new Date();
-        const duration = Date.now() - startTs;
-        return {
-          id: qObj.id,
-          query: qObj.text,
-          startTime: formatTime(sendTime),
-          endTime: formatTime(endTime),
-          duration: duration
-        };
-      }
-
-      // 기존의 runStreamingQuery 함수는 GET 방식을 사용했으나, 이제 POST 방식으로 변경합니다.
-      // POST 방식으로 요청을 보내고, 응답 스트림을 처리하여 SSE 청크를 읽습니다.
-      function runStreamingQuery(qObj) {
-        return new Promise((resolve, reject) => {
-          const sendTime = new Date();
-          const startTs = Date.now();
-          let accumulatedText = "";
-          // POST 방식으로 /query_stream에 요청 (Content-Type은 JSON)
-          fetch('/query_stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: qObj.text })
-          })
-            .then(response => {
-              const reader = response.body.getReader();
-              const decoder = new TextDecoder();
-              // 함수: 응답 스트림을 재귀적으로 읽어 처리
-              function processStream({ done, value }) {
-                if (done) {
-                  const endTime = new Date();
-                  const duration = Date.now() - startTs;
-                  resolve({
-                    id: qObj.id,
-                    query: qObj.text,
-                    startTime: formatTime(sendTime),
-                    endTime: formatTime(endTime),
-                    duration: duration,
-                    result: accumulatedText
-                  });
-                  return;
-                }
-                // 수신한 청크를 디코딩하여 누적
-                accumulatedText += decoder.decode(value, { stream: true });
-                // 추가 청크 읽기
-                reader.read().then(processStream).catch(reject);
-              }
-              return reader.read().then(processStream);
-            })
-            .catch(err => {
-              reject(err);
-            });
-        });
-      }
-      
-      /************************************************************
-       * Helper: Build Test Queries from the selector
-       ************************************************************/
-      function buildTestQueries() {
-        const testSet = document.getElementById('testSetSelect').value;
-        let queries = [];
-        if (testSet === 'set1') {
-          const mixed20Queries1 = [
-            { id: "ask1", text: "남성해운의 중국 시장 동향" },
-            { id: "ask2", text: "남성해운의 일본 시장 영업 전략" },
-            { id: "ask3", text: "남성해운의 동남아 시장 발전 가능성" },
-            { id: "ask4", text: "남성해운의 중국 시장 동향" },
-            { id: "ask5", text: "신입사원 인사 필수로 알아야 하는 것" },
-            { id: "ask6", text: "디지털화 근황" },
-            { id: "ask7", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask8", text: "남성해운 운임 동향" },
-            { id: "ask9", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask10", text: "최근 해운업계 동향" },
-            { id: "ask11", text: "디지털화 근황" },
-            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask13", text: "남성해운 운임 동향" },
-            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask15", text: "최근 해운업계 동향" },
-            { id: "ask16", text: "디지털화 근황" },
-            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask18", text: "남성해운 운임 동향" },
-            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask20", text: "최근 해운업계 동향" }
-          ];
-          queries = mixed20Queries1;
-        } else if (testSet === 'set2') {
-          const mixed20Queries2 = [
-            { id: "ask1", text: "타운사의 전략" },
-            { id: "ask2", text: "남성해운과 타운사의 차별점" },
-            { id: "ask3", text: "남성해운의 수익 구조" },
-            { id: "ask4", text: "해운사의 특징과 남성해운이 가진 고유의 특징" },
-            { id: "ask5", text: "지난해 매출과 앞으로의 전망" },
-            { id: "ask6", text: "남성해운의 AI 추진 과제 현황" },
-            { id: "ask7", text: "동영해운과 남성해운의 공통점과 차이점" },
-            { id: "ask8", text: "남성해운의 새로운 전략과 먹거리" },
-            { id: "ask9", text: "신입사원 채용 계획 및 교육 일정" },
-            { id: "ask10", text: "해운업계의 큰 흐름과 현재 남성해운의 판단" },
-            { id: "ask11", text: "디지털화 근황" },
-            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask13", text: "남성해운 운임 동향" },
-            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask15", text: "최근 해운업계 동향" },
-            { id: "ask16", text: "디지털화 근황" },
-            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask18", text: "남성해운 운임 동향" },
-            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask20", text: "최근 해운업계 동향" }
-          ];
-          queries = mixed20Queries2;
-        } else if (testSet === 'set3') {
-          const differentThreeQueries = [
-            { id: "only3-1", text: "남성해운 중국 시장 근황" },
-            { id: "only3-2", text: "공 컨테이너 수송 전략" },
-            { id: "only3-3", text: "남성해운의 새로운 전략" }
-          ];
-          queries = differentThreeQueries;
-        } else if (testSet === 'same100') {
-          for (let i = 1; i <= 100; i++) {
-            queries.push({ id: `same100-${i}`, text: "디지털 전략" });
-          }
-        } else if (testSet === 'circulate5x20') {
-          const baseQueries = [
-            { id: "q1", text: "남성해운 영업 전략" },
-            { id: "q2", text: "디지털화 근황" },
-            { id: "q3", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "q4", text: "주간회의 특징 및 주요 말씀" },
-            { id: "q5", text: "해운업계의 경쟁 구도" }
-          ];
-          for (let k = 1; k <= 20; k++) {
-            baseQueries.forEach((q) => {
-              queries.push({ id: `circulate${k}-${q.id}`, text: q.text });
-            });
-          }
-        } else if (testSet === 'mixed100') {
-          const mixedQueries = [
-            { id: "mix-ask1", text: "타운사의 전략" },
-            { id: "mix-ask2", text: "남성해운의 중국 시장 동향" },
-            { id: "mix-ask3", text: "해운업계의 경쟁 구도" },
-            { id: "mix-ask4", text: "디지털화의 최신 트렌드" },
-            { id: "mix-ask5", text: "IOT 컨테이너 사업의 전망" },
-            { id: "mix-ask6", text: "타운사의 시장 점유율 분석" },
-            { id: "mix-ask7", text: "남성해운의 일본 시장 영업 전략" },
-            { id: "mix-ask8", text: "해운업계의 글로벌 시장 동향" },
-            { id: "mix-ask9", text: "디지털 전환의 성공 사례" },
-            { id: "mix-ask10", text: "IOT 기술을 활용한 물류 혁신" },
-            { id: "mix-ask11", text: "타운사의 경쟁 우위" },
-            { id: "mix-ask12", text: "남성해운의 동남아 시장 발전 가능성" },
-            { id: "mix-ask13", text: "해운업계의 기술 혁신 현황" },
-            { id: "mix-ask14", text: "디지털 기술이 기업에 미치는 영향" },
-            { id: "mix-ask15", text: "IOT와 빅데이터의 결합 사례" },
-            { id: "mix-ask16", text: "타운사의 성장 동력" },
-            { id: "mix-ask17", text: "남성해운의 미국 시장 진출 전략" },
-            { id: "mix-ask18", text: "해운업계의 운임 변동 요인" },
-            { id: "mix-ask19", text: "디지털화 도입의 비용 효율성" },
-            { id: "mix-ask20", text: "IOT 기술 도입의 장단점" },
-            { id: "mix-ask21", text: "타운사의 혁신 사례" },
-            { id: "mix-ask22", text: "남성해운의 수익 구조 분석" },
-            { id: "mix-ask23", text: "해운업계의 환경 규제 대응" },
-            { id: "mix-ask24", text: "디지털 전환 전략 수립 방법" },
-            { id: "mix-ask25", text: "IOT 컨테이너의 운영 효율성" },
-            { id: "mix-ask26", text: "타운사의 고객 만족도" },
-            { id: "mix-ask27", text: "남성해운의 비용 절감 전략" },
-            { id: "mix-ask28", text: "해운업계의 디지털 전환" },
-            { id: "mix-ask29", text: "디지털화와 빅데이터 활용" },
-            { id: "mix-ask30", text: "IOT 기반 실시간 모니터링 시스템" },
-            { id: "mix-ask31", text: "타운사의 재무 구조" },
-            { id: "mix-ask32", text: "남성해운의 신규 서비스 도입" },
-            { id: "mix-ask33", text: "해운업계의 물류 효율성 개선" },
-            { id: "mix-ask34", text: "디지털화의 보안 이슈" },
-            { id: "mix-ask35", text: "IOT와 인공지능의 결합 효과" },
-            { id: "mix-ask36", text: "타운사의 리스크 관리" },
-            { id: "mix-ask37", text: "남성해운의 고객 만족도 조사" },
-            { id: "mix-ask38", text: "해운업계의 비용 구조" },
-            { id: "mix-ask39", text: "디지털 트랜스포메이션의 장단점" },
-            { id: "mix-ask40", text: "IOT 기술을 활용한 비용 절감" },
-            { id: "mix-ask41", text: "타운사의 해외 진출 전략" },
-            { id: "mix-ask42", text: "남성해운의 운임 변동 분석" },
-            { id: "mix-ask43", text: "해운업계의 신규 시장 개척" },
-            { id: "mix-ask44", text: "디지털화 추진을 위한 조직 문화" },
-            { id: "mix-ask45", text: "IOT 컨테이너 사업의 경쟁력" },
-            { id: "mix-ask46", text: "타운사의 신규 사업 계획" },
-            { id: "mix-ask47", text: "남성해운의 미래 성장 전략" },
-            { id: "mix-ask48", text: "해운업계의 고객 서비스 혁신" },
-            { id: "mix-ask49", text: "디지털 전환과 고객 경험 혁신" },
-            { id: "mix-ask50", text: "IOT 기술 도입을 위한 투자 전략" },
-            { id: "mix-ask51", text: "타운사의 브랜드 가치" },
-            { id: "mix-ask52", text: "남성해운의 경쟁사 비교" },
-            { id: "mix-ask53", text: "해운업계의 글로벌 네트워크" },
-            { id: "mix-ask54", text: "디지털화와 인공지능의 결합" },
-            { id: "mix-ask55", text: "IOT와 클라우드 컴퓨팅의 연계" },
-            { id: "mix-ask56", text: "타운사의 공급망 관리" },
-            { id: "mix-ask57", text: "남성해운의 글로벌 네트워크" },
-            { id: "mix-ask58", text: "해운업계의 재무 안정성" },
-            { id: "mix-ask59", text: "디지털 전환의 글로벌 사례" },
-            { id: "mix-ask60", text: "IOT 기반 물류 자동화 사례" },
-            { id: "mix-ask61", text: "타운사의 인재 육성 전략" },
-            { id: "mix-ask62", text: "남성해운의 혁신 기술 도입" },
-            { id: "mix-ask63", text: "해운업계의 기술 투자" },
-            { id: "mix-ask64", text: "디지털화 추진 시 장애 요인" },
-            { id: "mix-ask65", text: "IOT 기술의 보안 이슈" },
-            { id: "mix-ask66", text: "타운사의 사회적 책임 활동" },
-            { id: "mix-ask67", text: "남성해운의 운영 효율성" },
-            { id: "mix-ask68", text: "해운업계의 공급망 관리" },
-            { id: "mix-ask69", text: "디지털화에 따른 비용 절감 효과" },
-            { id: "mix-ask70", text: "IOT 컨테이너 사업의 글로벌 동향" },
-            { id: "mix-ask71", text: "타운사의 기술 혁신" },
-            { id: "mix-ask72", text: "남성해운의 재무 건전성" },
-            { id: "mix-ask73", text: "해운업계의 미래 전망" },
-            { id: "mix-ask74", text: "디지털 트랜스포메이션의 미래 전망" },
-            { id: "mix-ask75", text: "IOT와 데이터 분석의 시너지 효과" },
-            { id: "mix-ask76", text: "타운사의 마케팅 전략" },
-            { id: "mix-ask77", text: "남성해운의 리스크 관리 전략" },
-            { id: "mix-ask78", text: "해운업계의 혁신 사례" },
-            { id: "mix-ask79", text: "디지털화 전략 수립 시 고려사항" },
-            { id: "mix-ask80", text: "IOT 기술 도입 시 장애 요인" },
-            { id: "mix-ask81", text: "타운사의 고객 서비스 개선" },
-            { id: "mix-ask82", text: "남성해운의 신규 투자 계획" },
-            { id: "mix-ask83", text: "해운업계의 위험 요인" },
-            { id: "mix-ask84", text: "디지털 전환이 기업 경쟁력에 미치는 영향" },
-            { id: "mix-ask85", text: "IOT 컨테이너의 미래 전략" },
-            { id: "mix-ask86", text: "타운사의 경쟁사 비교" },
-            { id: "mix-ask87", text: "남성해운의 시장 점유율 변화" },
-            { id: "mix-ask88", text: "해운업계의 인재 육성" },
-            { id: "mix-ask89", text: "디지털화와 클라우드 컴퓨팅" },
-            { id: "mix-ask90", text: "IOT 기술을 활용한 혁신 사례" },
-            { id: "mix-ask91", text: "타운사의 시장 성장 전망" },
-            { id: "mix-ask92", text: "남성해운의 고객 서비스 전략" },
-            { id: "mix-ask93", text: "해운업계의 시장 성장 동력" },
-            { id: "mix-ask94", text: "디지털 전환의 성공 요인" },
-            { id: "mix-ask95", text: "IOT 기반 스마트 물류 솔루션" },
-            { id: "mix-ask96", text: "타운사의 미래 비전" },
-            { id: "mix-ask97", text: "남성해운의 미래 비전" },
-            { id: "mix-ask98", text: "해운업계의 신기술 도입 현황" },
-            { id: "mix-ask99", text: "디지털 트랜스포메이션이 해운업계에 미치는 영향" },
-            { id: "mix-ask100", text: "IOT 기술이 해운업계에 미치는 영향" }
-          ];
-          queries = mixedQueries;
-        }
-        return queries;
-      }
-    </script>
-  </body>
+      referenceList.forEach((refObj, idx) => {
+        // 간단히 JSON.stringify 등으로 출력
+        // 실제로는 refObj.data_list 등 더 구체적으로 표시 가능
+        const div = document.createElement("div");
+        div.style.marginBottom = "10px";
+        div.innerHTML = `<strong>Reference #${idx + 1}</strong><br>
+                         <pre style="white-space: pre-wrap;">${JSON.stringify(refObj, null, 2)}</pre>`;
+        container.appendChild(div);
+      });
+    }
+  </script>
+</body>
 </html>
 
 ```
