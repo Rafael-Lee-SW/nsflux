@@ -17,6 +17,8 @@ os.environ["VLLM_USE_V1"] = "1"
 os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
+# GPU 단독 사용(박상제 연구원님이랑 분기점)
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
 
 from flask import (
     Flask,

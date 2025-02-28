@@ -24,6 +24,8 @@ from utils import (
     error_format,
 )
 
+# 랭체인 도입
+from langchain.memory import ConversationBufferMemory
 
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
@@ -55,8 +57,26 @@ class InferenceActor:
         # Micro-batching만 적용
         # asyncio.create_task(self._batch_processor())
 
+        # ---------------------------
+        # LangChain Memory 맵 (랭체인)
+        # key: request_id, value: ConversationBufferMemory()
+        # ---------------------------
+        self.memory_map = {}
+
         # In-flight batching까지 추가 적용
         asyncio.create_task(self._in_flight_batch_processor())
+
+
+    def get_memory_for_session(self, request_id: str) -> ConversationBufferMemory:
+        """
+        세션별 Memory를 안전하게 가져오는 헬퍼 메서드.
+        만약 memory_map에 request_id가 없으면 새로 생성해 저장 후 반환.
+        """
+        if request_id not in self.memory_map:
+            print(f"[DEBUG] Creating new ConversationBufferMemory for session={request_id}")
+            self.memory_map[request_id] = ConversationBufferMemory(return_messages=True)
+        return self.memory_map[request_id]
+
 
     # --------------------------------------------------------
     # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
@@ -196,8 +216,7 @@ class InferenceActor:
             f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}"
         )
         try:
-            # --- NEW OR MODIFIED ---
-            # Distinguish between normal requests vs streaming requests:
+            # 1) request_id 구분
             if (
                 isinstance(http_query_or_stream_dict, dict)
                 and "request_id" in http_query_or_stream_dict
@@ -213,27 +232,40 @@ class InferenceActor:
                 http_query = http_query_or_stream_dict
                 is_streaming = False
                 print("[SYNC] _process_single_query started...")
+                
+            # 2) Memory 객체 가져오기 (없으면 새로 생성)
+            if request_id not in self.memory_map:
+                self.memory_map[request_id] = ConversationBufferMemory(return_messages=True)
+            
+            memory = self.memory_map[request_id]
 
-            # 1) get user query
+            # 3) 유저가 현재 입력한 쿼리 가져오기
             user_input = http_query.get("qry_contents", "")
-            # To Calculate the token
-            tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
-            print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
+            
+            # 4) LangChain Memory에서 이전 대화 이력(history) 추출
+            past_context = memory.load_memory_variables({})["history"]
+            
+            # # To Calculate the token
+            # tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
+            # print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
 
-            # 2) optionally reload data if needed
+            # 5) 필요하다면 데이터를 다시 로드(1.16version 유지)
             self.data = load_data(
                 self.config.data_path
             )  # if you want always-latest, else skip
 
-            # 3) classify
+            # 6) 현재 사용중인 Thread 확인
             print("   ... calling query_sort() ...")
-            print(
-                f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}"
-            )
-
+            # print(
+            #     f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}"
+            # )
+            # 7) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
+            #    방법 1) query_sort() 전에 past_context를 참조해 query를 확장
+            #    방법 2) generate_answer()에서 Prompt 앞부분에 붙임
+            # 여기서는 예시로 “query_sort”에 past_context를 넘겨
             # 호출부 수정
             params = {
-                "user_input": user_input,
+                "user_input": f"{past_context}\n사용자 질문: {user_input}",
                 "model": self.model,
                 "tokenizer": self.tokenizer,
                 "embed_model": self.embed_model,
@@ -271,7 +303,7 @@ class InferenceActor:
                             f"[STREAM] Starting partial generation for request_id={request_id}"
                         )
                         await self._stream_partial_answer(
-                            QU, docs, retrieval, chart, request_id, future
+                            QU, docs, retrieval, chart, request_id, future, user_input
                         )
                     else:
                         # normal final result
@@ -284,6 +316,7 @@ class InferenceActor:
                         )
                         answer = process_to_format([output, chart], type="Answer")
                         outputs = process_format_to_response(retrieval, answer)
+                        memory.save_context({"input": user_input}, {"output": output}) # 랭체인
                         future.set_result(outputs)
 
                 except Exception as e:
@@ -312,7 +345,7 @@ class InferenceActor:
                             f"[STREAM] Starting partial generation for request_id={request_id}"
                         )
                         await self._stream_partial_answer(
-                            QU, docs, retrieval, None, request_id, future
+                            QU, docs, retrieval, None, request_id, future, user_input
                         )
                     else:
                         output = await generate_answer(
@@ -326,6 +359,7 @@ class InferenceActor:
                         answer = process_to_format([output], type="Answer")
                         print("process_to_format 이후에 ANSWER까지 생성 완료")
                         outputs = process_format_to_response(retrieval, answer)
+                        memory.save_context({"input": user_input}, {"output": output}) # 랭체인
                         future.set_result(outputs)
 
                 except Exception as e:
@@ -342,7 +376,7 @@ class InferenceActor:
     # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
     # ------------------------------------------------------------
     async def _stream_partial_answer(
-        self, QU, docs, retrieval, chart, request_id, future
+        self, QU, docs, retrieval, chart, request_id, future, user_input
     ):
         """
         Instead of returning a final string, we generate partial tokens
@@ -374,6 +408,39 @@ class InferenceActor:
         await self.queue_manager.put_token.remote(request_id, reference_json)
         print(f"[STREAM] Sent reference data for request_id={request_id}")
         
+        # 1) 메모리 가져오기 (없으면 생성)
+        try:
+            memory = self.get_memory_for_session(request_id)
+        except Exception as e:
+            msg = f"[STREAM] Error retrieving memory for {request_id}: {str(e)}"
+            print(msg)
+            # 에러 응답을 SSE로 전송하고 종료
+            error_token = json.dumps({"type":"error","message":msg}, ensure_ascii=False)
+            await self.queue_manager.put_token.remote(request_id, error_token)
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+            future.set_result(error_format(msg, 500))
+            return
+        
+        # 2) 과거 대화 이력 로드
+        try:
+            past_context = memory.load_memory_variables({})["history"]
+        except KeyError:
+            # 만약 "history" 키가 없으면 빈 문자열로 처리
+            print(f"[STREAM] No 'history' in memory for {request_id}, using empty.")
+            past_context = ""
+        except Exception as e:
+            msg = f"[STREAM] load_memory_variables error for {request_id}: {str(e)}"
+            print(msg)
+            error_token = json.dumps({"type":"error","message":msg}, ensure_ascii=False)
+            await self.queue_manager.put_token.remote(request_id, error_token)
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+            future.set_result(error_format(msg, 500))
+            return
+
+        # 3) 최종 프롬프트 구성
+        final_query = f"{past_context}\n\n[사용자 질문]\n{QU}"
+        print(f"[STREAM] final_query = \n{final_query}")
+        
         partial_accumulator = ""
 
         try:
@@ -381,7 +448,7 @@ class InferenceActor:
                 f"[STREAM] SSE: calling generate_answer_stream for request_id={request_id}"
             )
             async for partial_text in generate_answer_stream(
-                QU, docs, self.model, self.tokenizer, self.config
+                final_query, docs, self.model, self.tokenizer, self.config
             ):
                 # print(f"[STREAM] Received partial_text: {partial_text}")
                 new_text = partial_text[len(partial_accumulator) :]
@@ -397,6 +464,14 @@ class InferenceActor:
                 # print(f"[STREAM] Sending token: {answer_json}")
                 await self.queue_manager.put_token.remote(request_id, answer_json)
             final_text = partial_accumulator
+            # 이제 memory에 저장 (이미 request_id를 알고 있다고 가정) # 랭체인
+            try:
+                memory.save_context({"input": user_input}, {"output": final_text})
+            except Exception as e:
+                msg = f"[STREAM] memory.save_context failed: {str(e)}"
+                print(msg)
+
+                
             if chart is not None:
                 ans = process_to_format([final_text, chart], type="Answer")
                 final_res = process_format_to_response(retrieval, ans)
