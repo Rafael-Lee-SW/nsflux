@@ -1,307 +1,1897 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Simple RAG Query Interface - Test</title>
-  <style>
-    /* Basic styling */
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 800px;
-      margin: 20px auto;
-      padding: 20px;
-      background: #f9f9f9;
-      color: #333;
-    }
-    h1, h2 {
-      text-align: center;
-    }
-    input[type="text"] {
-      width: 80%;
-      padding: 10px;
-      margin-bottom: 20px;
-      font-size: 16px;
-    }
-    button {
-      padding: 10px 20px;
-      font-size: 16px;
-      cursor: pointer;
-      margin: 5px;
-    }
-    .output {
-      margin-top: 20px;
-      font-size: 16px;
-      color: #333;
-      text-align: left;
-      word-wrap: break-word;
-      background: #fff;
-      padding: 15px;
-      border: 1px solid #ddd;
-      border-radius: 5px;
-    }
-    .output pre {
-      white-space: pre-wrap;
-      word-wrap: break-word;
-      background: #eee;
-      padding: 10px;
-      border-radius: 3px;
-    }
-    /* Test section styling */
-    .test-section {
-      margin-top: 40px;
-      padding: 20px;
-      background: #eef;
-      border: 1px solid #99c;
-      border-radius: 5px;
-    }
-    .test-section h2 {
-      margin-bottom: 20px;
-    }
-    .test-summary table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-bottom: 20px;
-    }
-    .test-summary th,
-    .test-summary td {
-      border: 1px solid #ccc;
-      padding: 8px;
-      text-align: center;
-    }
-    .test-summary th {
-      background: #ddd;
-    }
-    .test-details .test-item {
-      margin-bottom: 20px;
-      padding: 10px;
-      background: #fff;
-      border: 1px solid #ccc;
-      border-radius: 5px;
-    }
-    .test-details .test-item h4 {
-      margin-top: 0;
-    }
-  </style>
-</head>
-<body>
-  <h1>Simple RAG Query Interface</h1>
-  <!-- Original Query Interface -->
-  <input type="text" id="userInput" placeholder="Type your query here..." />
-  <button onclick="sendQuery()">Submit</button>
-  <div class="output" id="output"></div>
-
-  <!-- Test Section -->
-  <div class="test-section">
-    <h2>Testing the POST requests concurrently (display results as they arrive)</h2>
-    <button style="font-size: 20px; padding: 15px 30px;" onclick="testQueries()">Test</button>
-    <div class="output" id="testResults"></div>
-  </div>
-
-  <script>
-    // Original query function with timing details.
-    function sendQuery() {
-      const userInput = document.getElementById("userInput").value;
-      const sendTime = new Date();
-      const sendTimeStr = sendTime.toLocaleTimeString() + "." + sendTime.getMilliseconds();
-      const startTimestamp = Date.now();
-
-      fetch("/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ qry_contents: userInput })
-      })
-      .then(response => {
-        const receiveTime = new Date();
-        const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
-        const elapsed = Date.now() - startTimestamp;
-        if (!response.ok) {
-          return response.json().then(errorData => { throw errorData; });
-        }
-        return response.json().then(data => {
-          document.getElementById("output").innerHTML =
-            formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
-        });
-      })
-      .catch(error => {
-        const receiveTime = new Date();
-        const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
-        const elapsed = Date.now() - startTimestamp;
-        console.error("Error:", error);
-        document.getElementById("output").innerHTML =
-          formatJsonOutput(error, sendTimeStr, receiveTimeStr, elapsed);
-      });
-    }
-
-    // Formatter for normal queries (includes timing info).
-    function formatJsonOutput(data, sendTime, receiveTime, elapsed) {
-      let formattedOutput = `
-        <strong>Send Time:</strong> ${sendTime} <br>
-        <strong>Receive Time:</strong> ${receiveTime} <br>
-        <strong>Elapsed Time:</strong> ${elapsed} ms <br>
-        <hr>
-        <strong>Status Code:</strong> ${data.status_code} <br>
-        <strong>Result:</strong> ${data.result} <br>
-        <strong>Detail:</strong> ${data.detail} <br>
-        <strong>Event Time:</strong> ${data.evt_time} <br>
-        <strong>Data List:</strong><br>
-        <ul>
-      `;
-      if (data.data_list) {
-        data.data_list.forEach(item => {
-          formattedOutput += `<li><pre>${JSON.stringify(item, null, 4)}</pre></li>`;
-        });
-      } else {
-        formattedOutput += "<li>No data available</li>";
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>RAG Query Interface</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      :root {
+        --primary: #4f46e5;
+        --primary-hover: #4338ca;
+        --primary-light: #eef2ff;
+        --secondary: #64748b;
+        --success: #10b981;
+        --danger: #ef4444;
+        --warning: #f59e0b;
+        --info: #3b82f6;
+        --dark: #1e293b;
+        --light: #f8fafc;
+        --gray-100: #f1f5f9;
+        --gray-200: #e2e8f0;
+        --gray-300: #cbd5e1;
+        --gray-400: #94a3b8;
+        --gray-500: #64748b;
+        --gray-600: #475569;
+        --gray-700: #334155;
+        --gray-800: #1e293b;
+        --gray-900: #0f172a;
+        --border-radius: 0.5rem;
+        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
       }
-      formattedOutput += "</ul>";
-      return formattedOutput;
-    }
 
-    // Test function that sends all queries concurrently.
-    function testQueries() {
-      const queries = [
-        { id: "same1-1", text: "신입사원 인사 필수로 알아야 하는 것" },
-        { id: "same1-2", text: "디지털화 근황" },
-        { id: "same1-3", text: "IOT 컨테이너 사업에 대해서" },
-        { id: "same1-4", text: "주간회의 특징 및 주요 말씀" },
-        { id: "same1-5", text: "해운업계의 경쟁 구도" },
-        { id: "same2-1", text: "신입사원 인사 필수로 알아야 하는 것" },
-        { id: "same2-2", text: "디지털화 근황" },
-        { id: "same2-3", text: "IOT 컨테이너 사업에 대해서" },
-        { id: "same2-4", text: "주간회의 특징 및 주요 말씀" },
-        { id: "same2-5", text: "해운업계의 경쟁 구도" },
-        { id: "same3-1", text: "신입사원 인사 필수로 알아야 하는 것" },
-        { id: "same3-2", text: "디지털화 근황" },
-        { id: "same3-3", text: "IOT 컨테이너 사업에 대해서" },
-        { id: "same3-4", text: "주간회의 특징 및 주요 말씀" },
-        { id: "same3-5", text: "해운업계의 경쟁 구도" },
-        { id: "same3-1", text: "신입사원 인사 필수로 알아야 하는 것" },
-        { id: "same3-2", text: "디지털화 근황" },
-        { id: "same3-3", text: "IOT 컨테이너 사업에 대해서" },
-        { id: "same3-4", text: "주간회의 특징 및 주요 말씀" },
-        { id: "same3-5", text: "해운업계의 경쟁 구도" },
-      ];
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
 
-      // Clear previous test results
-      document.getElementById("testResults").innerHTML = "Testing in progress...";
+      body {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        line-height: 1.6;
+        color: var(--gray-800);
+        background-color: var(--gray-100);
+      }
 
-      // Array to hold results as they arrive.
-      const results = [];
-      let arrivalCounter = 0; // Counter for arrival order
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 2rem 1rem;
+      }
 
-      // Fire off all queries concurrently.
-      queries.forEach(query => {
+      .header {
+        text-align: center;
+        margin-bottom: 2rem;
+      }
+
+      .header h1 {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: var(--gray-900);
+        margin-bottom: 0.5rem;
+      }
+
+      .header p {
+        color: var(--gray-600);
+        font-size: 1.1rem;
+      }
+
+      .card {
+        background: white;
+        border-radius: var(--border-radius);
+        box-shadow: var(--shadow);
+        padding: 1.5rem;
+        margin-bottom: 2rem;
+        transition: all 0.3s ease;
+      }
+
+      .card:hover {
+        box-shadow: var(--shadow-md);
+      }
+
+      .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1.5rem;
+        border-bottom: 1px solid var(--gray-200);
+        padding-bottom: 1rem;
+      }
+
+      .card-header h2 {
+        font-size: 1.5rem;
+        font-weight: 600;
+        color: var(--gray-900);
+        margin: 0;
+      }
+
+      .card-header h5 {
+        font-size: 0.9rem;
+        font-weight: 500;
+        color: var(--gray-500);
+        margin: 0.25rem 0 0 0;
+      }
+
+      .input-group {
+        display: flex;
+        margin-bottom: 1rem;
+        gap: 0.5rem;
+      }
+
+      @media (max-width: 768px) {
+        .input-group {
+          flex-direction: column;
+        }
+      }
+
+      input[type='text'] {
+        flex: 1;
+        padding: 0.75rem 1rem;
+        font-size: 1rem;
+        border: 1px solid var(--gray-300);
+        border-radius: var(--border-radius);
+        outline: none;
+        transition: border-color 0.2s ease;
+      }
+
+      input[type='text']:focus {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.75rem 1.5rem;
+        font-size: 0.95rem;
+        font-weight: 500;
+        text-align: center;
+        text-decoration: none;
+        border-radius: var(--border-radius);
+        border: none;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+      }
+
+      .btn-primary {
+        background-color: var(--primary);
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background-color: var(--primary-hover);
+      }
+
+      .btn-secondary {
+        background-color: var(--gray-200);
+        color: var(--gray-700);
+      }
+
+      .btn-secondary:hover {
+        background-color: var(--gray-300);
+      }
+
+      .btn-success {
+        background-color: var(--success);
+        color: white;
+      }
+
+      .btn-success:hover {
+        background-color: #0ca678;
+      }
+
+      .btn-sm {
+        padding: 0.5rem 1rem;
+        font-size: 0.875rem;
+      }
+
+      .btn-lg {
+        padding: 0.875rem 1.75rem;
+        font-size: 1.1rem;
+      }
+
+      .output {
+        background: white;
+        border-radius: var(--border-radius);
+        border: 1px solid var(--gray-200);
+        padding: 1.5rem;
+        margin-top: 1.5rem;
+        overflow-wrap: break-word;
+        max-height: 500px;
+        overflow-y: auto;
+      }
+
+      .output pre {
+        white-space: pre-wrap;
+        background-color: var(--gray-100);
+        padding: 1rem;
+        border-radius: 0.375rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.9rem;
+        color: var(--gray-800);
+      }
+
+      .output code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.9rem;
+        background-color: var(--gray-100);
+        padding: 0.2rem 0.4rem;
+        border-radius: 0.25rem;
+        color: var(--gray-800);
+      }
+
+      .output strong {
+        font-weight: 600;
+      }
+
+      .output em {
+        font-style: italic;
+      }
+
+      .output ul, .output ol {
+        padding-left: 1.5rem;
+        margin: 1rem 0;
+      }
+
+      .output li {
+        margin-bottom: 0.5rem;
+      }
+
+      .output p {
+        margin-bottom: 1rem;
+      }
+
+      .output h1, .output h2, .output h3, .output h4, .output h5, .output h6 {
+        margin-top: 1.5rem;
+        margin-bottom: 1rem;
+        font-weight: 600;
+        line-height: 1.25;
+      }
+
+      .output h1 {
+        font-size: 1.875rem;
+      }
+
+      .output h2 {
+        font-size: 1.5rem;
+      }
+
+      .output h3 {
+        font-size: 1.25rem;
+      }
+
+      .output h4 {
+        font-size: 1.125rem;
+      }
+
+      .output blockquote {
+        border-left: 4px solid var(--gray-300);
+        padding-left: 1rem;
+        margin-left: 0;
+        color: var(--gray-600);
+      }
+
+      .test-set-selector {
+        margin-bottom: 2rem;
+        text-align: center;
+      }
+
+      .test-set-selector label {
+        font-weight: 500;
+        margin-right: 0.75rem;
+        color: var(--gray-700);
+      }
+
+      .test-set-selector select {
+        padding: 0.5rem 1rem;
+        font-size: 0.95rem;
+        border: 1px solid var(--gray-300);
+        border-radius: var(--border-radius);
+        background-color: white;
+        outline: none;
+        transition: border-color 0.2s ease;
+      }
+
+      .test-set-selector select:focus {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+      }
+
+      .progress-indicator {
+        font-weight: 500;
+        margin-bottom: 1rem;
+        text-align: center;
+        padding: 0.75rem;
+        background-color: var(--primary-light);
+        border-radius: var(--border-radius);
+        color: var(--primary);
+      }
+
+      .test-summary table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 1.5rem;
+        font-size: 0.95rem;
+      }
+
+      .test-summary th,
+      .test-summary td {
+        border: 1px solid var(--gray-200);
+        padding: 0.75rem;
+        text-align: left;
+      }
+
+      .test-summary th {
+        background-color: var(--gray-100);
+        font-weight: 600;
+      }
+
+      .test-summary tr:nth-child(even) {
+        background-color: var(--gray-50);
+      }
+
+      .test-details .test-item {
+        margin-bottom: 1.5rem;
+        padding: 1.25rem;
+        background-color: white;
+        border: 1px solid var(--gray-200);
+        border-radius: var(--border-radius);
+      }
+
+      .test-details .test-item h4 {
+        margin-top: 0;
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--gray-800);
+        margin-bottom: 0.75rem;
+      }
+
+      .partial-chunk {
+        margin: 0.5rem 0;
+        padding: 0.5rem;
+        background-color: var(--gray-100);
+        border-radius: 0.375rem;
+        font-size: 0.95rem;
+      }
+
+      .hidden-retrieval {
+        display: none;
+        margin-top: 0.75rem;
+        background-color: var(--primary-light);
+        padding: 1rem;
+        border-radius: 0.375rem;
+        font-size: 0.95rem;
+      }
+
+      .stream-info-box {
+        margin-top: 1rem;
+        padding: 1rem;
+        border: 1px solid var(--gray-200);
+        border-radius: var(--border-radius);
+        background-color: white;
+        line-height: 1.5;
+        font-size: 0.95rem;
+      }
+
+      #referenceData {
+        display: none;
+        margin-top: 1rem;
+        padding: 1rem;
+        border: 1px solid var(--gray-200);
+        border-radius: var(--border-radius);
+        background-color: white;
+      }
+
+      .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        border-radius: 9999px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .badge-success {
+        background-color: #d1fae5;
+        color: #065f46;
+      }
+
+      .badge-danger {
+        background-color: #fee2e2;
+        color: #b91c1c;
+      }
+
+      .tabs {
+        display: flex;
+        border-bottom: 1px solid var(--gray-200);
+        margin-bottom: 1.5rem;
+      }
+
+      .tab {
+        padding: 0.75rem 1.25rem;
+        cursor: pointer;
+        font-weight: 500;
+        color: var(--gray-600);
+        border-bottom: 2px solid transparent;
+        transition: all 0.2s ease;
+      }
+
+      .tab.active {
+        color: var(--primary);
+        border-bottom-color: var(--primary);
+      }
+
+      .tab:hover:not(.active) {
+        color: var(--gray-800);
+        border-bottom-color: var(--gray-300);
+      }
+
+      .tab-content {
+        display: none;
+      }
+
+      .tab-content.active {
+        display: block;
+      }
+
+      /* Markdown rendering styles */
+      .markdown-content p {
+        margin-bottom: 1rem;
+      }
+
+      .markdown-content h1, 
+      .markdown-content h2, 
+      .markdown-content h3, 
+      .markdown-content h4, 
+      .markdown-content h5, 
+      .markdown-content h6 {
+        margin-top: 1.5rem;
+        margin-bottom: 1rem;
+        font-weight: 600;
+      }
+
+      .markdown-content ul, 
+      .markdown-content ol {
+        padding-left: 1.5rem;
+        margin: 1rem 0;
+      }
+
+      .markdown-content li {
+        margin-bottom: 0.5rem;
+      }
+
+      .markdown-content code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        background-color: var(--gray-100);
+        padding: 0.2rem 0.4rem;
+        border-radius: 0.25rem;
+        font-size: 0.9em;
+      }
+
+      .markdown-content pre {
+        background-color: var(--gray-100);
+        padding: 1rem;
+        border-radius: 0.375rem;
+        overflow-x: auto;
+        margin: 1rem 0;
+      }
+
+      .markdown-content pre code {
+        background-color: transparent;
+        padding: 0;
+        border-radius: 0;
+      }
+
+      .markdown-content blockquote {
+        border-left: 4px solid var(--gray-300);
+        padding-left: 1rem;
+        margin-left: 0;
+        color: var(--gray-600);
+      }
+
+      .markdown-content img {
+        max-width: 100%;
+        height: auto;
+        border-radius: 0.375rem;
+      }
+
+      .markdown-content table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+      }
+
+      .markdown-content table th,
+      .markdown-content table td {
+        border: 1px solid var(--gray-300);
+        padding: 0.5rem;
+      }
+
+      .markdown-content table th {
+        background-color: var(--gray-100);
+      }
+
+      /* Dark mode toggle */
+      .dark-mode-toggle {
+        position: fixed;
+        bottom: 2rem;
+        right: 2rem;
+        background-color: var(--gray-800);
+        color: white;
+        width: 3rem;
+        height: 3rem;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-shadow: var(--shadow-md);
+        z-index: 100;
+        transition: all 0.3s ease;
+      }
+
+      .dark-mode-toggle:hover {
+        transform: scale(1.1);
+      }
+
+      /* Dark mode styles */
+      .dark {
+        background-color: var(--gray-900);
+        color: var(--gray-200);
+      }
+
+      .dark .card {
+        background-color: var(--gray-800);
+        box-shadow: var(--shadow);
+      }
+
+      .dark .card-header {
+        border-bottom-color: var(--gray-700);
+      }
+
+      .dark .card-header h2 {
+        color: white;
+      }
+
+      .dark .card-header h5 {
+        color: var(--gray-400);
+      }
+
+      .dark input[type='text'] {
+        background-color: var(--gray-700);
+        border-color: var(--gray-600);
+        color: white;
+      }
+
+      .dark input[type='text']:focus {
+        border-color: var(--primary);
+      }
+
+      .dark .btn-secondary {
+        background-color: var(--gray-700);
+        color: var(--gray-200);
+      }
+
+      .dark .btn-secondary:hover {
+        background-color: var(--gray-600);
+      }
+
+      .dark .output {
+        background-color: var(--gray-800);
+        border-color: var(--gray-700);
+      }
+
+      .dark .output pre {
+        background-color: var(--gray-900);
+        color: var(--gray-300);
+      }
+
+      .dark .output code {
+        background-color: var(--gray-900);
+        color: var(--gray-300);
+      }
+
+      .dark .test-summary th {
+        background-color: var(--gray-700);
+        color: white;
+      }
+
+      .dark .test-summary td {
+        border-color: var(--gray-700);
+      }
+
+      .dark .test-summary tr:nth-child(even) {
+        background-color: var(--gray-800);
+      }
+
+      .dark .test-details .test-item {
+        background-color: var(--gray-800);
+        border-color: var(--gray-700);
+      }
+
+      .dark .partial-chunk {
+        background-color: var(--gray-700);
+      }
+
+      .dark .stream-info-box {
+        background-color: var(--gray-800);
+        border-color: var(--gray-700);
+      }
+
+      .dark #referenceData {
+        background-color: var(--gray-800);
+        border-color: var(--gray-700);
+      }
+
+      .dark .tabs {
+        border-bottom-color: var(--gray-700);
+      }
+
+      .dark .tab {
+        color: var(--gray-400);
+      }
+
+      .dark .tab.active {
+        color: var(--primary);
+      }
+
+      .dark .tab:hover:not(.active) {
+        color: white;
+        border-bottom-color: var(--gray-600);
+      }
+
+      .dark .markdown-content code {
+        background-color: var(--gray-700);
+      }
+
+      .dark .markdown-content pre {
+        background-color: var(--gray-700);
+      }
+
+      .dark .markdown-content blockquote {
+        border-left-color: var(--gray-600);
+        color: var(--gray-400);
+      }
+
+      .dark .markdown-content table th {
+        background-color: var(--gray-700);
+      }
+
+      .dark .markdown-content table th,
+      .dark .markdown-content table td {
+        border-color: var(--gray-600);
+      }
+
+      .dark .dark-mode-toggle {
+        background-color: var(--gray-200);
+        color: var(--gray-800);
+      }
+
+      .dark .test-set-selector select {
+        background-color: var(--gray-700);
+        border-color: var(--gray-600);
+        color: white;
+      }
+
+      .dark .progress-indicator {
+        background-color: rgba(79, 70, 229, 0.2);
+      }
+
+      /* Responsive styles */
+      @media (max-width: 768px) {
+        .container {
+          padding: 1rem;
+        }
+
+        .header h1 {
+          font-size: 2rem;
+        }
+
+        .card {
+          padding: 1rem;
+        }
+
+        .card-header h2 {
+          font-size: 1.25rem;
+        }
+
+        .btn {
+          padding: 0.625rem 1.25rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>RAG Query Interface</h1>
+        <p>검색 증강 생성(RAG) 쿼리 인터페이스</p>
+      </div>
+      
+      <!-- Test Set Selector -->
+      <div class="test-set-selector">
+        <label for="testSetSelect" title="옵션별 설명:
+• 20 Multi SET1: SET1의 20개 질문
+• 20 Multi SET2: SET2의 20개 질문
+• Different Three Question Sets: 서로 다른 3개 질문 세트
+• Same Question 100 Times: 동일한 질문 ('디지털 전략') 100회 반복
+• 5 Questions Circulate 20 Times: 5개의 다른 질문을 20회씩 반복 (총 100개)
+• 100 Mixed: 100개의 다양한 혼합 질문 (Mix Test Set)">테스트 세트:</label>
+        <select id="testSetSelect">
+          <option value="set1" title="20개의 다른 질문 SET1" selected>20개의 다른 질문 세트 1번</option>
+          <option value="set2" title="20개의 다른 질문 SET2">20개의 다른 질문 세트 2번</option>
+          <option value="set3" title="서로 다른 3개 질문 세트">서로 다른 3개 질문 세트</option>
+          <option value="same100" title="동일한 질문 '디지털 전략'을 100회 반복">같은 질문('디지털 전략') 100개</option>
+          <option value="circulate5x20" title="5개의 다른 질문을 20회씩 반복 (총 100개)">5개의 다른 질문 세트 20번 반복</option>
+          <option value="mixed100" title="100개의 다양한 혼합 질문 (Mix Test Set)">100개의 다른 질문</option>
+        </select>
+      </div>
+      
+      <!-- Tabs Navigation -->
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('tab1')">단일 쿼리 (Single Query)</div>
+        <div class="tab" onclick="switchTab('tab2')">동시 쿼리 (Concurrent Queries)</div>
+        <div class="tab" onclick="switchTab('tab3')">스트리밍 (Streaming)</div>
+        <div class="tab" onclick="switchTab('tab4')">동시 스트리밍 (Simultaneous Streaming)</div>
+        <div class="tab" onclick="switchTab('tab5')">연속 테스트 (Continuous Test)</div>
+      </div>
+      
+      <!-- (1) Non-Streaming Query -->
+      <div id="tab1" class="tab-content active">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>단일 쿼리</h2>
+              <h5>Single Query (Non-Streaming)</h5>
+            </div>
+          </div>
+          <div class="input-group">
+            <input type="text" id="userInput" placeholder="질문을 입력하세요... (Type your query here...)" />
+            <button class="btn btn-primary" onclick="sendQuery()">전송 (Send)</button>
+          </div>
+          <div class="output markdown-content" id="output"></div>
+        </div>
+      </div>
+
+      <!-- (2) Concurrency Test (Non-Streaming POST) -->
+      <div id="tab2" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>동시 쿼리 테스트</h2>
+              <h5>Concurrent Queries Test</h5>
+            </div>
+          </div>
+          <p>선택한 테스트 세트의 모든 쿼리를 동시에 전송하고 결과를 표시합니다.</p>
+          <div id="progressIndicator" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
+          <button class="btn btn-primary btn-lg" onclick="testQueries()">테스트 시작 (Start Test)</button>
+          <div class="output" id="testResults"></div>
+        </div>
+      </div>
+
+      <!-- (3) Single Streaming Test (POST-based) -->
+      <div id="tab3" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>스트리밍 테스트</h2>
+              <h5>Streaming Test (Single via POST)</h5>
+            </div>
+          </div>
+          <p>
+            이 테스트는 POST 기반 fetch를 사용하여 응답을 스트리밍합니다.
+            서버는 SSE 스타일의 청크를 전송하며, 참조 데이터와 답변 텍스트를 분리하여 처리합니다.
+          </p>
+          <div class="input-group">
+            <input type="text" id="streamInput" placeholder="스트리밍 쿼리를 입력하세요... (Type your streaming query here...)" />
+            <button class="btn btn-primary" onclick="startStreamPOST()">스트리밍 시작 (Start Streaming)</button>
+          </div>
+          <pre id="streamOutput" class="output markdown-content"></pre>
+          <div class="stream-info-box" id="streamTiming"></div>
+          <button class="btn btn-secondary" onclick="toggleReferences()">참조 데이터 보기 (Show References)</button>
+          <div id="referenceData" class="markdown-content"></div>
+        </div>
+      </div>
+
+      <!-- (4) Simultaneous Streaming Test (POST-based) -->
+      <div id="tab4" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>동시 스트리밍 테스트</h2>
+              <h5>Simultaneous Streaming Test</h5>
+            </div>
+          </div>
+          <p>
+            여러 스트리밍 쿼리를 POST 방식으로 동시에 실행합니다.
+            각 쿼리의 응답이 실시간으로 표시됩니다.
+          </p>
+          <button class="btn btn-primary btn-lg" onclick="testSimulStreamPOST()">동시 스트리밍 시작 (Start Simultaneous Streaming)</button>
+          <div class="output" id="simul-partials"></div>
+          <div class="output" id="simul-results"></div>
+        </div>
+      </div>
+
+      <!-- (5) Continuous Sync Test -->
+      <div id="tab5" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>연속 쿼리 테스트</h2>
+              <h5>Continuous Query Test</h5>
+            </div>
+          </div>
+          <p>
+            선택한 테스트 셋에 따라 연속적으로 쿼리를 실행하고 평균 응답 시간을 계산합니다.
+          </p>
+          <div id="continuousProgress" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
+          <div class="input-group">
+            <button class="btn btn-primary" onclick="continuousTest('nonstream')">일반 쿼리 연속 테스트 (Non-Streaming Test)</button>
+            <button class="btn btn-primary" onclick="continuousTest('stream')">스트리밍 연속 테스트 (Streaming Test)</button>
+          </div>
+          <div class="output markdown-content" id="continuousTestResults"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dark Mode Toggle -->
+    <div class="dark-mode-toggle" onclick="toggleDarkMode()">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-moon">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+      </svg>
+    </div>
+
+    <script>
+      /************************************************************
+       *  Common Utility Functions
+       ************************************************************/
+      // Helper: Format time => "HH:MM:SS.ms"
+      function formatTime(d) {
+        if (!d) return '';
+        const ms = d.getMilliseconds().toString().padStart(3, '0');
+        return d.toLocaleTimeString() + '.' + ms;
+      }
+
+      // Toggle dark mode
+      function toggleDarkMode() {
+        document.body.classList.toggle('dark');
+        localStorage.setItem('darkMode', document.body.classList.contains('dark'));
+      }
+
+      // Check for saved dark mode preference
+      if (localStorage.getItem('darkMode') === 'true') {
+        document.body.classList.add('dark');
+      }
+
+      // Switch between tabs
+      function switchTab(tabId) {
+        // Hide all tab contents
+        document.querySelectorAll('.tab-content').forEach(content => {
+          content.classList.remove('active');
+        });
+        
+        // Deactivate all tabs
+        document.querySelectorAll('.tab').forEach(tab => {
+          tab.classList.remove('active');
+        });
+        
+        // Activate the selected tab and content
+        document.getElementById(tabId).classList.add('active');
+        document.querySelector(`.tab[onclick="switchTab('${tabId}')"]`).classList.add('active');
+      }
+
+      // Toggle retrieval or reference data blocks
+      function toggleHiddenDiv(divId) {
+        const div = document.getElementById(divId);
+        if (!div) return;
+        div.style.display = (div.style.display === "none" || div.style.display === "") ? "block" : "none";
+      }
+
+      // Toggle the reference data block
+      function toggleReferences() {
+        const refDiv = document.getElementById("referenceData");
+        if (refDiv.style.display === "none" || refDiv.style.display === "") {
+          refDiv.style.display = "block";
+        } else {
+          refDiv.style.display = "none";
+        }
+      }
+
+      // Parse and render markdown
+      function renderMarkdown(text) {
+        if (!text) return '';
+        
+        // Handle bold text
+        text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        
+        // Handle italic text
+        text = text.replace(/\_(.*?)\_/g, '<em>$1</em>');
+        
+        // Handle inline code
+        text = text.replace(/\`(.*?)\`/g, '<code>$1</code>');
+        
+        // Handle code blocks
+        text = text.replace(/\`\`\`([\s\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>');
+        
+        // Handle line breaks
+        text = text.replace(/\n/g, '<br>');
+        
+        // Handle lists
+        text = text.replace(/^\s*\-\s+(.*?)$/gm, '<li>$1</li>');
+        text = text.replace(/(<li>.*?<\/li>)/gs, '<ul>$1</ul>');
+        
+        // Handle headers
+        text = text.replace(/^#\s+(.*?)$/gm, '<h1>$1</h1>');
+        text = text.replace(/^##\s+(.*?)$/gm, '<h2>$1</h2>');
+        text = text.replace(/^###\s+(.*?)$/gm, '<h3>$1</h3>');
+        
+        return text;
+      }
+
+      // Build JSON output for non-streaming response with markdown support
+      function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
+        let formattedOutput = `
+          <strong>전송 시간 (Send Time):</strong> ${sendTime} <br>
+          <strong>수신 시간 (Receive Time):</strong> ${receiveTime} <br>
+          <strong>소요 시간 (Elapsed Time):</strong> ${elapsed} ms <br>
+          <hr>
+        `;
+        if (data.status_code !== undefined) {
+          formattedOutput += `
+            <strong>상태 코드 (Status Code):</strong> ${data.status_code} <br>
+            <strong>결과 (Result):</strong> ${data.result} <br>
+            <strong>상세 (Detail):</strong> ${data.detail} <br>
+            <strong>이벤트 시간 (Event Time):</strong> ${data.evt_time} <br>
+            <strong>데이터 목록 (Data List):</strong><br>
+            <ul>
+          `;
+          if (data.data_list) {
+            let answerHTML = "";
+            let retrievalHTML = "";
+            data.data_list.forEach((item, idx) => {
+              if (item.rsp_type === "A") {
+                // Render markdown in answers
+                if (item.answer) {
+                  answerHTML += `<div class="markdown-content">${renderMarkdown(item.answer)}</div>`;
+                } else {
+                  answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
+                }
+              } else if (item.rsp_type === "R") {
+                const hiddenId = `retrieval_${uniquePrefix}_${idx}`;
+                retrievalHTML += `
+                  <div>
+                    <button class="btn btn-secondary btn-sm" onclick="toggleHiddenDiv('${hiddenId}')">참조 데이터 보기 (Show Retrieval)</button>
+                    <div id="${hiddenId}" class="hidden-retrieval" style="display:none;">
+                      <pre>${JSON.stringify(item, null, 4)}</pre>
+                    </div>
+                  </div>
+                `;
+              } else {
+                answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
+              }
+            });
+            if (answerHTML)
+              formattedOutput += `<li><strong>답변 (Answer):</strong> ${answerHTML}</li>`;
+            if (retrievalHTML)
+              formattedOutput += `<li><strong>참조 데이터 (Retrieval):</strong> ${retrievalHTML}</li>`;
+          } else {
+            formattedOutput += "<li>데이터가 없습니다 (No data available)</li>";
+          }
+          formattedOutput += "</ul>";
+        } else {
+          formattedOutput += "<pre>" + JSON.stringify(data, null, 2) + "</pre>";
+        }
+        return formattedOutput;
+      }
+
+      // Used by multiple tests to show concurrency progress
+      function updateProgressIndicator(elementId, current, total, successCount = 0, failCount = 0) {
+        const elem = document.getElementById(elementId);
+        if (elem) {
+          const successRate = current > 0 ? ((successCount / current) * 100).toFixed(1) : 0;
+          elem.innerHTML = `완료: ${current} / ${total} 쿼리 | 성공: ${successCount}, 실패: ${failCount}, 성공률: ${successRate}%`;
+        }
+      }
+
+      /************************************************************
+       * (1) Non-Streaming Query
+       ************************************************************/
+      function sendQuery() {
+        const userInput = document.getElementById('userInput').value;
+        if (!userInput.trim()) {
+          alert('질문을 입력해주세요. (Please enter a query.)');
+          return;
+        }
+        
+        document.getElementById('output').innerHTML = '<div class="progress-indicator">요청 처리 중... (Processing request...)</div>';
+        
         const sendTime = new Date();
-        const sendTimeStr = sendTime.toLocaleTimeString() + "." + sendTime.getMilliseconds();
+        const sendTimeStr = formatTime(sendTime);
         const startTimestamp = Date.now();
 
-        fetch("/query", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ qry_contents: query.text })
+        fetch('/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ qry_contents: userInput })
         })
-        .then(response => {
-          const receiveTime = new Date();
-          const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
-          const elapsed = Date.now() - startTimestamp;
-          return response.json().then(data => {
-            arrivalCounter++; // Increment arrival counter
-            results.push({
-              id: query.id,
-              text: query.text,
-              sendTime: sendTimeStr,
-              receiveTime: receiveTimeStr,
-              elapsed: elapsed,
-              status: response.status,
-              data: data,
-              arrival: arrivalCounter
+          .then((response) => {
+            const receiveTime = new Date();
+            const receiveTimeStr = formatTime(receiveTime);
+            const elapsed = Date.now() - startTimestamp;
+            if (!response.ok) {
+              return response.text().then((errorData) => {
+                throw new Error(`${response.status} ${response.statusText}: ${errorData}`);
+              });
+            }
+            return response.json().then((data) => {
+              document.getElementById('output').innerHTML =
+                formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
             });
-            updateTestResults(results);
+          })
+          .catch((error) => {
+            const receiveTime = new Date();
+            const receiveTimeStr = formatTime(receiveTime);
+            const elapsed = Date.now() - startTimestamp;
+            console.error('Error:', error);
+            document.getElementById('output').innerHTML =
+              formatJsonOutput({ error: error.message }, sendTimeStr, receiveTimeStr, elapsed);
           });
-        })
-        .catch(error => {
-          const receiveTime = new Date();
-          const receiveTimeStr = receiveTime.toLocaleTimeString() + "." + receiveTime.getMilliseconds();
-          const elapsed = Date.now() - startTimestamp;
-          arrivalCounter++;
-          results.push({
-            id: query.id,
-            text: query.text,
-            sendTime: sendTimeStr,
-            receiveTime: receiveTimeStr,
-            elapsed: elapsed,
-            status: "Error",
-            data: error,
-            arrival: arrivalCounter
-          });
-          updateTestResults(results);
+      }
+
+      /************************************************************
+       * (2) Concurrency Test (Non-Streaming POST) - 50 queries
+       ************************************************************/
+      function testQueries() {
+        const queries = buildTestQueries();
+        document.getElementById('testResults').innerHTML = '<div class="progress-indicator">테스트 진행 중... (Testing in progress...)</div>';
+        const totalQueries = queries.length;
+        let arrivalCounter = 0;
+        let successCount = 0;
+        let failCount = 0;
+
+        updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+
+        const results = [];
+
+        queries.forEach((query) => {
+          const sendTime = new Date();
+          const sendTimeStr = formatTime(sendTime);
+          const startTimestamp = Date.now();
+
+          fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qry_contents: query.text })
+          })
+            .then((response) => {
+              const receiveTime = new Date();
+              const receiveTimeStr = formatTime(receiveTime);
+              const elapsed = Date.now() - startTimestamp;
+
+              // Check success or fail
+              if (!response.ok) {
+                failCount++;
+                return response.text().then((errorData) => {
+                  arrivalCounter++;
+                  const errMsg = `${response.status} ${response.statusText}: ${errorData}`;
+                  results.push({
+                    id: query.id,
+                    text: query.text,
+                    sendTime: sendTimeStr,
+                    receiveTime: receiveTimeStr,
+                    elapsed: elapsed,
+                    success: false,
+                    error: errMsg,
+                    arrival: arrivalCounter
+                  });
+                  updateTestResults(results);
+                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+                });
+              } else {
+                successCount++;
+                return response.json().then((data) => {
+                  arrivalCounter++;
+                  results.push({
+                    id: query.id,
+                    text: query.text,
+                    sendTime: sendTimeStr,
+                    receiveTime: receiveTimeStr,
+                    elapsed: elapsed,
+                    success: true,
+                    data: data,
+                    arrival: arrivalCounter
+                  });
+                  updateTestResults(results);
+                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+                });
+              }
+            })
+            .catch((error) => {
+              // Real fetch error (network or something)
+              const receiveTime = new Date();
+              const receiveTimeStr = formatTime(receiveTime);
+              const elapsed = Date.now() - startTimestamp;
+              failCount++;
+              arrivalCounter++;
+              results.push({
+                id: query.id,
+                text: query.text,
+                sendTime: sendTimeStr,
+                receiveTime: receiveTimeStr,
+                elapsed: elapsed,
+                success: false,
+                error: error.message,
+                arrival: arrivalCounter
+              });
+              updateTestResults(results);
+              updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+            });
         });
-      });
-    }
+      }
 
-    // Update the test results display.
-    function updateTestResults(results) {
-      document.getElementById("testResults").innerHTML = formatTestResults(results);
-    }
+      function updateTestResults(results) {
+        document.getElementById('testResults').innerHTML = formatTestResults(results);
+      }
 
-    // Formatter for test results, showing a summary table and individual details.
-    function formatTestResults(results) {
-      let summaryHTML = `
-        <div class="test-summary">
-          <h3>Test Summary</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Arrival Order</th>
-                <th>Test ID</th>
-                <th>Query</th>
-                <th>Send Time</th>
-                <th>Receive Time</th>
-                <th>Elapsed (ms)</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-      `;
-      results.forEach(result => {
-        summaryHTML += `
-          <tr>
-            <td>${result.arrival}</td>
-            <td>${result.id}</td>
-            <td>${result.text}</td>
-            <td>${result.sendTime}</td>
-            <td>${result.receiveTime}</td>
-            <td>${result.elapsed}</td>
-            <td>${result.status}</td>
-          </tr>
+      function formatTestResults(results) {
+        let summaryHTML = `
+          <div class="test-summary">
+            <h3>테스트 요약 (Test Summary)</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>도착 순서<br>(Arrival Order)</th>
+                  <th>테스트 ID<br>(Test ID)</th>
+                  <th>쿼리<br>(Query)</th>
+                  <th>전송 시간<br>(Send Time)</th>
+                  <th>수신 시간<br>(Receive Time)</th>
+                  <th>소요 시간<br>(Elapsed ms)</th>
+                  <th>상태<br>(Status)</th>
+                </tr>
+              </thead>
+              <tbody>
         `;
-      });
-      summaryHTML += `
-            </tbody>
-          </table>
-        </div>
-      `;
-
-      let detailsHTML = '<div class="test-details"><h3>Individual Test Details</h3>';
-      results.forEach(result => {
-        detailsHTML += `
-          <div class="test-item">
-            <h4>${result.id} - ${result.text}</h4>
-            <p><strong>Arrival Order:</strong> ${result.arrival}</p>
-            <p><strong>Send Time:</strong> ${result.sendTime}</p>
-            <p><strong>Receive Time:</strong> ${result.receiveTime}</p>
-            <p><strong>Elapsed Time:</strong> ${result.elapsed} ms</p>
-            <p><strong>Status:</strong> ${result.status}</p>
-            <p><strong>Response Data:</strong></p>
-            <pre>${JSON.stringify(result.data, null, 4)}</pre>
+        results.forEach((result) => {
+          const statusText = result.success ? '성공 (Success)' : '실패 (Fail)';
+          const statusClass = result.success ? 'badge-success' : 'badge-danger';
+          summaryHTML += `
+            <tr>
+              <td>${result.arrival}</td>
+              <td>${result.id}</td>
+              <td>${result.text}</td>
+              <td>${result.sendTime}</td>
+              <td>${result.receiveTime}</td>
+              <td>${result.elapsed}</td>
+              <td><span class="badge ${statusClass}">${statusText}</span></td>
+            </tr>
+          `;
+        });
+        summaryHTML += `
+              </tbody>
+            </table>
           </div>
         `;
-      });
-      detailsHTML += "</div>";
 
-      return summaryHTML + detailsHTML;
-    }
-  </script>
-</body>
+        let detailsHTML = '<div class="test-details"><h3>개별 테스트 상세 (Individual Test Details)</h3>';
+        results.forEach((result) => {
+          const safeResultOutput = result.success
+            ? formatJsonOutput(
+                result.data || {},
+                result.sendTime,
+                result.receiveTime,
+                result.elapsed,
+                result.id
+              )
+            : `<pre style="color:var(--danger);">오류 (Error): ${result.error || '알 수 없는 오류 (Unknown error)'}</pre>`;
+
+          detailsHTML += `
+            <div class="test-item">
+              <h4>${result.id} - ${result.text}</h4>
+              <p><strong>도착 순서 (Arrival Order):</strong> ${result.arrival}</p>
+              <p><strong>전송 시간 (Send Time):</strong> ${result.sendTime}</p>
+              <p><strong>수신 시간 (Receive Time):</strong> ${result.receiveTime}</p>
+              <p><strong>소요 시간 (Elapsed Time):</strong> ${result.elapsed} ms</p>
+              <p><strong>상태 (Status):</strong> ${result.success ? '성공 (Success)' : '실패 (Fail)'}</p>
+              <p><strong>응답 데이터 (Response Data):</strong></p>
+              ${safeResultOutput}
+            </div>
+          `;
+        });
+        detailsHTML += "</div>";
+        return summaryHTML + detailsHTML;
+      }
+
+      /************************************************************
+       * (3) Single Streaming Test (POST-based streaming)
+       ************************************************************/
+      let postStreamFirstChunkTime = null;
+      let postStreamEndTime = null;
+      let postStreamStartTime = null;
+      let streamingInProgress = false;
+      let answerAccumulated = "";
+      let sseBuffer = "";
+      let querySentTime = null;
+
+
+      async function startStreamPOST() {
+        if (streamingInProgress) {
+          alert("스트리밍이 이미 진행 중입니다. (Streaming is already in progress.)");
+          return;
+        }
+        
+        const userQuery = document.getElementById('streamInput').value.trim();
+        if (!userQuery) {
+          alert('스트리밍 쿼리를 입력해주세요. (Please type a streaming query.)');
+          return;
+        }
+        
+        streamingInProgress = true;
+        // 변수 초기화
+        answerAccumulated = "";
+        sseBuffer = "";
+        postStreamFirstChunkTime = null;
+        postStreamEndTime = null;
+        document.getElementById('streamOutput').textContent = "";
+        document.getElementById('streamTiming').innerHTML = "";
+        document.getElementById('referenceData').innerHTML = "";
+        document.getElementById('referenceData').style.display = "none";
+        
+        // 로딩 표시
+        document.getElementById('streamOutput').textContent = "스트리밍 응답을 기다리는 중... (Waiting for streaming response...)";
+      
+        // 쿼리 전송 시각을 저장 (Date 객체 사용)
+        querySentTime = new Date();
+        // 성능 측정을 위해 시작 타임스탬프는 performance.now()로 저장
+        postStreamStartTime = performance.now();
+      
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: userQuery })
+          });
+          if (!response.ok) {
+            const errTxt = await response.text();
+            throw new Error('응답 오류 (Response not OK): ' + response.status + " " + errTxt);
+          }
+          
+          // 첫 응답이 오면 로딩 메시지 지우기
+          document.getElementById('streamOutput').textContent = "";
+          
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+      
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              postStreamEndTime = performance.now();
+              updatePostStreamTiming();
+              break;
+            }
+            const chunk = decoder.decode(value, { stream: true });
+            processPostSseChunk(chunk);
+            document.getElementById('streamOutput').innerHTML = renderMarkdown(answerAccumulated);
+          }
+        } catch (err) {
+          console.error('POST-based streaming error:', err);
+          document.getElementById('streamOutput').textContent = "오류 발생 (Error): " + err.message;
+          postStreamEndTime = performance.now();
+          updatePostStreamTiming();
+        } finally {
+          streamingInProgress = false;
+        }
+      }
+
+      function processPostSseChunk(chunk) {
+        sseBuffer += chunk;
+        let lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop(); // leftover
+        for (let line of lines) {
+          line = line.trim();
+          if (!line) continue;
+          if (line.startsWith("data:")) {
+            const sseData = line.slice(5).trim();
+            if (!postStreamFirstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
+              postStreamFirstChunkTime = performance.now();
+              updatePostStreamTiming();
+            }
+            if (sseData === "[[STREAM_DONE]]") {
+              postStreamEndTime = performance.now();
+              updatePostStreamTiming();
+              return;
+            }
+            try {
+              const jsonData = JSON.parse(sseData);
+              if (jsonData.type === "reference") {
+                let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
+                if (Array.isArray(jsonData.data_list)) {
+                  jsonData.data_list.forEach((ref, idx) => {
+                    refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                  });
+                } else {
+                  refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
+                }
+                refHTML += `</ul>`;
+                document.getElementById("referenceData").innerHTML = refHTML;
+              } else if (jsonData.type === "answer") {
+                answerAccumulated += jsonData.answer;
+              }
+            } catch (e) {
+              // Not valid JSON, treat as plain text
+              answerAccumulated += sseData;
+            }
+          }
+        }
+        updatePostStreamTiming();
+      }
+
+      function updatePostStreamTiming() {
+        let msg = "";
+        if (querySentTime !== null) {
+          // 쿼리를 보낸 시간은 프론트에서 보낸 실제 시각을 표시
+          msg += `쿼리 전송 시간 (Query Sent Time): ${querySentTime.toLocaleTimeString()}<br>`;
+        }
+        if (postStreamFirstChunkTime !== null) {
+          // 스트리밍 시작 시간은 첫 청크 도착 후 경과 시간만 표시
+          msg += `첫 응답 도착 시간 (First Chunk Time): ${(postStreamFirstChunkTime - postStreamStartTime).toFixed(1)} ms<br>`;
+        } else {
+          msg += "첫 응답 도착 시간 (First Chunk Time): 아직 도착하지 않음 (not arrived yet)<br>";
+        }
+        if (postStreamEndTime !== null) {
+          // 스트리밍 종료 시간: 전송 시작 후 전체 경과 시간
+          msg += `스트리밍 종료 시간 (Streaming End Time): ${(postStreamEndTime - postStreamStartTime).toFixed(1)} ms<br>`;
+          // 스트리밍 생성 시간: 첫 청크 도착 후부터 종료까지의 시간
+          if (postStreamFirstChunkTime !== null) {
+            msg += `스트리밍 생성 시간 (Streaming Generation Time): ${(postStreamEndTime - postStreamFirstChunkTime).toFixed(1)} ms<br>`;
+          }
+        } else {
+          msg += "스트리밍 종료 시간 (Streaming End Time): 아직 도착하지 않음 (not arrived yet)<br>";
+        }
+        document.getElementById('streamTiming').innerHTML = msg;
+      }
+
+      /************************************************************
+       * (4) Simultaneous Streaming Test (POST-based streaming)
+       ************************************************************/
+      async function startSimulStreamPOST(queryObj, containerId) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = `
+          <h4>${queryObj.id} - ${queryObj.text}</h4>
+          <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem; margin-bottom:0.5rem;"></div>
+          <div class="stream-info-box"></div>
+          <button class="btn btn-secondary btn-sm" onclick="toggleReferencesInContainer('${containerId}')">참조 데이터 보기 (Toggle References)</button>
+          <div class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
+        `;
+
+        let answerAccumulated = "";
+        let sseBuffer = "";
+        let chunkCount = 0;
+        const streamStartTime = performance.now();
+        let firstChunkTime = null;
+        let endTime = null;
+        let success = true;
+        let errorMessage = "";
+
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: queryObj.text })
+          });
+          if (!response.ok) {
+            success = false;
+            errorMessage = `응답 오류 (Response not OK): ${response.status}`;
+            container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">${errorMessage}</span>`;
+            return {
+              id: queryObj.id,
+              query: queryObj.text,
+              sendTime: streamStartTime,
+              firstChunkTime,
+              endTime,
+              duration: 0,
+              success,
+              error: errorMessage,
+              chunkCount
+            };
+          }
+          
+          // 초기 로딩 메시지
+          container.querySelector(".stream-output").textContent = "스트리밍 응답을 기다리는 중... (Waiting for streaming response...)";
+          
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              endTime = performance.now();
+              updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+              break;
+            }
+            
+            // 첫 응답이 오면 로딩 메시지 지우기
+            if (chunkCount === 0) {
+              container.querySelector(".stream-output").textContent = "";
+            }
+            
+            const chunk = decoder.decode(value, { stream: true });
+            sseBuffer += chunk;
+            let lines = sseBuffer.split("\n");
+            sseBuffer = lines.pop();
+            for (let line of lines) {
+              line = line.trim();
+              if (!line) continue;
+              if (line.startsWith("data:")) {
+                const sseData = line.slice(5).trim();
+                // Count every SSE line as a 'chunk' for demonstration
+                chunkCount++;
+                if (!firstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
+                  firstChunkTime = performance.now();
+                  updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
+                }
+                if (sseData === "[[STREAM_DONE]]") {
+                  endTime = performance.now();
+                  updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+                  return {
+                    id: queryObj.id,
+                    query: queryObj.text,
+                    sendTime: streamStartTime,
+                    firstChunkTime,
+                    endTime,
+                    duration: endTime - streamStartTime,
+                    success,
+                    error: errorMessage,
+                    chunkCount
+                  };
+                }
+                try {
+                  const jsonData = JSON.parse(sseData);
+                  if (jsonData.type === "reference") {
+                    const refDiv = container.querySelector(".reference-output");
+                    let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
+                    if (Array.isArray(jsonData.data_list)) {
+                      jsonData.data_list.forEach((ref, idx) => {
+                        refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                      });
+                    } else {
+                      refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
+                    }
+                    refHTML += `</ul>`;
+                    refDiv.innerHTML = refHTML;
+                  } else if (jsonData.type === "answer") {
+                    answerAccumulated += jsonData.answer;
+                    container.querySelector(".stream-output").innerHTML = renderMarkdown(answerAccumulated);
+                  }
+                } catch (e) {
+                  // Not valid JSON => treat as text
+                  answerAccumulated += sseData;
+                  container.querySelector(".stream-output").innerHTML = renderMarkdown(answerAccumulated);
+                }
+              }
+            }
+            updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
+          }
+        } catch (err) {
+          success = false;
+          errorMessage = err.message;
+          container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">오류 (Error): ${err.message}</span>`;
+        }
+
+        // If we exit the loop or have an error:
+        endTime = endTime || performance.now();
+        updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+        return {
+          id: queryObj.id,
+          query: queryObj.text,
+          sendTime: streamStartTime,
+          firstChunkTime,
+          endTime,
+          duration: endTime - streamStartTime,
+          success,
+          error: errorMessage,
+          chunkCount
+        };
+      }
+
+      function updateContainerTiming(container, start, first, end, chunkCount) {
+        const infoBox = container.querySelector(".stream-info-box");
+        let infoMsg = `시작 (Started): ${start.toFixed(1)} ms\n`;
+        if (first) {
+          infoMsg += `첫 응답 (First chunk): ${first.toFixed(1)} ms (지연: ${(first - start).toFixed(1)} ms)\n`;
+        } else {
+          infoMsg += "첫 응답 (First chunk): 아직 도착하지 않음 (not yet)\n";
+        }
+        if (end) {
+          infoMsg += `종료 (End): ${end.toFixed(1)} ms (총 소요: ${(end - start).toFixed(1)} ms)\n`;
+          if (first) {
+            infoMsg += `응답→종료 (Chunk→End): ${(end - first).toFixed(1)} ms\n`;
+          }
+        } else {
+          infoMsg += "종료 (End): 아직 도착하지 않음 (not yet)\n";
+        }
+        infoMsg += `청크 수 (Chunk Count): ${chunkCount}\n`;
+        infoBox.textContent = infoMsg;
+      }
+
+      function toggleReferencesInContainer(containerId) {
+        const container = document.getElementById(containerId);
+        const refDiv = container.querySelector(".reference-output");
+        if (refDiv.style.display === "none" || refDiv.style.display === "") {
+          refDiv.style.display = "block";
+        } else {
+          refDiv.style.display = "none";
+        }
+      }
+
+      async function testSimulStreamPOST() {
+        const queries = buildTestQueries();
+        // Use all queries in the test set
+        const simulQueries = queries;
+        const simulPartialsContainer = document.getElementById("simul-partials");
+        const simulResultsContainer = document.getElementById("simul-results");
+        simulPartialsContainer.innerHTML = '<div class="progress-indicator">동시 스트리밍 테스트 준비 중... (Preparing simultaneous streaming test...)</div>'; 
+        simulResultsContainer.innerHTML = "";   // Clear previous result table
+
+        // Fire all streaming requests in parallel
+        const promises = simulQueries.map((q, index) => {
+          const containerId = "simul-stream-" + index;
+          const div = document.createElement("div");
+          div.id = containerId;
+          div.className = "card";
+          div.style.marginBottom = "1rem";
+          simulPartialsContainer.appendChild(div);
+          return startSimulStreamPOST(q, containerId);
+        });
+
+        let results = await Promise.all(promises);
+        let  containerId);
+        });
+
+        let results = await Promise.all(promises);
+        let summaryTable = buildSimulSummaryTable(results);
+        simulResultsContainer.innerHTML = summaryTable;
+      }
+
+      function buildSimulSummaryTable(results) {
+        // Calculate success/fail stats
+        let successCount = 0;
+        let failCount = 0;
+        results.forEach(r => {
+          if (r.success) successCount++;
+          else failCount++;
+        });
+
+        // Build summary table
+        let html = `<div class="test-summary">
+                      <h3>동시 스트리밍 결과 (Simultaneous Streaming Results)</h3>
+                      <p>총 쿼리 수 (Total): ${results.length}, 성공 (Success): ${successCount}, 실패 (Fail): ${failCount}</p>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>ID</th>
+                            <th>쿼리<br>(Query)</th>
+                            <th>전송 시간<br>(Send Time ms)</th>
+                            <th>첫 응답<br>(First Chunk ms)</th>
+                            <th>종료 시간<br>(End Time ms)</th>
+                            <th>소요 시간<br>(Duration ms)</th>
+                            <th>청크 수<br>(Chunk Count)</th>
+                            <th>상태<br>(Status)</th>
+                            <th>오류<br>(Error)</th>
+                          </tr>
+                        </thead>
+                        <tbody>`;
+
+        results.forEach(r => {
+          const statusText = r.success ? "성공 (Success)" : "실패 (Fail)";
+          const statusClass = r.success ? "badge-success" : "badge-danger";
+          const errorText = r.error || "";
+          const firstTimeStr = r.firstChunkTime ? r.firstChunkTime.toFixed(1) : "n/a";
+          const endTimeStr = r.endTime ? r.endTime.toFixed(1) : "n/a";
+          const durationStr = r.duration ? r.duration.toFixed(1) : "n/a";
+          html += `<tr>
+                     <td>${r.id}</td>
+                     <td>${r.query}</td>
+                     <td>${r.sendTime.toFixed(1)}</td>
+                     <td>${firstTimeStr}</td>
+                     <td>${endTimeStr}</td>
+                     <td>${durationStr}</td>
+                     <td>${r.chunkCount}</td>
+                     <td><span class="badge ${statusClass}">${statusText}</span></td>
+                     <td style="color:var(--danger);">${errorText}</td>
+                   </tr>`;
+        });
+
+        html += `</tbody></table></div>`;
+        return html;
+      }
+
+      /************************************************************
+       * (5) Continuous Sync Test
+       ************************************************************/
+      async function continuousTest(mode) {
+        const queries = buildTestQueries();
+        const results = [];
+        const total = queries.length;
+        document.getElementById('continuousTestResults').innerHTML = `<div class="progress-indicator">${mode === 'nonstream' ? '일반' : '스트리밍'} 테스트 실행 중... (Running ${mode} test...)</div>`;
+        updateProgressIndicator('continuousProgress', 0, total);
+
+        for (let i = 0; i < queries.length; i++) {
+          if (mode === 'nonstream') {
+            const r = await runNonStreamingQuery(queries[i]);
+            results.push(r);
+          } else {
+            const r = await runStreamingQuery(queries[i]);
+            results.push(r);
+          }
+          updateProgressIndicator('continuousProgress', i + 1, total);
+        }
+
+        let sum = 0;
+        results.forEach(r => sum += r.duration);
+        const avg = (sum / results.length).toFixed(2);
+
+        let html = `<h3>연속 ${mode === 'nonstream' ? '일반' : '스트리밍'} 테스트 (${total} 쿼리) 결과</h3>`;
+        html += `<p>평균 소요 시간 (Average Duration): <strong>${avg} ms</strong></p>`;
+        html += "<ul>";
+        results.forEach((r) => {
+          html += `<li><strong>${r.id}</strong> [${r.query}] - 시작 (Start): ${r.startTime}, 종료 (End): ${r.endTime}, 소요 시간 (Duration): ${r.duration} ms</li>`;
+        });
+        html += "</ul>";
+        document.getElementById('continuousTestResults').innerHTML = html;
+      }
+
+      async function runNonStreamingQuery(qObj) {
+        const sendTime = new Date();
+        const startTs = Date.now();
+        try {
+          const resp = await fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qry_contents: qObj.text })
+          });
+          await resp.json();
+        } catch (e) {
+          console.error("Non-stream error:", e);
+        }
+        const endTime = new Date();
+        const duration = Date.now() - startTs;
+        return {
+          id: qObj.id,
+          query: qObj.text,
+          startTime: formatTime(sendTime),
+          endTime: formatTime(endTime),
+          duration: duration
+        };
+      }
+
+      // POST 방식으로 스트리밍 쿼리 실행
+      function runStreamingQuery(qObj) {
+        return new Promise((resolve, reject) => {
+          const sendTime = new Date();
+          const startTs = Date.now();
+          let accumulatedText = "";
+          
+          fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: qObj.text })
+          })
+            .then(response => {
+              const reader = response.body.getReader();
+              const decoder = new TextDecoder();
+              
+              // 함수: 응답 스트림을 재귀적으로 읽어 처리
+              function processStream({ done, value }) {
+                if (done) {
+                  const endTime = new Date();
+                  const duration = Date.now() - startTs;
+                  resolve({
+                    id: qObj.id,
+                    query: qObj.text,
+                    startTime: formatTime(sendTime),
+                    endTime: formatTime(endTime),
+                    duration: duration,
+                    result: accumulatedText
+                  });
+                  return;
+                }
+                // 수신한 청크를 디코딩하여 누적
+                accumulatedText += decoder.decode(value, { stream: true });
+                // 추가 청크 읽기
+                reader.read().then(processStream).catch(reject);
+              }
+              return reader.read().then(processStream);
+            })
+            .catch(err => {
+              reject(err);
+            });
+        });
+      }
+      
+      /************************************************************
+       * Helper: Build Test Queries from the selector
+       ************************************************************/
+      function buildTestQueries() {
+        const testSet = document.getElementById('testSetSelect').value;
+        let queries = [];
+        if (testSet === 'set1') {
+          const mixed20Queries1 = [
+            { id: "ask1", text: "남성해운의 중국 시장 동향" },
+            { id: "ask2", text: "남성해운의 일본 시장 영업 전략" },
+            { id: "ask3", text: "남성해운의 동남아 시장 발전 가능성" },
+            { id: "ask4", text: "남성해운의 중국 시장 동향" },
+            { id: "ask5", text: "신입사원 인사 필수로 알아야 하는 것" },
+            { id: "ask6", text: "디지털화 근황" },
+            { id: "ask7", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask8", text: "남성해운 운임 동향" },
+            { id: "ask9", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask10", text: "최근 해운업계 동향" },
+            { id: "ask11", text: "디지털화 근황" },
+            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask13", text: "남성해운 운임 동향" },
+            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask15", text: "최근 해운업계 동향" },
+            { id: "ask16", text: "디지털화 근황" },
+            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask18", text: "남성해운 운임 동향" },
+            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask20", text: "최근 해운업계 동향" }
+          ];
+          queries = mixed20Queries1;
+        } else if (testSet === 'set2') {
+          const mixed20Queries2 = [
+            { id: "ask1", text: "타운사의 전략" },
+            { id: "ask2", text: "남성해운과 타운사의 차별점" },
+            { id: "ask3", text: "남성해운의 수익 구조" },
+            { id: "ask4", text: "해운사의 특징과 남성해운이 가진 고유의 특징" },
+            { id: "ask5", text: "지난해 매출과 앞으로의 전망" },
+            { id: "ask6", text: "남성해운의 AI 추진 과제 현황" },
+            { id: "ask7", text: "동영해운과 남성해운의 공통점과 차이점" },
+            { id: "ask8", text: "남성해운의 새로운 전략과 먹거리" },
+            { id: "ask9", text: "신입사원 채용 계획 및 교육 일정" },
+            { id: "ask10", text: "해운업계의 큰 흐름과 현재 남성해운의 판단" },
+            { id: "ask11", text: "디지털화 근황" },
+            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask13", text: "남성해운 운임 동향" },
+            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask15", text: "최근 해운업계 동향" },
+            { id: "ask16", text: "디지털화 근황" },
+            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "ask18", text: "남성해운 운임 동향" },
+            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
+            { id: "ask20", text: "최근 해운업계 동향" }
+          ];
+          queries = mixed20Queries2;
+        } else if (testSet === 'set3') {
+          const differentThreeQueries = [
+            { id: "only3-1", text: "남성해운 중국 시장 근황" },
+            { id: "only3-2", text: "공 컨테이너 수송 전략" },
+            { id: "only3-3", text: "남성해운의 새로운 전략" }
+          ];
+          queries = differentThreeQueries;
+        } else if (testSet === 'same100') {
+          for (let i = 1; i <= 100; i++) {
+            queries.push({ id: `same100-${i}`, text: "디지털 전략" });
+          }
+        } else if (testSet === 'circulate5x20') {
+          const baseQueries = [
+            { id: "q1", text: "남성해운 영업 전략" },
+            { id: "q2", text: "디지털화 근황" },
+            { id: "q3", text: "IOT 컨테이너 사업에 대해서" },
+            { id: "q4", text: "주간회의 특징 및 주요 말씀" },
+            { id: "q5", text: "해운업계의 경쟁 구도" }
+          ];
+          for (let k = 1; k <= 20; k++) {
+            baseQueries.forEach((q) => {
+              queries.push({ id: `circulate${k}-${q.id}`, text: q.text });
+            });
+          }
+        } else if (testSet === 'mixed100') {
+          const mixedQueries = [
+            { id: "mix-ask1", text: "타운사의 전략" },
+            { id: "mix-ask2", text: "남성해운의 중국 시장 동향" },
+            { id: "mix-ask3", text: "해운업계의 경쟁 구도" },
+            { id: "mix-ask4", text: "디지털화의 최신 트렌드" },
+            { id: "mix-ask5", text: "IOT 컨테이너 사업의 전망" },
+            { id: "mix-ask6", text: "타운사의 시장 점유율 분석" },
+            { id: "mix-ask7", text: "남성해운의 일본 시장 영업 전략" },
+            { id: "mix-ask8", text: "해운업계의 글로벌 시장 동향" },
+            { id: "mix-ask9", text: "디지털 전환의 성공 사례" },
+            { id: "mix-ask10", text: "IOT 기술을 활용한 물류 혁신" },
+            { id: "mix-ask11", text: "타운사의 경쟁 우위" },
+            { id: "mix-ask12", text: "남성해운의 동남아 시장 발전 가능성" },
+            { id: "mix-ask13", text: "해운업계의 기술 혁신 현황" },
+            { id: "mix-ask14", text: "디지털 기술이 기업에 미치는 영향" },
+            { id: "mix-ask15", text: "IOT와 빅데이터의 결합 사례" },
+            { id: "mix-ask16", text: "타운사의 성장 동력" },
+            { id: "mix-ask17", text: "남성해운의 미국 시장 진출 전략" },
+            { id: "mix-ask18", text: "해운업계의 운임 변동 요인" },
+            { id: "mix-ask19", text: "디지털화 도입의 비용 효율성" },
+            { id: "mix-ask20", text: "IOT 기술 도입의 장단점" },
+            { id: "mix-ask21", text: "타운사의 혁신 사례" },
+            { id: "mix-ask22", text: "남성해운의 수익 구조 분석" },
+            { id: "mix-ask23", text: "해운업계의 환경 규제 대응" },
+            { id: "mix-ask24", text: "디지털 전환 전략 수립 방법" },
+            { id: "mix-ask25", text: "IOT 컨테이너의 운영 효율성" },
+            { id: "mix-ask26", text: "타운사의 고객 만족도" },
+            { id: "mix-ask27", text: "남성해운의 비용 절감 전략" },
+            { id: "mix-ask28", text: "해운업계의 디지털 전환" },
+            { id: "mix-ask29", text: "디지털화와 빅데이터 활용" },
+            { id: "mix-ask30", text: "IOT 기반 실시간 모니터링 시스템" },
+            { id: "mix-ask31", text: "타운사의 재무 구조" },
+            { id: "mix-ask32", text: "남성해운의 신규 서비스 도입" },
+            { id: "mix-ask33", text: "해운업계의 물류 효율성 개선" },
+            { id: "mix-ask34", text: "디지털화의 보안 이슈" },
+            { id: "mix-ask35", text: "IOT와 인공지능의 결합 효과" },
+            { id: "mix-ask36", text: "타운사의 리스크 관리" },
+            { id: "mix-ask37", text: "남성해운의 고객 만족도 조사" },
+            { id: "mix-ask38", text: "해운업계의 비용 구조" },
+            { id: "mix-ask39", text: "디지털 트랜스포메이션의 장단점" },
+            { id: "mix-ask40", text: "IOT 기술을 활용한 비용 절감" },
+            { id: "mix-ask41", text: "타운사의 해외 진출 전략" },
+            { id: "mix-ask42", text: "남성해운의 운임 변동 분석" },
+            { id: "mix-ask43", text: "해운업계의 신규 시장 개척" },
+            { id: "mix-ask44", text: "디지털화 추진을 위한 조직 문화" },
+            { id: "mix-ask45", text: "IOT 컨테이너 사업의 경쟁력" },
+            { id: "mix-ask46", text: "타운사의 신규 사업 계획" },
+            { id: "mix-ask47", text: "남성해운의 미래 성장 전략" },
+            { id: "mix-ask48", text: "해운업계의 고객 서비스 혁신" },
+            { id: "mix-ask49", text: "디지털 전환과 고객 경험 혁신" },
+            { id: "mix-ask50", text: "IOT 기술 도입을 위한 투자 전략" },
+            { id: "mix-ask51", text: "타운사의 브랜드 가치" },
+            { id: "mix-ask52", text: "남성해운의 경쟁사 비교" },
+            { id: "mix-ask53", text: "해운업계의 글로벌 네트워크" },
+            { id: "mix-ask54", text: "디지털화와 인공지능의 결합" },
+            { id: "mix-ask55", text: "IOT와 클라우드 컴퓨팅의 연계" },
+            { id: "mix-ask56", text: "타운사의 공급망 관리" },
+            { id: "mix-ask57", text: "남성해운의 글로벌 네트워크" },
+            { id: "mix-ask58", text: "해운업계의 재무 안정성" },
+            { id: "mix-ask59", text: "디지털 전환의 글로벌 사례" },
+            { id: "mix-ask60", text: "IOT 기반 물류 자동화 사례" },
+            { id: "mix-ask61", text: "타운사의 인재 육성 전략" },
+            { id: "mix-ask62", text: "남성해운의 혁신 기술 도입" },
+            { id: "mix-ask63", text: "해운업계의 기술 투자" },
+            { id: "mix-ask64", text: "디지털화 추진 시 장애 요인" },
+            { id: "mix-ask65", text: "IOT 기술의 보안 이슈" },
+            { id: "mix-ask66", text: "타운사의 사회적 책임 활동" },
+            { id: "mix-ask67", text: "남성해운의 운영 효율성" },
+            { id: "mix-ask68", text: "해운업계의 공급망 관리" },
+            { id: "mix-ask69", text: "디지털화에 따른 비용 절감 효과" },
+            { id: "mix-ask70", text: "IOT 컨테이너 사업의 글로벌 동향" },
+            { id: "mix-ask71", text: "타운사의 기술 혁신" },
+            { id: "mix-ask72", text: "남성해운의 재무 건전성" },
+            { id: "mix-ask73", text: "해운업계의 미래 전망" },
+            { id: "mix-ask74", text: "디지털 트랜스포메이션의 미래 전망" },
+            { id: "mix-ask75", text: "IOT와 데이터 분석의 시너지 효과" },
+            { id: "mix-ask76", text: "타운사의 마케팅 전략" },
+            { id: "mix-ask77", text: "남성해운의 리스크 관리 전략" },
+            { id: "mix-ask78", text: "해운업계의 혁신 사례" },
+            { id: "mix-ask79", text: "디지털화 전략 수립 시 고려사항" },
+            { id: "mix-ask80", text: "IOT 기술 도입 시 장애 요인" },
+            { id: "mix-ask81", text: "타운사의 고객 서비스 개선" },
+            { id: "mix-ask82", text: "남성해운의 신규 투자 계획" },
+            { id: "mix-ask83", text: "해운업계의 위험 요인" },
+            { id: "mix-ask84", text: "디지털 전환이 기업 경쟁력에 미치는 영향" },
+            { id: "mix-ask85", text: "IOT 컨테이너의 미래 전략" },
+            { id: "mix-ask86", text: "타운사의 경쟁사 비교" },
+            { id: "mix-ask87", text: "남성해운의 시장 점유율 변화" },
+            { id: "mix-ask88", text: "해운업계의 인재 육성" },
+            { id: "mix-ask89", text: "디지털화와 클라우드 컴퓨팅" },
+            { id: "mix-ask90", text: "IOT 기술을 활용한 혁신 사례" },
+            { id: "mix-ask91", text: "타운사의 시장 성장 전망" },
+            { id: "mix-ask92", text: "남성해운의 고객 서비스 전략" },
+            { id: "mix-ask93", text: "해운업계의 시장 성장 동력" },
+            { id: "mix-ask94", text: "디지털 전환의 성공 요인" },
+            { id: "mix-ask95", text: "IOT 기반 스마트 물류 솔루션" },
+            { id: "mix-ask96", text: "타운사의 미래 비전" },
+            { id: "mix-ask97", text: "남성해운의 미래 비전" },
+            { id: "mix-ask98", text: "해운업계의 신기술 도입 현황" },
+            { id: "mix-ask99", text: "디지털 트랜스포메이션이 해운업계에 미치는 영향" },
+            { id: "mix-ask100", text: "IOT 기술이 해운업계에 미치는 영향" }
+          ];
+          queries = mixedQueries;
+        }
+        return queries;
+      }
+    </script>
+  </body>
 </html>
