@@ -6,7 +6,7 @@ import numpy as np
 from umap import UMAP
 from flask import Blueprint, request, jsonify, render_template
 from transformers import AutoModel, AutoTokenizer
-from utils import vectorize_content  # Assumes you have defined vectorize_content in utils.py
+from utils import vectorize_content, normalize_text_vis  # Assumes you have defined vectorize_content in utils.py
 
 # For PPTX extraction
 from pptx import Presentation
@@ -51,8 +51,6 @@ def extract_text_from_pdf(file_path):
 @data_control_bp.route("/manager")
 def data_control_page():
     return render_template("data_manager.html")
-
-
 @data_control_bp.route("/upload", methods=["POST"])
 def data_upload():
     if "dataFile" not in request.files:
@@ -62,94 +60,120 @@ def data_upload():
         return jsonify({"message": "파일 이름이 없습니다."}), 400
     ext = os.path.splitext(file.filename)[1].lower()
     try:
+        new_chunk = None
         # TXT 파일 처리
         if ext == ".txt":
             content = file.read().decode("utf-8")
             vector = vectorize_content(content)
-            
-            # 벡터 검증 추가
-            if not vector or not isinstance(vector, list):
-                return jsonify({"message": "벡터화 실패: 유효하지 않은 벡터 생성"}), 500
-            
-            # 벡터 차원 확인 (임베딩 모델에 맞게 조정)
-            expected_dim = 768
-            if len(vector) != expected_dim:
-                print(f"경고: 벡터 차원 불일치. 예상: {expected_dim}, 실제: {len(vector)}")
-                if len(vector) < expected_dim:
-                    vector.extend([0.0] * (expected_dim - len(vector)))
-                else:
-                    vector = vector[:expected_dim]
-            
-            new_entry = {
-                "file_name": file.filename,
-                "chunks": [
-                    {
-                        "chunk_id": 1,
-                        "title": os.path.splitext(file.filename)[0],
-                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                        "type": "text",
-                        "text": content,
-                        "text_short": content[:200],
-                        "vector": vector,
-                        "text_vis": content,
-                    }
-                ],
+            text_vis = content  # or apply normalize_text_vis if needed
+            new_chunk = {
+                "chunk_id": 1,  # default; will be updated below if file exists
+                "title": os.path.splitext(file.filename)[0],
+                "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                "type": "text",
+                "text": content,
+                "text_short": content[:200],
+                "vector": vector,
+                "text_vis": normalize_text_vis(text_vis)
             }
-            
         # JSON 파일 처리
         elif ext == ".json":
             new_entry = json.load(file)
             if not isinstance(new_entry, list):
                 new_entry = [new_entry]
-            
-            # JSON 파일의 각 청크에 대해 벡터 검증
+            # For JSON, we assume each entry already contains chunks
             for entry in new_entry:
                 for chunk in entry.get("chunks", []):
                     if not chunk.get("vector"):
                         text = chunk.get("text", "")
-                        if text:
-                            chunk["vector"] = vectorize_content(text)
-                        else:
-                            # 텍스트가 없으면 기본 벡터 사용
-                            chunk["vector"] = [0.0] * 768
-                            print(f"경고: 텍스트 없는 청크에 기본 벡터 사용")
+                        chunk["vector"] = vectorize_content(text) if text else [[0.0] * 768]
                     else:
-                        # 기존 벡터 검증
                         vector = chunk["vector"]
                         expected_dim = 768
-                        
                         if not isinstance(vector, list):
-                            print(f"경고: 벡터가 리스트가 아님, 텍스트 재벡터화")
                             text = chunk.get("text", "")
-                            if text:
-                                chunk["vector"] = vectorize_content(text)
-                            else:
-                                chunk["vector"] = [0.0] * expected_dim
-                        elif len(vector) != expected_dim:
-                            print(f"경고: 벡터 차원 불일치. 예상: {expected_dim}, 실제: {len(vector)}")
-                            if len(vector) < expected_dim:
-                                chunk["vector"] = vector + [0.0] * (expected_dim - len(vector))
-                            else:
-                                chunk["vector"] = vector[:expected_dim]
-                    
-        # 다른 파일 형식 처리는 동일한 방식으로 벡터 검증 로직 추가
-        # ...
+                            chunk["vector"] = vectorize_content(text) if text else [[0.0]*expected_dim]
+                        elif len(vector) != expected_dim and isinstance(vector[0], (int, float)):
+                            chunk["vector"] = [vector[:expected_dim]] if len(vector) >= expected_dim else [vector + [0.0]*(expected_dim - len(vector))]
+                    chunk["text_vis"] = normalize_text_vis(chunk.get("text_vis", ""))
+            new_entry = new_entry  # Already in proper structure
+        # PPTX 파일 처리
+        elif ext == ".pptx":
+            temp_path = os.path.join("temp", file.filename)
+            os.makedirs("temp", exist_ok=True)
+            file.save(temp_path)
+            content = extract_text_from_pptx(temp_path)
+            os.remove(temp_path)
+            vector = vectorize_content(content)
+            text_vis = content
+            new_chunk = {
+                "chunk_id": 1,
+                "title": os.path.splitext(file.filename)[0],
+                "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                "type": "pptx",
+                "text": content,
+                "text_short": content[:200],
+                "vector": vector,
+                "text_vis": normalize_text_vis(text_vis)
+            }
+        # PDF 파일 처리
+        elif ext == ".pdf":
+            temp_path = os.path.join("temp", file.filename)
+            os.makedirs("temp", exist_ok=True)
+            file.save(temp_path)
+            content = extract_text_from_pdf(temp_path)
+            os.remove(temp_path)
+            vector = vectorize_content(content)
+            text_vis = content
+            new_chunk = {
+                "chunk_id": 1,
+                "title": os.path.splitext(file.filename)[0],
+                "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                "type": "pdf",
+                "text": content,
+                "text_short": content[:200],
+                "vector": vector,
+                "text_vis": normalize_text_vis(text_vis)
+            }
+        else:
+            return jsonify({"message": "지원되지 않는 파일 형식입니다."}), 400
 
-        # 기존 데이터 로드 및 새 데이터 추가
+        # Load existing data
         if os.path.exists(DATA_PATH):
             with open(DATA_PATH, "r", encoding="utf-8") as f:
                 existing_data = json.load(f)
         else:
             existing_data = []
-            
-        if isinstance(new_entry, list):
-            existing_data.extend(new_entry)
+
+        # If the file is a JSON with a list of entries, merge them directly
+        if ext == ".json":
+            if isinstance(new_entry, list):
+                existing_data.extend(new_entry)
+            else:
+                existing_data.append(new_entry)
         else:
-            existing_data.append(new_entry)
-            
+            # For other file types, check if an entry with the same file name exists
+            existing_entry = next((entry for entry in existing_data if entry.get("file_name") == file.filename), None)
+            if existing_entry:
+                # If found, update chunk_id to be last chunk_id + 1
+                if "chunks" in existing_entry and existing_entry["chunks"]:
+                    last_chunk_id = max(chunk.get("chunk_id", 0) for chunk in existing_entry["chunks"])
+                else:
+                    last_chunk_id = 0
+                new_chunk["chunk_id"] = last_chunk_id + 1
+                existing_entry.setdefault("chunks", []).append(new_chunk)
+            else:
+                # Otherwise, create new entry with the chunk
+                new_entry = {
+                    "file_name": file.filename,
+                    "chunks": [new_chunk]
+                }
+                existing_data.append(new_entry)
+
+        # Save updated data
         with open(DATA_PATH, "w", encoding="utf-8") as f:
             json.dump(existing_data, f, ensure_ascii=False, indent=2)
-            
+
         return jsonify({"message": "파일 업로드 및 벡터화가 완료되었습니다."})
     except Exception as e:
         return jsonify({"message": f"업로드 실패: {str(e)}"}), 500

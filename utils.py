@@ -313,6 +313,58 @@ def load_model(config):
         model.eval()
         return model, tokenizer, embed_model, embed_tokenizer
 
+# @time_tracker
+# def load_data(data_path):
+#     global _cached_data, _cached_data_mtime
+#     try:
+#         current_mtime = os.path.getmtime(data_path)
+#     except Exception as e:
+#         print("파일 수정 시간 확인 실패:", e)
+#         return None
+
+#     # 캐시가 비어있거나 파일 수정 시간이 변경된 경우 데이터 재로드
+#     if _cached_data is None or current_mtime != _cached_data_mtime:
+#         with open(data_path, "r", encoding="utf-8") as json_file:
+#             data = json.load(json_file)
+#         # 데이터 전처리 (예: 리스트 변환 및 numpy, torch 변환)
+#         file_names = []
+#         titles = []
+#         times = []
+#         vectors = []
+#         texts = []
+#         texts_short = []
+#         texts_vis = []
+#         missing_time = 0
+#         for file in data:
+#             for chunk in file["chunks"]:
+#                 file_names.append(file["file_name"])
+#                 vectors.append(np.array(chunk["vector"]))
+#                 titles.append(chunk["title"])
+#                 if chunk["date"]:
+#                     times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
+#                 else:
+#                     missing_time += 1
+#                     times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+#                 texts.append(chunk["text"])
+#                 texts_short.append(chunk["text_short"])
+#                 texts_vis.append(chunk["text_vis"])
+#         vectors = np.array(vectors)
+#         vectors = torch.from_numpy(vectors).to(torch.float32)
+#         _cached_data = {
+#             "file_names": file_names,
+#             "titles": titles,
+#             "times": times,
+#             "vectors": vectors,
+#             "texts": texts,
+#             "texts_short": texts_short,
+#             "texts_vis": texts_vis,
+#         }
+#         _cached_data_mtime = current_mtime
+#         print(f"Data loaded! Length: {len(titles)}, Missing times: {missing_time}")
+#     else:
+#         print("Using cached data")
+#     return _cached_data
+
 @time_tracker
 def load_data(data_path):
     global _cached_data, _cached_data_mtime
@@ -326,6 +378,10 @@ def load_data(data_path):
     if _cached_data is None or current_mtime != _cached_data_mtime:
         with open(data_path, "r", encoding="utf-8") as json_file:
             data = json.load(json_file)
+
+        # --- 디버그 함수: 벡터 포맷 검사 ---
+        debug_vector_format(data)
+
         # 데이터 전처리 (예: 리스트 변환 및 numpy, torch 변환)
         file_names = []
         titles = []
@@ -335,21 +391,45 @@ def load_data(data_path):
         texts_short = []
         texts_vis = []
         missing_time = 0
-        for file in data:
-            for chunk in file["chunks"]:
-                file_names.append(file["file_name"])
-                vectors.append(np.array(chunk["vector"]))
+
+        for file_obj in data:
+            for chunk in file_obj["chunks"]:
+                file_names.append(file_obj["file_name"])
+                
+                # 여기서도 np.array()로 변환하며 에러가 있으면 except 처리
+                try:
+                    arr = np.array(chunk["vector"])
+                    vectors.append(arr)
+                except Exception as e:
+                    logging.warning(f"[load_data] 벡터 변환 오류: {e} → 빈 벡터로 대체")
+                    vectors.append(np.zeros((1, 768), dtype=np.float32))  # 임의로 1x768 형식
+                
                 titles.append(chunk["title"])
+                
+                # 날짜 파싱
                 if chunk["date"]:
-                    times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
+                    try:
+                        times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
+                    except ValueError:
+                        logging.warning(f"잘못된 날짜 형식: {chunk['date']} → 기본 날짜로 대체")
+                        times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+                        missing_time += 1
                 else:
                     missing_time += 1
                     times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+
                 texts.append(chunk["text"])
                 texts_short.append(chunk["text_short"])
                 texts_vis.append(chunk["text_vis"])
-        vectors = np.array(vectors)
-        vectors = torch.from_numpy(vectors).to(torch.float32)
+
+        # 실제 텐서로 변환
+        try:
+            vectors = np.array(vectors)
+            vectors = torch.from_numpy(vectors).to(torch.float32)
+        except Exception as e:
+            logging.error(f"[load_data] 최종 벡터 텐서 변환 오류: {str(e)}")
+            # 필요 시 추가 처리
+
         _cached_data = {
             "file_names": file_names,
             "titles": titles,
@@ -363,7 +443,34 @@ def load_data(data_path):
         print(f"Data loaded! Length: {len(titles)}, Missing times: {missing_time}")
     else:
         print("Using cached data")
+
     return _cached_data
+
+
+def debug_vector_format(data):
+    """
+    data(List[Dict]): load_data에서 JSON으로 로드된 객체.
+    각 file_obj에 대해 chunks 리스트를 순회하며 vector 형식을 디버깅 출력.
+    """
+    print("\n[DEBUG] ===== 벡터 형식 검사 시작 =====")
+    for f_i, file_obj in enumerate(data):
+        file_name = file_obj.get("file_name", f"Unknown_{f_i}")
+        chunks = file_obj.get("chunks", [])
+        for c_i, chunk in enumerate(chunks):
+            vector_data = chunk.get("vector", None)
+            if vector_data is None:
+                print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 없음(None)")
+                continue
+            # 자료형, 길이, shape 등 확인
+            vector_type = type(vector_data)
+            # shape을 안전하게 얻기 위해 np.array 변환 시도
+            try:
+                arr = np.array(vector_data)
+                shape = arr.shape
+                print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector_type={vector_type}, shape={shape}")
+            except Exception as e:
+                print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 변환 실패: {str(e)}")
+    print("[DEBUG] ===== 벡터 형식 검사 종료 =====\n")
 
 
 @time_tracker
@@ -503,8 +610,8 @@ def vectorize_content(content):
             print(f"경고: 벡터가 리스트가 아님, 타입: {type(vector)}")
             try:
                 vector = list(vector)
-            except:
-                print("오류: 벡터를 리스트로 변환 실패")
+            except Exception as e:
+                print("오류: 벡터를 리스트로 변환 실패:", e)
                 vector = [0.0] * expected_dim  # 기본 벡터 제공
         
         # 벡터 차원 확인 및 조정
@@ -517,7 +624,7 @@ def vectorize_content(content):
                 # 초과 차원은 자르기
                 vector = vector[:expected_dim]
         
-        # 기존 파일 형식과 일치하도록 2차원 배열 형식으로 반환
+        # 기존 파일 형식과 일치하도록 항상 2차원 배열 형식으로 반환 ([[...] 형태])
         if vector and not isinstance(vector[0], list):
             return [vector]
         return vector
@@ -526,6 +633,27 @@ def vectorize_content(content):
         # 오류 시 기본 벡터 반환 (2차원 형식)
         return [[0.0] * 768]
 
+# -------------------- 텍스트 출력 필드 정규화 함수 --------------------
+def normalize_text_vis(text_vis):
+    """
+    text_vis가 이미 올바른 리스트-딕셔너리 구조이면 그대로 반환하고,
+    그렇지 않은 경우 기본 구조로 감싸서 반환합니다.
+    """
+    if isinstance(text_vis, list) and len(text_vis) > 0 and isinstance(text_vis[0], dict):
+        # 필요한 키가 존재하는지 확인
+        if all(k in text_vis[0] for k in ("rsp_type", "rsp_tit", "rsp_data")):
+            return text_vis
+    if isinstance(text_vis, str):
+        return [{
+            "rsp_type": "TT",
+            "rsp_tit": "",
+            "rsp_data": text_vis
+        }]
+    return [{
+        "rsp_type": "TT",
+        "rsp_tit": "",
+        "rsp_data": str(text_vis)
+    }]
 
 # -------------------- 데이터셋 진단 및 수정 도구 --------------------
 # 데이터셋 진단 및 복구 함수 (utils.py 또는 별도 파일에 추가)
