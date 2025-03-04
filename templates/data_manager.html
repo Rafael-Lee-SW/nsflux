@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>데이터 관리</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #f9fafb;
+    }
+    .container {
+      width: 100%;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h1, h2 {
+      color: #111827;
+    }
+    .controls {
+      margin-bottom: 15px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    button {
+      padding: 8px 16px;
+      background-color: #7c3aed;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #6d28d9;
+    }
+    .visualization {
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+      position: relative;
+      height: 700px;
+      margin-bottom: 20px;
+    }
+    /* 캔버스 최적화를 위한 offscreen 활용 등은 브라우저 지원에 따라 추가 적용 가능 */
+    canvas#visualizationCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .tooltip {
+      position: absolute;
+      padding: 10px;
+      background-color: rgba(0, 0, 0, 0.8);
+      color: white;
+      border-radius: 4px;
+      pointer-events: none;
+      max-width: 300px;
+      z-index: 100;
+      font-size: 14px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    }
+    .tooltip h4 {
+      margin: 0 0 5px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+      padding-bottom: 5px;
+    }
+    .tooltip p {
+      margin: 5px 0;
+    }
+    .legend {
+      position: absolute;
+      right: 20px;
+      top: 20px;
+      background-color: rgba(255, 255, 255, 0.9);
+      padding: 10px;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+    .legend-color {
+      width: 15px;
+      height: 15px;
+      margin-right: 8px;
+      border-radius: 3px;
+    }
+    .loading {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(255, 255, 255, 0.8);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+    .loading-spinner {
+      border: 5px solid #f3f3f3;
+      border-top: 5px solid #7c3aed;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    /* 데이터 목록 영역 - 스크롤 가능하도록 설정 */
+    #dataListContainer {
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #ddd;
+      margin-bottom: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+    }
+    table, th, td {
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 8px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>데이터 관리</h1>
+    
+    <h2>데이터 업로드</h2>
+    <form id="uploadForm" enctype="multipart/form-data">
+      <input type="file" id="dataFile" name="dataFile" accept=".txt,.json,.pptx,.pdf" required>
+      <button type="submit">업로드 및 벡터화</button>
+    </form>
+
+    <h2>데이터 검색</h2>
+    <div class="controls">
+      <input type="text" id="searchInput" placeholder="검색어를 입력하세요">
+      <button onclick="performSearch()">검색</button>
+    </div>
+    <div id="searchResults"></div>
+
+    <h1>UMAP 벡터 시각화 (Canvas Optimized)</h1>
+    <div class="controls">
+      <button id="colorByFile">파일별 색상</button>
+      <button id="showLinks">유사성 연결선 표시</button>
+      <button id="resetZoom">줌 초기화</button>
+    </div>
+    <div class="visualization">
+      <div id="loading" class="loading">
+        <div class="loading-spinner"></div>
+      </div>
+      <canvas id="visualizationCanvas"></canvas>
+      <div id="legend" class="legend"></div>
+    </div>
+
+    <!-- 데이터 목록 영역: 토글 버튼으로 보이기/숨기기 -->
+    <button id="toggleDataList">데이터 목록 보기/숨기기</button>
+    <div id="dataListContainer" style="display:none;">
+      <table id="dataTable">
+        <thead>
+          <tr>
+            <th>인덱스</th>
+            <th>파일 이름</th>
+            <th>제목</th>
+            <th>수정일자</th>
+            <th>액션</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    // 데이터 목록 로딩 함수
+    async function loadDataList() {
+      const response = await fetch('/data/list');
+      const data = await response.json();
+      const tbody = document.getElementById('dataTable').getElementsByTagName('tbody')[0];
+      tbody.innerHTML = '';
+      data.forEach((item, index) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${index}</td>
+          <td>${item.file_name}</td>
+          <td>${item.title}</td>
+          <td>${item.date}</td>
+          <td>
+            <button onclick="deleteData(${index})">삭제</button>
+          </td>
+        `;
+        tbody.appendChild(row);
+      });
+    }
+
+    async function deleteData(index) {
+      if (!confirm('이 데이터를 삭제하시겠습니까?')) return;
+      const response = await fetch('/data/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ index: index })
+      });
+      const result = await response.json();
+      alert(result.message);
+      loadDataList();
+      loadVisualization();
+    }
+
+    document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const fileInput = document.getElementById('dataFile');
+      const formData = new FormData();
+      formData.append('dataFile', fileInput.files[0]);
+
+      const response = await fetch('/data/upload', {
+        method: 'POST',
+        body: formData
+      });
+      const result = await response.json();
+      alert(result.message);
+      loadDataList();
+      loadVisualization();
+    });
+
+    // 검색 함수
+    async function performSearch() {
+      const query = document.getElementById('searchInput').value.trim();
+      if (!query) return alert('검색어를 입력하세요.');
+      try {
+        const response = await fetch(`/data/search?q=${encodeURIComponent(query)}`);
+        const results = await response.json();
+        displaySearchResults(results);
+      } catch (error) {
+        console.error('검색 오류:', error);
+        alert('검색 중 오류가 발생했습니다.');
+      }
+    }
+
+    function displaySearchResults(results) {
+      const container = document.getElementById('searchResults');
+      if (results.length === 0) {
+        container.innerHTML = '<p>검색 결과가 없습니다.</p>';
+        return;
+      }
+      let html = '<ul>';
+      results.forEach(item => {
+        html += `<li>[${item.index}] 파일: ${item.file_name}, 제목: ${item.title}</li>`;
+      });
+      html += '</ul>';
+      container.innerHTML = html;
+    }
+
+    // 데이터 목록 토글 버튼
+    document.getElementById('toggleDataList').addEventListener('click', () => {
+      const container = document.getElementById('dataListContainer');
+      if (container.style.display === 'none') {
+        container.style.display = 'block';
+      } else {
+        container.style.display = 'none';
+      }
+    });
+
+    // 시각화 관련 전역 변수 및 설정
+    const config = {
+      colorByFile: true,
+      showLinks: false,
+      nodeSizeRange: [5, 15],
+      linkOpacity: 0.3,
+      zoomExtent: [0.1, 10]
+    };
+
+    let colorScale = d3.scaleOrdinal(d3.schemeCategory10);
+    let graphData = { nodes: [], edges: [] };
+    let canvas, context;
+    let transform = { x: 0, y: 0, k: 1 };
+
+    async function loadVisualization() {
+      try {
+        document.getElementById('loading').style.display = 'flex';
+        const response = await fetch('/data/api/umap_data');
+        if (!response.ok) throw new Error('데이터를 불러오는데 실패했습니다.');
+        graphData = await response.json();
+
+        // 캔버스 설정
+        canvas = document.getElementById('visualizationCanvas');
+        context = canvas.getContext('2d');
+        const container = document.querySelector('.visualization');
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+
+        // 파일별 색상 스케일 업데이트
+        const uniqueFiles = [...new Set(graphData.nodes.map(n => n.file_name))];
+        colorScale.domain(uniqueFiles);
+        createLegend(uniqueFiles);
+
+        // 노드 크기는 연결수에 따라 계산 (연결수에 기반한 선형 스케일)
+        const nodeConnections = {};
+        graphData.edges.forEach(edge => {
+          nodeConnections[edge.source] = (nodeConnections[edge.source] || 0) + 1;
+          nodeConnections[edge.target] = (nodeConnections[edge.target] || 0) + 1;
+        });
+        const sizeScale = d3.scaleLinear()
+          .domain([0, d3.max(Object.values(nodeConnections)) || 1])
+          .range(config.nodeSizeRange);
+
+        // UMAP 좌표를 캔버스 좌표로 매핑
+        const width = canvas.width, height = canvas.height;
+        const xExtent = d3.extent(graphData.nodes, d => d.x);
+        const yExtent = d3.extent(graphData.nodes, d => d.y);
+        const xScale = d3.scaleLinear().domain(xExtent).range([50, width - 50]);
+        const yScale = d3.scaleLinear().domain(yExtent).range([50, height - 50]);
+
+        // 노드 위치 및 반지름 업데이트
+        graphData.nodes.forEach(node => {
+          node.x = xScale(node.x);
+          node.y = yScale(node.y);
+          node.r = sizeScale(nodeConnections[node.id] || 0) || config.nodeSizeRange[0];
+        });
+
+        renderGraph();
+        setupCanvasInteractions();
+        document.getElementById('loading').style.display = 'none';
+      } catch (error) {
+        console.error('Error:', error);
+        document.getElementById('loading').style.display = 'none';
+        alert('시각화 생성 중 오류가 발생했습니다: ' + error.message);
+      }
+    }
+
+    // 렌더링 함수: 현재 transform 값을 적용하여 그래프를 그립니다.
+    function renderGraph() {
+      context.save();
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.translate(transform.x, transform.y);
+      context.scale(transform.k, transform.k);
+
+      // 연결선 그리기
+      context.strokeStyle = config.showLinks ? `rgba(150,150,150,${config.linkOpacity})` : 'rgba(150,150,150,0)';
+      context.lineWidth = 1;
+      graphData.edges.forEach(edge => {
+        const source = graphData.nodes.find(n => n.id === edge.source);
+        const target = graphData.nodes.find(n => n.id === edge.target);
+        if (source && target) {
+          context.beginPath();
+          context.moveTo(source.x, source.y);
+          context.lineTo(target.x, target.y);
+          context.stroke();
+        }
+      });
+
+      // 노드 그리기
+      graphData.nodes.forEach(node => {
+        context.beginPath();
+        context.arc(node.x, node.y, node.r, 0, 2 * Math.PI);
+        context.fillStyle = config.colorByFile ? colorScale(node.file_name) : '#1f77b4';
+        context.fill();
+        context.lineWidth = 1.5;
+        context.strokeStyle = "#fff";
+        context.stroke();
+      });
+      context.restore();
+    }
+
+    // requestAnimationFrame을 사용하여 렌더링 호출을 throttling합니다.
+    let renderScheduled = false;
+    function scheduleRender() {
+      if (!renderScheduled) {
+        renderScheduled = true;
+        requestAnimationFrame(() => {
+          renderGraph();
+          renderScheduled = false;
+        });
+      }
+    }
+
+    // 캔버스 상호작용 설정 (드래그, 줌 등)
+    function setupCanvasInteractions() {
+      let isDragging = false, startX, startY;
+      canvas.addEventListener("mousedown", (event) => {
+        isDragging = true;
+        startX = event.offsetX - transform.x;
+        startY = event.offsetY - transform.y;
+      });
+      canvas.addEventListener("mousemove", (event) => {
+        if (isDragging) {
+          transform.x = event.offsetX - startX;
+          transform.y = event.offsetY - startY;
+          scheduleRender();
+        }
+      });
+      canvas.addEventListener("mouseup", () => { isDragging = false; });
+      canvas.addEventListener("mouseleave", () => { isDragging = false; });
+      canvas.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const zoomFactor = 1.05;
+        if (event.deltaY < 0) {
+          transform.k *= zoomFactor;
+        } else {
+          transform.k /= zoomFactor;
+        }
+        scheduleRender();
+      });
+    }
+
+    // 범례 생성 함수
+    function createLegend(uniqueFiles) {
+      const legend = d3.select('#legend');
+      legend.html('');
+      uniqueFiles.forEach(file => {
+        const legendItem = legend.append('div').attr('class', 'legend-item');
+        legendItem.append('div')
+          .attr('class', 'legend-color')
+          .style('background-color', colorScale(file));
+        legendItem.append('span').text(file);
+      });
+    }
+
+    // 제어 핸들러
+    document.getElementById('colorByFile').addEventListener('click', () => {
+      config.colorByFile = !config.colorByFile;
+      scheduleRender();
+      document.getElementById('legend').style.display = config.colorByFile ? 'block' : 'none';
+    });
+    document.getElementById('showLinks').addEventListener('click', () => {
+      config.showLinks = !config.showLinks;
+      scheduleRender();
+    });
+    document.getElementById('resetZoom').addEventListener('click', () => {
+      transform = { x: 0, y: 0, k: 1 };
+      scheduleRender();
+    });
+
+    // 페이지 로딩 시 시각화와 데이터 목록 초기화
+    document.addEventListener('DOMContentLoaded', () => {
+      loadVisualization();
+      loadDataList();
+    });
+  </script>
+</body>
+</html>

@@ -19,7 +19,7 @@ vllm:
   tensor_parallel_size: 1         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
   max_num_seqs: 192               # v1에 따른 상향
   max_num_batched_tokens: 24576   # v1에 따른 상향
-  block_size: 128 # 미적용
+  block_size: 128                 # 미적용
   gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
   disable_custom_all_reduce: true
   enable_memory_defrag: True      # v1 신규 기능 활성화

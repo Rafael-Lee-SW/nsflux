@@ -539,6 +539,8 @@
       let streamingInProgress = false;
       let answerAccumulated = "";
       let sseBuffer = "";
+      let querySentTime = null;
+
 
       async function startStreamPOST() {
         if (streamingInProgress) {
@@ -552,7 +554,7 @@
           streamingInProgress = false;
           return;
         }
-        // Reset variables
+        // 변수 초기화
         answerAccumulated = "";
         sseBuffer = "";
         postStreamFirstChunkTime = null;
@@ -561,9 +563,12 @@
         document.getElementById('streamTiming').innerHTML = "";
         document.getElementById('referenceData').innerHTML = "";
         document.getElementById('referenceData').style.display = "none";
-
+      
+        // 쿼리 전송 시각을 저장 (Date 객체 사용)
+        querySentTime = new Date();
+        // 성능 측정을 위해 시작 타임스탬프는 performance.now()로 저장
         postStreamStartTime = performance.now();
-
+      
         try {
           const response = await fetch('/query_stream', {
             method: 'POST',
@@ -576,7 +581,7 @@
           }
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
-
+      
           while (true) {
             const { done, value } = await reader.read();
             if (done) {
@@ -643,21 +648,25 @@
 
       function updatePostStreamTiming() {
         let msg = "";
-        if (postStreamStartTime !== null) {
-          msg += `Started: ${postStreamStartTime.toFixed(1)} ms\n`;
+        if (querySentTime !== null) {
+          // 쿼리를 보낸 시간은 프론트에서 보낸 실제 시각을 표시
+          msg += `쿼리를 보낸 시간: ${querySentTime.toLocaleTimeString()}<br>`;
         }
         if (postStreamFirstChunkTime !== null) {
-          msg += `First chunk: ${postStreamFirstChunkTime.toFixed(1)} ms (delta: ${(postStreamFirstChunkTime - postStreamStartTime).toFixed(1)} ms)\n`;
+          // 스트리밍 시작 시간은 첫 청크 도착 후 경과 시간만 표시
+          msg += `스트리밍 시작 시간: ${(postStreamFirstChunkTime - postStreamStartTime).toFixed(1)} ms<br>`;
         } else {
-          msg += "First chunk: not yet\n";
+          msg += "스트리밍 시작 시간: 아직 도착하지 않음<br>";
         }
         if (postStreamEndTime !== null) {
-          msg += `End: ${postStreamEndTime.toFixed(1)} ms (delta: ${(postStreamEndTime - postStreamStartTime).toFixed(1)} ms)\n`;
+          // 스트리밍 종료 시간: 전송 시작 후 전체 경과 시간
+          msg += `스트리밍 종료 시간: ${(postStreamEndTime - postStreamStartTime).toFixed(1)} ms<br>`;
+          // 스트리밍 생성 시간: 첫 청크 도착 후부터 종료까지의 시간
           if (postStreamFirstChunkTime !== null) {
-            msg += `Chunk→End: ${(postStreamEndTime - postStreamFirstChunkTime).toFixed(1)} ms\n`;
+            msg += `스트리밍 생성 시간: ${(postStreamEndTime - postStreamFirstChunkTime).toFixed(1)} ms<br>`;
           }
         } else {
-          msg += "End: not yet\n";
+          msg += "스트리밍 종료 시간: 아직 도착하지 않음<br>";
         }
         document.getElementById('streamTiming').innerHTML = msg;
       }

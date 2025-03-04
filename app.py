@@ -50,12 +50,9 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s [%(threadName)s] %(message)s'
 )
 
-# --------------------- Streaming part ----------------------------
 import ray
 import uuid
 import asyncio
-
-# --------------------- Streaming part ----------------------------
 
 # Configuration
 with open("./config.yaml", "r") as f:
@@ -89,12 +86,16 @@ def index():
 # Test 페이지를 불러오는 라우트
 @app.route("/test")
 def test_page():
-    return render_template("index_test_streaming.html")
+    return render_template("index_test.html")
 
 # chatroomPage 페이지를 불러오는 라우트
 @app.route("/chat")
 def chat_page():
     return render_template("chatroom.html")
+
+# data 관리
+from data_control import data_control_bp
+app.register_blueprint(data_control_bp, url_prefix="/data")
 
 # Query Endpoint (Non-streaming)
 @app.route("/query", methods=["POST"])

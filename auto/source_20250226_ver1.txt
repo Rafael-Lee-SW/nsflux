@@ -6,19 +6,20 @@
 ├─ RAG.py
 ├─ app.py
 ├─ config.yaml
+├─ data_control.py
 ├─ prompt_rag.py
 ├─ ray_setup.py
 ├─ ray_utils.py
 ├─ requirements.txt
 ├─ sql.py
-├─ templates/chatroom.html
+├─ templates/data_manager.html
 ├─ tracking.py
 └─ utils.py
 ```
 
 --- .dockerignore
 
-```python
+```
 
 huggingface
 YeoJun
@@ -55,7 +56,7 @@ logs/
 
 --- config.yaml
 
-```python
+```yaml
 
 # config.yaml
 # Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
@@ -78,7 +79,7 @@ vllm:
   tensor_parallel_size: 1         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
   max_num_seqs: 192               # v1에 따른 상향
   max_num_batched_tokens: 24576   # v1에 따른 상향
-  block_size: 128 # 미적용
+  block_size: 128                 # 미적용
   gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
   disable_custom_all_reduce: true
   enable_memory_defrag: True      # v1 신규 기능 활성화
@@ -116,7 +117,7 @@ k : 15                        # SQL Max Rows (None=MAX)
 
 --- Dockerfile
 
-```python
+```dockerfile
 
 # 베이스 이미지 선택
 FROM globeai/flux_ns:1.24
@@ -152,9 +153,99 @@ CMD ["python", "app.py"]
 
 --- requirements.txt
 
-```python
+```txt
 
-# 파일 읽기 오류: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte
+accelerate==1.3.0
+aiohappyeyeballs==2.4.4
+aiohttp==3.11.12
+aiohttp-cors==0.7.0
+aiosignal==1.3.2
+annotated-types==0.7.0
+attrs==25.1.0
+bitsandbytes==0.45.1
+blinker==1.9.0
+cachetools==5.5.1
+certifi==2025.1.31
+charset-normalizer==3.4.1
+click==8.1.8
+colorama==0.4.6
+colorful==0.5.6
+distlib==0.3.9
+filelock==3.17.0
+Flask==3.1.0
+Flask[async]==3.1.0
+fastapi[standard]==0.112.0
+Jinja2==3.1.5
+uvicorn==0.34.0
+gunicorn==23.0.0
+frozenlist==1.5.0
+fsspec==2025.2.0
+google-api-core==2.24.1
+google-auth==2.38.0
+googleapis-common-protos==1.66.0
+grpcio==1.70.0
+huggingface-hub==0.28.1
+idna==3.10
+itsdangerous==2.2.0
+Jinja2==3.1.5
+jsonschema==4.23.0
+jsonschema-specifications==2024.10.1
+langchain==0.3.19
+MarkupSafe==3.0.2
+mpmath==1.3.0
+msgpack==1.1.0
+multidict==6.1.0
+networkx==3.4.2
+numpy==1.26.4
+opencensus==0.11.4
+opencensus-context==0.1.3
+optree==0.14.0
+packaging==24.2
+pillow==11.1.0
+platformdirs==4.3.6
+prometheus_client==0.21.1
+propcache==0.2.1
+proto-plus==1.26.0
+protobuf==5.29.3
+psutil==6.1.1
+py-spy==0.4.0
+pyasn1==0.6.1
+pyasn1_modules==0.4.1
+pydantic==2.10.6
+pydantic_core==2.27.2
+python-box==7.3.2
+python-dotenv==1.0.1
+PyYAML==6.0.2
+rank-bm25==0.2.2
+ray[serve]==2.42.0
+referencing==0.36.2
+regex==2024.11.6
+requests==2.32.3
+rpds-py==0.22.3
+rsa==4.9
+safetensors==0.5.2
+setuptools==75.8.0
+six==1.17.0
+smart-open==7.1.0
+sympy==1.13.1
+the==0.1.5
+tokenizers==0.21.0
+torch==2.5.1
+torchvision==0.20.1
+tqdm==4.67.1
+transformers==4.48.2
+typing_extensions==4.12.2
+urllib3==2.3.0
+virtualenv==20.29.1
+vllm==0.7.2
+Werkzeug==3.1.3
+wrapt==1.17.2
+yarl==1.18.3
+python-pptx==1.0.2
+pandas==2.2.3
+plotly==6.0.0
+pypdf2==3.0.1
+umap-learn==0.5.3
 
 ```
 
@@ -215,12 +306,9 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s [%(threadName)s] %(message)s'
 )
 
-# --------------------- Streaming part ----------------------------
 import ray
 import uuid
 import asyncio
-
-# --------------------- Streaming part ----------------------------
 
 # Configuration
 with open("./config.yaml", "r") as f:
@@ -254,12 +342,16 @@ def index():
 # Test 페이지를 불러오는 라우트
 @app.route("/test")
 def test_page():
-    return render_template("index_test_streaming.html")
+    return render_template("index_test.html")
 
 # chatroomPage 페이지를 불러오는 라우트
 @app.route("/chat")
 def chat_page():
     return render_template("chatroom.html")
+
+# data 관리
+from data_control import data_control_bp
+app.register_blueprint(data_control_bp, url_prefix="/data")
 
 # Query Endpoint (Non-streaming)
 @app.route("/query", methods=["POST"])
@@ -1066,6 +1158,10 @@ from transformers import (
 
 import os
 
+# 전역 캐시 변수 - 데이터의 변화를 감지하기 위한
+_cached_data = None
+_cached_data_mtime = 0
+
 # Import vLLM utilities
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -1256,32 +1352,32 @@ def load_model(config):
         engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
         engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
-        engine_args.max_num_seqs = vllm_conf.get("max_num_seqs", 128)
+        # engine_args.max_num_seqs = vllm_conf.get("max_num_seqs", 128)
         engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
         # engine_args.block_size = vllm_conf.get("block_size", 128)
-        engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization", 0.9)
+        engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization")
         
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
         
-        engine_args.enable_memory_defrag = True # v1
+        # engine_args.enable_memory_defrag = True # v1 새로운 기능
         
         # print("Final EngineArgs:", engine_args)
         print("EngineArgs setting be finished")
 
         try:
-            # --- 해결책: 현재 스레드가 메인 스레드가 아니면 signal 함수를 임시 패치 ---
+            # --- v1 구동 해결책: 현재 스레드가 메인 스레드가 아니면 signal 함수를 임시 패치 ---
             import threading, signal
             if threading.current_thread() is not threading.main_thread():
                 original_signal = signal.signal
                 signal.signal = lambda s, h: None  # signal 설정 무시
                 print("비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.")
-            # --- 해결책: ------------------------------------------------------ ---
+            # --- v1 구동 해결책: ------------------------------------------------------ ---
             engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
-            # 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) ----------------- ---
+            # v1 구동 해결책: 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) ----------------- ---
             if threading.current_thread() is not threading.main_thread():
                 signal.signal = original_signal
-            # --- 해결책: ------------------------------------------------------ ---
+            # --- v1 구동 해결책: ------------------------------------------------------ ---
             print("DEBUG: vLLM engine successfully created.") # Original
             
         except Exception as e:
@@ -1363,43 +1459,55 @@ def load_model(config):
 
 @time_tracker
 def load_data(data_path):
-    with open(data_path, "r", encoding="utf-8") as json_file:
-        data = json.load(json_file)
-    file_names = []
-    titles = []
-    times = []
-    vectors = []
-    texts = []
-    texts_short = []
-    texts_vis = []
-    tmp = 0
-    for file in data:
-        for chunk in file["chunks"]:
-            file_names.append(file["file_name"])
-            vectors.append(np.array(chunk["vector"]))
-            titles.append(chunk["title"])
-            if chunk["date"] != None:
-                times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
-            else:
-                tmp += 1
-                times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
-            texts.append(chunk["text"])
-            texts_short.append(chunk["text_short"])
-            texts_vis.append(chunk["text_vis"])
-    vectors = np.array(vectors)
-    vectors = torch.from_numpy(vectors).to(torch.float32)
-    data_ = {
-        "file_names": file_names,
-        "titles": titles,
-        "times": times,
-        "vectors": vectors,
-        "texts": texts,
-        "texts_short": texts_short,
-        "texts_vis": texts_vis,
-    }
-    print(f"Data Loaded! Full length:{len(titles)}, Time Missing:{tmp}")
-    print(f"Time Max:{max(times)}, Time Min:{min(times)}")
-    return data_
+    global _cached_data, _cached_data_mtime
+    try:
+        current_mtime = os.path.getmtime(data_path)
+    except Exception as e:
+        print("파일 수정 시간 확인 실패:", e)
+        return None
+
+    # 캐시가 비어있거나 파일 수정 시간이 변경된 경우 데이터 재로드
+    if _cached_data is None or current_mtime != _cached_data_mtime:
+        with open(data_path, "r", encoding="utf-8") as json_file:
+            data = json.load(json_file)
+        # 데이터 전처리 (예: 리스트 변환 및 numpy, torch 변환)
+        file_names = []
+        titles = []
+        times = []
+        vectors = []
+        texts = []
+        texts_short = []
+        texts_vis = []
+        missing_time = 0
+        for file in data:
+            for chunk in file["chunks"]:
+                file_names.append(file["file_name"])
+                vectors.append(np.array(chunk["vector"]))
+                titles.append(chunk["title"])
+                if chunk["date"]:
+                    times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
+                else:
+                    missing_time += 1
+                    times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+                texts.append(chunk["text"])
+                texts_short.append(chunk["text_short"])
+                texts_vis.append(chunk["text_vis"])
+        vectors = np.array(vectors)
+        vectors = torch.from_numpy(vectors).to(torch.float32)
+        _cached_data = {
+            "file_names": file_names,
+            "titles": titles,
+            "times": times,
+            "vectors": vectors,
+            "texts": texts,
+            "texts_short": texts_short,
+            "texts_vis": texts_vis,
+        }
+        _cached_data_mtime = current_mtime
+        print(f"Data loaded! Length: {len(titles)}, Missing times: {missing_time}")
+    else:
+        print("Using cached data")
+    return _cached_data
 
 
 @time_tracker
@@ -1506,6 +1614,29 @@ def error_format(message, status):
         "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
     }
     return json.dumps(ans_format)
+
+# ---------------------- 벡터화 -----------------------
+
+import yaml
+from box import Box
+# Configuration
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
+
+# 임베딩 모델 및 토크나이저 (청크 벡터화를 위해 별도 로드)
+embedding_model = AutoModel.from_pretrained(config.embed_model_id, cache_dir=config.cache_dir)
+embedding_tokenizer = AutoTokenizer.from_pretrained(config.embed_model_id, cache_dir=config.cache_dir)
+embedding_model.eval()
+
+# 벡터화 코드
+def vectorize_content(content):
+    inputs = embedding_tokenizer(content, padding=True, truncation=True, return_tensors="pt")
+    with torch.no_grad():
+        outputs = embedding_model(**inputs, return_dict=False)
+    # 첫 토큰의 임베딩을 사용 (필요에 따라 변경 가능)
+    vector = outputs[0][:,0,:].squeeze(0).tolist()
+    return vector
 
 ```
 
@@ -2322,481 +2453,759 @@ def time_tracker(func):
 ```
 
 
---- templates/chatroom.html
+--- data_control.py
 
 ```python
+
+import os
+import json
+import datetime
+import torch
+import numpy as np
+from umap import UMAP
+from flask import Blueprint, request, jsonify, render_template
+from transformers import AutoModel, AutoTokenizer
+from utils import vectorize_content  # Assumes you have defined vectorize_content in utils.py
+
+# For PPTX extraction
+from pptx import Presentation
+
+# For PDF extraction
+import PyPDF2
+
+# For visualization we use Plotly
+import plotly.express as px
+import pandas as pd
+
+DATA_PATH = "data/1104_NS_DB_old.json"
+
+# 임베딩 모델 로드 (필요한 경우 캐싱 고려)
+embedding_model = AutoModel.from_pretrained("BM-K/KoSimCSE-roberta-multitask")
+embedding_tokenizer = AutoTokenizer.from_pretrained("BM-K/KoSimCSE-roberta-multitask")
+embedding_model.eval()
+
+data_control_bp = Blueprint("data_manager", __name__, template_folder="templates")
+
+# --- Helper functions for new file types ---
+
+def extract_text_from_pptx(file_path):
+    prs = Presentation(file_path)
+    texts = []
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text:
+                texts.append(shape.text)
+    return "\n".join(texts)
+
+def extract_text_from_pdf(file_path):
+    pdf_text = ""
+    with open(file_path, "rb") as f:
+        reader = PyPDF2.PdfReader(f)
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                pdf_text += page_text + "\n"
+    return pdf_text
+
+@data_control_bp.route("/manager")
+def data_control_page():
+    return render_template("data_manager.html")
+
+@data_control_bp.route("/upload", methods=["POST"])
+def data_upload():
+    if "dataFile" not in request.files:
+        return jsonify({"message": "파일이 업로드되지 않았습니다."}), 400
+    file = request.files["dataFile"]
+    if file.filename == "":
+        return jsonify({"message": "파일 이름이 없습니다."}), 400
+    ext = os.path.splitext(file.filename)[1].lower()
+    try:
+        # TXT file processing
+        if ext == ".txt":
+            content = file.read().decode("utf-8")
+            vector = vectorize_content(content)
+            new_entry = {
+                "file_name": file.filename,
+                "chunks": [
+                    {
+                        "chunk_id": 1,
+                        "title": os.path.splitext(file.filename)[0],
+                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                        "type": "text",
+                        "text": content,
+                        "text_short": content[:200],
+                        "vector": vector,
+                        "text_vis": content,
+                    }
+                ],
+            }
+        # JSON file processing
+        elif ext == ".json":
+            new_entry = json.load(file)
+            if not isinstance(new_entry, list):
+                new_entry = [new_entry]
+            for entry in new_entry:
+                for chunk in entry.get("chunks", []):
+                    if not chunk.get("vector"):
+                        text = chunk.get("text", "")
+                        chunk["vector"] = vectorize_content(text) if text else []
+        # PPTX file processing
+        elif ext == ".pptx":
+            temp_path = os.path.join("temp", file.filename)
+            os.makedirs("temp", exist_ok=True)
+            file.save(temp_path)
+            content = extract_text_from_pptx(temp_path)
+            os.remove(temp_path)
+            vector = vectorize_content(content)
+            new_entry = {
+                "file_name": file.filename,
+                "chunks": [
+                    {
+                        "chunk_id": 1,
+                        "title": os.path.splitext(file.filename)[0],
+                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                        "type": "pptx",
+                        "text": content,
+                        "text_short": content[:200],
+                        "vector": vector,
+                        "text_vis": content,
+                    }
+                ],
+            }
+        # PDF file processing
+        elif ext == ".pdf":
+            temp_path = os.path.join("temp", file.filename)
+            os.makedirs("temp", exist_ok=True)
+            file.save(temp_path)
+            content = extract_text_from_pdf(temp_path)
+            os.remove(temp_path)
+            vector = vectorize_content(content)
+            new_entry = {
+                "file_name": file.filename,
+                "chunks": [
+                    {
+                        "chunk_id": 1,
+                        "title": os.path.splitext(file.filename)[0],
+                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                        "type": "pdf",
+                        "text": content,
+                        "text_short": content[:200],
+                        "vector": vector,
+                        "text_vis": content,
+                    }
+                ],
+            }
+        else:
+            return jsonify({"message": "지원되지 않는 파일 형식입니다."}), 400
+
+        # Load existing data
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+        else:
+            existing_data = []
+        # Append new entry
+        if isinstance(new_entry, list):
+            existing_data.extend(new_entry)
+        else:
+            existing_data.append(new_entry)
+        with open(DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(existing_data, f, ensure_ascii=False, indent=2)
+        return jsonify({"message": "파일 업로드 및 벡터화가 완료되었습니다."})
+    except Exception as e:
+        return jsonify({"message": f"업로드 실패: {str(e)}"}), 500
+
+@data_control_bp.route("/list", methods=["GET"])
+def data_list():
+    try:
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                data_entries = json.load(f)
+        else:
+            data_entries = []
+        summary = []
+        for entry in data_entries:
+            if "chunks" in entry and entry["chunks"]:
+                chunk = entry["chunks"][0]
+                summary.append({
+                    "file_name": entry.get("file_name", ""),
+                    "title": chunk.get("title", ""),
+                    "date": chunk.get("date", ""),
+                })
+            else:
+                summary.append({
+                    "file_name": entry.get("file_name", ""),
+                    "title": "",
+                    "date": ""
+                })
+        return jsonify(summary)
+    except Exception as e:
+        return jsonify({"message": f"데이터 목록 불러오기 실패: {str(e)}"}), 500
+
+@data_control_bp.route("/delete", methods=["POST"])
+def data_delete():
+    try:
+        req = request.get_json()
+        index = req.get("index")
+        if index is None:
+            return jsonify({"message": "삭제할 인덱스가 제공되지 않았습니다."}), 400
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                data_entries = json.load(f)
+        else:
+            return jsonify({"message": "데이터 파일이 존재하지 않습니다."}), 404
+        if not (0 <= index < len(data_entries)):
+            return jsonify({"message": "유효하지 않은 인덱스입니다."}), 400
+        del data_entries[index]
+        with open(DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(data_entries, f, ensure_ascii=False, indent=2)
+        return jsonify({"message": "데이터 삭제가 완료되었습니다."})
+    except Exception as e:
+        return jsonify({"message": f"데이터 삭제 실패: {str(e)}"}), 500
+
+# --- Search and highlight endpoint ---
+@data_control_bp.route("/search", methods=["GET"])
+def search_data():
+    query = request.args.get("q", "").lower()
+    if os.path.exists(DATA_PATH):
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            data_entries = json.load(f)
+    else:
+        data_entries = []
+    results = []
+    for idx, entry in enumerate(data_entries):
+        file_name = entry.get("file_name", "").lower()
+        title = ""
+        if "chunks" in entry and entry["chunks"]:
+            title = entry["chunks"][0].get("title", "").lower()
+        if query in file_name or query in title:
+            results.append({
+                "index": idx,
+                "file_name": entry.get("file_name", ""),
+                "title": title,
+            })
+    return jsonify(results)
+
+
+@data_control_bp.route("/umap_visualization")
+def umap_visualization_page():
+    return render_template("umap_visualization.html")
+
+@data_control_bp.route("/api/umap_data", methods=["GET"])
+def get_umap_data():
+    try:
+        # Load vector data
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                data_entries = json.load(f)
+        else:
+            return jsonify({"error": "데이터 파일을 찾을 수 없습니다."}), 404
+        
+        # Extract vectors and metadata
+        vectors = []
+        metadata = []
+        
+        for entry in data_entries:
+            for chunk in entry.get("chunks", []):
+                if "vector" in chunk and chunk["vector"]:
+                    vectors.append(chunk["vector"])
+                    metadata.append({
+                        "id": f"{entry.get('file_name', 'unknown')}_{chunk.get('chunk_id', '0')}",
+                        "file_name": entry.get("file_name", "Unknown"),
+                        "title": chunk.get("title", ""),
+                        "date": chunk.get("date", ""),
+                        "text_short": chunk.get("text_short", "")[:100] + "..."
+                    })
+        
+        if not vectors:
+            return jsonify({"error": "벡터 데이터가 없습니다."}), 404
+        
+        # Convert to numpy array and squeeze extra dimensions
+        vectors_array = np.array(vectors)
+        vectors_array = np.squeeze(vectors_array)
+        
+        # Apply UMAP for dimensionality reduction
+        from umap import UMAP
+        n_neighbors = min(15, len(vectors) - 1)  # Adjust based on data size
+        umap_model = UMAP(n_components=2, 
+                            n_neighbors=n_neighbors, 
+                            min_dist=0.1, 
+                            metric='cosine', 
+                            random_state=42)
+        embedding = umap_model.fit_transform(vectors_array)
+        
+        # Prepare response data
+        nodes = []
+        for i, (x, y) in enumerate(embedding):
+            nodes.append({
+                "id": metadata[i]["id"],
+                "x": float(x),
+                "y": float(y),
+                "file_name": metadata[i]["file_name"],
+                "title": metadata[i]["title"],
+                "date": metadata[i]["date"],
+                "text_short": metadata[i]["text_short"]
+            })
+        
+        # Calculate edges (connections between similar vectors)
+        edges = []
+        if len(vectors) > 1:
+            from sklearn.metrics.pairwise import cosine_similarity
+            similarity = cosine_similarity(vectors_array)
+            threshold = 0.7
+            for i in range(len(vectors)):
+                for j in range(i+1, len(vectors)):
+                    if similarity[i, j] > threshold:
+                        edges.append({
+                            "source": metadata[i]["id"],
+                            "target": metadata[j]["id"],
+                            "value": float(similarity[i, j])
+                        })
+        
+        return jsonify({
+            "nodes": nodes,
+            "edges": edges
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"UMAP 시각화 처리 중 오류 발생: {str(e)}"}), 500
+
+```
+
+
+--- templates/data_manager.html
+
+```html
 
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8" />
-  <title>FLUX_NS 채팅방 테스트 (SSE + Reference)</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>데이터 관리</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
-    /* 
-      기본적인 리셋 및 바디 스타일 
-      - 실제 프로덕션 환경에서는 리셋 CSS 또는 normalize.css 등을 활용 가능
-    */
-    * {
-      box-sizing: border-box;
+    body {
+      font-family: 'Inter', sans-serif;
       margin: 0;
       padding: 0;
+      background-color: #f9fafb;
     }
-    body {
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-      height: 100vh;
-      display: flex;
-      background-color: #f0f0f0;
-    }
-
-    /* 
-      좌측 사이드바 스타일 
-      - 채팅방 목록 및 새 채팅방 생성 버튼을 배치
-    */
-    .sidebar {
-      width: 250px;
-      background-color: #202123; /* ChatGPT 비슷한 어두운 톤 */
-      color: #fff;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 20px;
-      overflow-y: auto;
-    }
-    .sidebar h2 {
-      margin-bottom: 20px;
-      font-size: 1.2rem;
-    }
-    .sidebar button {
+    .container {
       width: 100%;
-      background-color: #3e3f4b;
-      color: #fff;
-      border: none;
-      padding: 10px;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h1, h2 {
+      color: #111827;
+    }
+    .controls {
       margin-bottom: 15px;
-      cursor: pointer;
-      font-size: 0.9rem;
-      border-radius: 5px;
-    }
-    .sidebar button:hover {
-      background-color: #565869;
-    }
-    .chat-room-list {
-      list-style: none;
-      width: 100%;
-    }
-    .chat-room-list li {
-      margin-bottom: 10px;
-    }
-    .chat-room-list button {
-      width: 100%;
-      background-color: #2b2c34;
-      color: #fff;
-      border: none;
-      padding: 8px;
-      cursor: pointer;
-      font-size: 0.85rem;
-      border-radius: 3px;
-      text-align: left;
-    }
-    .chat-room-list button:hover {
-      background-color: #444654;
-    }
-
-    /* 
-      메인 컨테이너(채팅 영역) 스타일 
-      - 상단 채팅방 정보, 채팅 내용, 입력 영역
-    */
-    .main-container {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      background-color: #f8f8f8;
-      overflow: hidden;
-    }
-    /* 채팅방 상단 영역 (예: 채팅방 이름/ID 표시) */
-    .chat-header {
-      background-color: #fff;
-      padding: 10px 20px;
-      border-bottom: 1px solid #ccc;
-    }
-    .chat-header h2 {
-      font-size: 1rem;
-      color: #444;
-    }
-
-    /* 채팅 메시지들이 표시되는 영역 */
-    .chat-box {
-      flex: 1;
-      overflow-y: auto;
-      padding: 20px;
-      background-color: #f0f0f0;
-    }
-    .message-line {
-      margin-bottom: 10px;
-      line-height: 1.4;
-    }
-    .message-line strong {
-      margin-right: 5px;
-    }
-    /* 사용자 메시지와 AI(시스템) 메시지 구분 위해 간단한 색상 차이 부여 */
-    .message-user {
-      color: #333;        /* 사용자: 일반 텍스트 */
-    }
-    .message-ai {
-      color: #1d4ed8;     /* AI: 파란색 계열 */
-    }
-    .message-system {
-      color: #dc2626;     /* 시스템: 붉은 계열 */
-    }
-
-    /* 입력 영역 스타일 */
-    .input-container {
-      background-color: #fff;
-      border-top: 1px solid #ccc;
-      padding: 10px;
       display: flex;
       gap: 10px;
+      align-items: center;
     }
-    .input-container input {
-      flex: 1;
-      padding: 10px;
-      font-size: 1rem;
-      border: 1px solid #ccc;
-      border-radius: 5px;
-    }
-    .input-container button {
-      padding: 10px 15px;
-      font-size: 1rem;
-      border: none;
-      border-radius: 5px;
-      cursor: pointer;
-      background-color: #4c82ff;
-      color: #fff;
-    }
-    .input-container button:hover {
-      background-color: #365da8;
-    }
-
-    /* 참조 데이터 토글 영역 */
-    #referenceContainer {
-      display: none; /* 처음에는 감춰둠 */
-      margin: 10px;
-      background-color: #fff;
-      padding: 10px;
-      border: 1px solid #ccc;
-      max-height: 250px;
-      overflow-y: auto;
-    }
-    #toggleRefBtn {
-      display: none; /* 참고 데이터가 있을 때만 보임 */
-      margin: 0 20px 10px 20px;
-      padding: 8px 12px;
-      background-color: #eaeaea;
+    button {
+      padding: 8px 16px;
+      background-color: #7c3aed;
+      color: white;
       border: none;
       border-radius: 4px;
       cursor: pointer;
     }
+    button:hover {
+      background-color: #6d28d9;
+    }
+    .visualization {
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+      position: relative;
+      height: 700px;
+    }
+    /* Use a canvas element instead of SVG */
+    canvas#visualizationCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .tooltip {
+      position: absolute;
+      padding: 10px;
+      background-color: rgba(0, 0, 0, 0.8);
+      color: white;
+      border-radius: 4px;
+      pointer-events: none;
+      max-width: 300px;
+      z-index: 100;
+      font-size: 14px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    }
+    .tooltip h4 {
+      margin: 0 0 5px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+      padding-bottom: 5px;
+    }
+    .tooltip p {
+      margin: 5px 0;
+    }
+    .legend {
+      position: absolute;
+      right: 20px;
+      top: 20px;
+      background-color: rgba(255, 255, 255, 0.9);
+      padding: 10px;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+    .legend-color {
+      width: 15px;
+      height: 15px;
+      margin-right: 8px;
+      border-radius: 3px;
+    }
+    .loading {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(255, 255, 255, 0.8);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+    .loading-spinner {
+      border: 5px solid #f3f3f3;
+      border-top: 5px solid #7c3aed;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    /* Styles for search results */
+    #searchResults {
+      margin: 10px 0;
+      padding: 10px;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+    }
+    table, th, td {
+      border: 1px solid #ccc;
+    }
+    th, td {
+      padding: 8px;
+      text-align: center;
+    }
   </style>
 </head>
-
 <body>
-  <!-- 왼쪽 사이드바 -->
-  <div class="sidebar">
-    <h2>FLUX_NS</h2>
-    <button onclick="createNewChatFromSidebar()">새 채팅방 생성</button>
-    <ul id="chatRoomList" class="chat-room-list"></ul>
-  </div>
+  <div class="container">
+    <h1>데이터 관리</h1>
+    
+    <h2>데이터 업로드</h2>
+    <form id="uploadForm" enctype="multipart/form-data">
+      <input type="file" id="dataFile" name="dataFile" accept=".txt,.json,.pptx,.pdf" required>
+      <button type="submit">업로드 및 벡터화</button>
+    </form>
 
-  <!-- 메인 컨테이너 (채팅 영역) -->
-  <div class="main-container">
-    <!-- 채팅방 상단 정보 -->
-    <div class="chat-header">
-      <h2 id="chatRoomId">채팅방 ID: -</h2>
+    <h2>데이터 검색</h2>
+    <div class="controls">
+      <input type="text" id="searchInput" placeholder="검색어를 입력하세요">
+      <button onclick="performSearch()">검색</button>
+    </div>
+    <div id="searchResults"></div>
+
+    <h1>UMAP 벡터 시각화 (Canvas Optimized)</h1>
+    <div class="controls">
+      <button id="colorByFile">파일별 색상</button>
+      <button id="showLinks">유사성 연결선 표시</button>
+      <button id="resetZoom">줌 초기화</button>
+    </div>
+    <div class="visualization">
+      <div id="loading" class="loading">
+        <div class="loading-spinner"></div>
+      </div>
+      <canvas id="visualizationCanvas"></canvas>
+      <div id="legend" class="legend"></div>
     </div>
 
-    <!-- 토글 버튼 (참고 데이터 보기/숨기기)-->
-    <button id="toggleRefBtn" onclick="toggleReferences()">Show References</button>
-
-    <!-- 참조 데이터 표시 영역 -->
-    <div id="referenceContainer">
-      <!-- 여기에 참고 데이터를 표시 -->
-    </div>
-
-    <!-- 채팅 메시지가 표시되는 박스 -->
-    <div class="chat-box" id="chatBox"></div>
-
-    <!-- 입력 영역 -->
-    <div class="input-container">
-      <input type="text" id="userMessage" placeholder="메시지를 입력하세요..." />
-      <button onclick="sendMessage()">전송</button>
-    </div>
+    <h2>현재 데이터 목록</h2>
+    <table id="dataTable">
+      <thead>
+        <tr>
+          <th>인덱스</th>
+          <th>파일 이름</th>
+          <th>제목</th>
+          <th>수정일자</th>
+          <th>액션</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
   </div>
 
   <script>
-    /************************************************************************
-     * 전역 변수 및 데이터 구조
-     ************************************************************************/
-    let currentRequestId = null;      // 현재 활성 채팅방의 requestId
-    let chatRooms = [];              // [{ requestId, messages: [{sender, text}] }]
-    let referenceList = [];          // 이번 쿼리에서 수집한 reference 데이터
+    // Load and display data list
+    async function loadDataList() {
+      const response = await fetch('/data/list');
+      const data = await response.json();
+      const tbody = document.getElementById('dataTable').getElementsByTagName('tbody')[0];
+      tbody.innerHTML = '';
+      data.forEach((item, index) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${index}</td>
+          <td>${item.file_name}</td>
+          <td>${item.title}</td>
+          <td>${item.date}</td>
+          <td>
+            <button onclick="deleteData(${index})">삭제</button>
+          </td>
+        `;
+        tbody.appendChild(row);
+      });
+    }
 
-    /************************************************************************
-     * 페이지 로드 시 자동으로 채팅방 생성 (처음 접속하면 바로 시작하도록)
-     ************************************************************************/
-    window.addEventListener('load', () => {
-      createNewChatRoom(); 
+    async function deleteData(index) {
+      if (!confirm('이 데이터를 삭제하시겠습니까?')) return;
+      const response = await fetch('/data/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ index: index })
+      });
+      const result = await response.json();
+      alert(result.message);
+      loadDataList();
+      loadVisualization();
+    }
+
+    document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const fileInput = document.getElementById('dataFile');
+      const formData = new FormData();
+      formData.append('dataFile', fileInput.files[0]);
+
+      const response = await fetch('/data/upload', {
+        method: 'POST',
+        body: formData
+      });
+      const result = await response.json();
+      alert(result.message);
+      loadDataList();
+      loadVisualization();
     });
 
-    /************************************************************************
-     * 사이드바 및 채팅방 생성
-     ************************************************************************/
-    function createNewChatRoom() {
-      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
-      chatRooms.push({ requestId: newRequestId, messages: [] });
-      setActiveChatRoom(newRequestId);
-      renderChatRoomList();
-    }
-
-    function createNewChatFromSidebar() {
-      createNewChatRoom();
-    }
-
-    function renderChatRoomList() {
-      const ul = document.getElementById("chatRoomList");
-      ul.innerHTML = "";
-      chatRooms.forEach(room => {
-        const li = document.createElement("li");
-        const btn = document.createElement("button");
-        btn.innerText = `ChatRoom: ${room.requestId}`;
-        btn.onclick = () => setActiveChatRoom(room.requestId);
-        li.appendChild(btn);
-        ul.appendChild(li);
-      });
-    }
-
-    function setActiveChatRoom(requestId) {
-      currentRequestId = requestId;
-      document.getElementById("chatRoomId").innerText = `채팅방 ID: ${requestId}`;
-
-      // 채팅 박스 다시 그리기
-      const chatBox = document.getElementById("chatBox");
-      chatBox.innerHTML = "";
-      const room = chatRooms.find(r => r.requestId === requestId);
-      if (room) {
-        room.messages.forEach(msg => {
-          appendMessageToChatBox(msg.sender, msg.text);
-        });
-      }
-
-      // 참조 영역은 새 채팅방 선택 시 초기화(접속 전방의 참조는 별개)
-      clearReferenceData();
-    }
-
-    /************************************************************************
-     * 채팅 메시지 표시 헬퍼
-     ************************************************************************/
-    function appendMessageToChatBox(sender, message) {
-      const chatBox = document.getElementById("chatBox");
-      const msgDiv = document.createElement("div");
-      msgDiv.classList.add("message-line");
-
-      let senderClass = "message-system";
-      if (sender === "사용자") senderClass = "message-user";
-      else if (sender === "AI") senderClass = "message-ai";
-
-      msgDiv.innerHTML = `<strong class="${senderClass}">${sender}:</strong> ${message}`;
-      chatBox.appendChild(msgDiv);
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    // 메시지를 chatRooms에도 저장
-    function storeMessageInRoom(requestId, sender, text) {
-      const room = chatRooms.find(r => r.requestId === requestId);
-      if (room) {
-        room.messages.push({ sender, text });
-      }
-    }
-
-    /************************************************************************
-     * 스트리밍 (SSE) 메시지 전송 및 수신
-     ************************************************************************/
-    async function sendMessage() {
-      const messageInput = document.getElementById("userMessage");
-      const message = messageInput.value.trim();
-      if (!message) return;
-
-      // 사용자 메시지 표시
-      appendMessageToChatBox("사용자", message);
-      storeMessageInRoom(currentRequestId, "사용자", message);
-      messageInput.value = "";
-
-      // 이번 요청마다 참조 리스트 초기화
-      clearReferenceData();
-
-      // payload 준비
-      const payload = { input: message };
-      if (currentRequestId) {
-        payload.request_id = currentRequestId;
-      }
-
+    // Search function integration
+    async function performSearch() {
+      const query = document.getElementById('searchInput').value.trim();
+      if (!query) return alert('검색어를 입력하세요.');
       try {
-        const response = await fetch('/query_stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+        const response = await fetch(`/data/search?q=${encodeURIComponent(query)}`);
+        const results = await response.json();
+        displaySearchResults(results);
+      } catch (error) {
+        console.error('검색 오류:', error);
+        alert('검색 중 오류가 발생했습니다.');
+      }
+    }
+
+    function displaySearchResults(results) {
+      const container = document.getElementById('searchResults');
+      if (results.length === 0) {
+        container.innerHTML = '<p>검색 결과가 없습니다.</p>';
+        return;
+      }
+      let html = '<ul>';
+      results.forEach(item => {
+        html += `<li>[${item.index}] 파일: ${item.file_name}, 제목: ${item.title}</li>`;
+      });
+      html += '</ul>';
+      container.innerHTML = html;
+    }
+
+    // Visualization configuration and global variables
+    const config = {
+      colorByFile: true,
+      showLinks: false,
+      nodeSizeRange: [5, 15],
+      linkOpacity: 0.3,
+      zoomExtent: [0.1, 10]
+    };
+
+    let colorScale = d3.scaleOrdinal(d3.schemeCategory10);
+    let graphData = { nodes: [], edges: [] };
+    let canvas, context;
+    let transform = { x: 0, y: 0, k: 1 };
+
+    async function loadVisualization() {
+      try {
+        document.getElementById('loading').style.display = 'flex';
+        const response = await fetch('/data/api/umap_data');
+        if (!response.ok) throw new Error('데이터를 불러오는데 실패했습니다.');
+        graphData = await response.json();
+
+        // Setup canvas
+        canvas = document.getElementById('visualizationCanvas');
+        context = canvas.getContext('2d');
+        const container = document.querySelector('.visualization');
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+
+        // Update color scale domain based on unique file names
+        const uniqueFiles = [...new Set(graphData.nodes.map(n => n.file_name))];
+        colorScale.domain(uniqueFiles);
+        createLegend(uniqueFiles);
+
+        // Calculate node sizes based on connections
+        const nodeConnections = {};
+        graphData.edges.forEach(edge => {
+          nodeConnections[edge.source] = (nodeConnections[edge.source] || 0) + 1;
+          nodeConnections[edge.target] = (nodeConnections[edge.target] || 0) + 1;
+        });
+        const sizeScale = d3.scaleLinear()
+          .domain([0, d3.max(Object.values(nodeConnections)) || 1])
+          .range(config.nodeSizeRange);
+
+        // Map UMAP coordinates to canvas coordinates
+        const width = canvas.width, height = canvas.height;
+        const xExtent = d3.extent(graphData.nodes, d => d.x);
+        const yExtent = d3.extent(graphData.nodes, d => d.y);
+        const xScale = d3.scaleLinear().domain(xExtent).range([50, width - 50]);
+        const yScale = d3.scaleLinear().domain(yExtent).range([50, height - 50]);
+
+        // Update nodes with new positions and radius
+        graphData.nodes.forEach(node => {
+          node.x = xScale(node.x);
+          node.y = yScale(node.y);
+          node.r = sizeScale(nodeConnections[node.id] || 0) || config.nodeSizeRange[0];
         });
 
-        if (!response.ok) {
-          throw new Error("응답 오류: " + response.status);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-
-        let sseBuffer = "";
-        let partialAnswer = "";
-
-        startAIStreamingMessage();  // AI가 답변 중임을 표시
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          sseBuffer += chunk;
-
-          const lines = sseBuffer.split("\n");
-          sseBuffer = lines.pop(); // 남은 라인은 덜 끊긴 조각일 수 있음
-
-          for (let line of lines) {
-            line = line.trim();
-            if (!line) continue;
-
-            // SSE는 보통 "data: ..." 형태
-            if (line.startsWith("data:")) {
-              const jsonStr = line.slice(5).trim();
-              if (jsonStr === "[[STREAM_DONE]]") {
-                finalizeAIMessage(partialAnswer);
-                return;
-              }
-              try {
-                const sseData = JSON.parse(jsonStr);
-                if (sseData.type === "answer") {
-                  partialAnswer += sseData.answer;
-                  updateAIStreamingMessage(partialAnswer);
-                }
-                else if (sseData.type === "reference") {
-                  // 참조 데이터 수집
-                  addReferenceData(sseData);
-                }
-                else {
-                  // 그 외 타입
-                  console.log("기타 SSE 데이터:", sseData);
-                }
-              } catch (err) {
-                // JSON 파싱 실패 -> 그냥 텍스트로 처리
-                partialAnswer += jsonStr;
-                updateAIStreamingMessage(partialAnswer);
-              }
-            }
-          }
-        }
-        // while 루프 끝 (done=true)
-        if (sseBuffer.trim()) {
-          // 남은 sseBuffer 처리할 로직 (필요시 구현)
-        }
-        finalizeAIMessage(partialAnswer);
-      } catch (err) {
-        appendMessageToChatBox("시스템", "오류 발생: " + err.message);
-        storeMessageInRoom(currentRequestId, "시스템", "오류 발생: " + err.message);
+        renderGraph();
+        setupCanvasInteractions();
+        document.getElementById('loading').style.display = 'none';
+      } catch (error) {
+        console.error('Error:', error);
+        document.getElementById('loading').style.display = 'none';
+        alert('시각화 생성 중 오류가 발생했습니다: ' + error.message);
       }
     }
 
-    /************************************************************************
-     * AI 스트리밍 표시 (임시 메시지) 
-     ************************************************************************/
-    let tempAiMsgDiv = null;
+    function renderGraph() {
+      context.save();
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.translate(transform.x, transform.y);
+      context.scale(transform.k, transform.k);
 
-    function startAIStreamingMessage() {
-      const chatBox = document.getElementById("chatBox");
-      tempAiMsgDiv = document.createElement("div");
-      tempAiMsgDiv.classList.add("message-line");
-      tempAiMsgDiv.innerHTML = `<strong class="message-ai">AI:</strong> <span id="aiTempText"></span>`;
-      chatBox.appendChild(tempAiMsgDiv);
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    function updateAIStreamingMessage(text) {
-      if (!tempAiMsgDiv) return;
-      const span = tempAiMsgDiv.querySelector("#aiTempText");
-      if (span) {
-        span.textContent = text;
-      }
-      const chatBox = document.getElementById("chatBox");
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    function finalizeAIMessage(finalText) {
-      // 최종 AI 메시지를 chatRooms에 저장
-      storeMessageInRoom(currentRequestId, "AI", finalText);
-      tempAiMsgDiv = null;
-
-      // 참조 데이터가 하나라도 있으면 Show 버튼 표시
-      if (referenceList.length > 0) {
-        document.getElementById("toggleRefBtn").style.display = "block";
-      }
-    }
-
-    /************************************************************************
-     * 참조 데이터(Reference) 관련
-     ************************************************************************/
-    function addReferenceData(refData) {
-      // 여기선 단순히 배열에 push
-      referenceList.push(refData);
-      // 콘솔 찍어볼 수도 있음
-      console.log("Reference data received:", refData);
-    }
-
-    function clearReferenceData() {
-      referenceList = [];
-      document.getElementById("toggleRefBtn").style.display = "none";
-      document.getElementById("referenceContainer").style.display = "none";
-      document.getElementById("referenceContainer").innerHTML = "";
-    }
-
-    // 토글 버튼 클릭 시, 참조 정보를 표시하거나 숨기는 함수
-    function toggleReferences() {
-      const container = document.getElementById("referenceContainer");
-      if (container.style.display === "none" || container.style.display === "") {
-        // 보이게
-        container.style.display = "block";
-        // 이미 렌더링되어 있다면 스킵, 없으면 렌더링
-        if (!container.innerHTML.trim()) {
-          renderReferenceData();
+      // Draw links
+      context.strokeStyle = config.showLinks ? `rgba(150,150,150,${config.linkOpacity})` : 'rgba(150,150,150,0)';
+      context.lineWidth = 1;
+      graphData.edges.forEach(edge => {
+        const source = graphData.nodes.find(n => n.id === edge.source);
+        const target = graphData.nodes.find(n => n.id === edge.target);
+        if (source && target) {
+          context.beginPath();
+          context.moveTo(source.x, source.y);
+          context.lineTo(target.x, target.y);
+          context.stroke();
         }
-        document.getElementById("toggleRefBtn").textContent = "Hide References";
-      } else {
-        // 숨기기
-        container.style.display = "none";
-        document.getElementById("toggleRefBtn").textContent = "Show References";
-      }
+      });
+
+      // Draw nodes
+      graphData.nodes.forEach(node => {
+        context.beginPath();
+        context.arc(node.x, node.y, node.r, 0, 2 * Math.PI);
+        context.fillStyle = config.colorByFile ? colorScale(node.file_name) : '#1f77b4';
+        context.fill();
+        context.lineWidth = 1.5;
+        context.strokeStyle = "#fff";
+        context.stroke();
+      });
+      context.restore();
     }
 
-    // 참조 데이터를 화면에 렌더링
-    function renderReferenceData() {
-      const container = document.getElementById("referenceContainer");
-      container.innerHTML = ""; // 초기화
-
-      referenceList.forEach((refObj, idx) => {
-        // 간단히 JSON.stringify 등으로 출력
-        // 실제로는 refObj.data_list 등 더 구체적으로 표시 가능
-        const div = document.createElement("div");
-        div.style.marginBottom = "10px";
-        div.innerHTML = `<strong>Reference #${idx + 1}</strong><br>
-                         <pre style="white-space: pre-wrap;">${JSON.stringify(refObj, null, 2)}</pre>`;
-        container.appendChild(div);
+    // Pan and zoom interaction for canvas
+    function setupCanvasInteractions() {
+      let isDragging = false, startX, startY;
+      canvas.addEventListener("mousedown", (event) => {
+        isDragging = true;
+        startX = event.offsetX - transform.x;
+        startY = event.offsetY - transform.y;
+      });
+      canvas.addEventListener("mousemove", (event) => {
+        if (isDragging) {
+          transform.x = event.offsetX - startX;
+          transform.y = event.offsetY - startY;
+          renderGraph();
+        }
+      });
+      canvas.addEventListener("mouseup", () => { isDragging = false; });
+      canvas.addEventListener("mouseleave", () => { isDragging = false; });
+      canvas.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const zoomFactor = 1.05;
+        if (event.deltaY < 0) {
+          transform.k *= zoomFactor;
+        } else {
+          transform.k /= zoomFactor;
+        }
+        renderGraph();
       });
     }
+
+    // Create legend based on file names
+    function createLegend(uniqueFiles) {
+      const legend = d3.select('#legend');
+      legend.html('');
+      uniqueFiles.forEach(file => {
+        const legendItem = legend.append('div').attr('class', 'legend-item');
+        legendItem.append('div')
+          .attr('class', 'legend-color')
+          .style('background-color', colorScale(file));
+        legendItem.append('span').text(file);
+      });
+    }
+
+    // Control handlers
+    document.getElementById('colorByFile').addEventListener('click', () => {
+      config.colorByFile = !config.colorByFile;
+      renderGraph();
+      document.getElementById('legend').style.display = config.colorByFile ? 'block' : 'none';
+    });
+    document.getElementById('showLinks').addEventListener('click', () => {
+      config.showLinks = !config.showLinks;
+      renderGraph();
+    });
+    document.getElementById('resetZoom').addEventListener('click', () => {
+      transform = { x: 0, y: 0, k: 1 };
+      renderGraph();
+    });
+
+    // Initialize visualization and data list on page load
+    document.addEventListener('DOMContentLoaded', () => {
+      loadVisualization();
+      loadDataList();
+    });
   </script>
 </body>
 </html>
@@ -2810,13 +3219,14 @@ def time_tracker(func):
 
 
 Base-Knowledge:
- - 위 파일들은 Gemma2 모델을 활용한 RAG 서비스의 소스 코드입니다.
- - 파일 트리와 각 파일의 내용이 ```python``` 코드 블록 내에 포함되며, 프로젝트의 현재 구조와 상태를 한눈에 파악할 수 있습니다.
+ - 위 파일들은 LLM 모델을 활용한 사내 RAG 서비스의 소스 코드입니다.
+ - 파일 트리와 각 파일의 내용이 코드 블록 내에 포함되어, 프로젝트의 현재 구조와 상태를 한눈에 파악할 수 있습니다.
  - vLLM과 ray를 활용하여 사용성 및 추론 성능을 개선하였습니다.
+ - Langchain을 활용하여 reqeust_id별로 대화를 저장하고 활용할 수 있습니다.
  - 에러 발생 시 로깅을 통해 문제를 추적할 수 있도록 설계되었습니다.
 
 My-Requirements:
- 1. User requirements.
- 2. My requirements.
- 3. 추후 소스 코드 개선, 구조 변경, 에러 로그 추가 등 다양한 요구사항을 반영할 수 있는 확장성을 고려합니다.
- 4. 전체 코드는 한국어로 주석 및 설명이 포함되어, 이해와 유지보수가 용이하도록 작성됩니다.
+ 1. 추후 소스 코드 개선, 구조 변경, 에러 로그 추가 등 다양한 요구사항을 반영할 수 있는 확장성을 고려합니다.
+ 2. 전체 코드는 한국어로 주석 및 설명이 포함되어, 이해와 유지보수가 용이하도록 작성됩니다.
+ 3. User requirements.
+ 4. My requirements.
