@@ -22,6 +22,7 @@ from utils import (
     process_format_to_response,
     process_to_format,
     error_format,
+    summarize_conversation
 )
 
 # 랭체인 도입
@@ -316,7 +317,24 @@ class InferenceActor:
                         )
                         answer = process_to_format([output, chart], type="Answer")
                         outputs = process_format_to_response(retrieval, answer)
-                        memory.save_context({"input": user_input}, {"output": output}) # 랭체인
+                        
+                        # >>> CHANGED: Record used chunk IDs and summarize the conversation
+                        chunk_ids_used = []
+                        for doc in docs_list:
+                            if "chunk_id" in doc:
+                                chunk_ids_used.append(doc["chunk_id"])
+                        loop = asyncio.get_event_loop()
+                        prev_summary = memory.load_memory_variables({}).get("summary", "")
+                        new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
+                        updated_conversation = prev_summary + "\n" + new_entry
+                        summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        # After obtaining 'summarized' in _process_single_query:
+                        if not summarized:
+                            print("[ERROR] Summarization returned an empty string.")
+                        else:
+                            print(f"[CHECK] Summarized conversation: {summarized}")
+                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
+                        # >>> CHANGED -----------------------------------------------------
                         future.set_result(outputs)
 
                 except Exception as e:
@@ -359,7 +377,18 @@ class InferenceActor:
                         answer = process_to_format([output], type="Answer")
                         print("process_to_format 이후에 ANSWER까지 생성 완료")
                         outputs = process_format_to_response(retrieval, answer)
-                        memory.save_context({"input": user_input}, {"output": output}) # 랭체인
+                        # >>> CHANGED: Record used chunk IDs and update conversation summary
+                        chunk_ids_used = []
+                        for doc in docs_list:
+                            if "chunk_id" in doc:
+                                chunk_ids_used.append(doc["chunk_id"])
+                        loop = asyncio.get_event_loop()
+                        prev_summary = memory.load_memory_variables({}).get("summary", "")
+                        new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
+                        updated_conversation = prev_summary + "\n" + new_entry
+                        summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
+                        # --------------------------------------------------------------------
                         future.set_result(outputs)
 
                 except Exception as e:
@@ -478,6 +507,25 @@ class InferenceActor:
             else:
                 ans = process_to_format([final_text], type="Answer")
                 final_res = process_format_to_response(retrieval, ans)
+            # >>> CHANGED: Update conversation summary in streaming branch as well
+            chunk_ids_used = []
+            for doc in retrieval:
+                if isinstance(doc, dict) and "chunk_id" in doc:
+                    chunk_ids_used.append(doc["chunk_id"])
+            loop = asyncio.get_event_loop() # CHANGED
+            prev_summary = memory.load_memory_variables({}).get("summary", "")
+            new_entry = f"User: {user_input}\nAssistant: {final_text}\nUsed Chunks: {chunk_ids_used}\n"
+            updated_conversation = prev_summary + "\n" + new_entry
+            # Inside _process_single_query, after getting the summarized text:
+            summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+
+            if not summarized:
+                print("[ERROR] Summarization returned an empty string.")
+            else:
+                print("[CHECK] Summarized conversation:", summarized)
+            
+            memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used, "summary": summarized})
+            # >>> CHANGED: -------------------------------------------------------
             future.set_result(final_res)
             await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
             print(

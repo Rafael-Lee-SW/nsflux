@@ -1,3 +1,4 @@
+# data_control.py
 import os
 import json
 import datetime
@@ -51,134 +52,148 @@ def extract_text_from_pdf(file_path):
 @data_control_bp.route("/manager")
 def data_control_page():
     return render_template("data_manager.html")
+
+# --- 다중 파일 업로드 지원 (수정됨) ---
 @data_control_bp.route("/upload", methods=["POST"])
 def data_upload():
     if "dataFile" not in request.files:
         return jsonify({"message": "파일이 업로드되지 않았습니다."}), 400
-    file = request.files["dataFile"]
-    if file.filename == "":
-        return jsonify({"message": "파일 이름이 없습니다."}), 400
-    ext = os.path.splitext(file.filename)[1].lower()
-    try:
-        new_chunk = None
-        # TXT 파일 처리
-        if ext == ".txt":
-            content = file.read().decode("utf-8")
-            vector = vectorize_content(content)
-            text_vis = content  # or apply normalize_text_vis if needed
-            new_chunk = {
-                "chunk_id": 1,  # default; will be updated below if file exists
-                "title": os.path.splitext(file.filename)[0],
-                "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                "type": "text",
-                "text": content,
-                "text_short": content[:200],
-                "vector": vector,
-                "text_vis": normalize_text_vis(text_vis)
-            }
-        # JSON 파일 처리
-        elif ext == ".json":
-            new_entry = json.load(file)
-            if not isinstance(new_entry, list):
-                new_entry = [new_entry]
-            # For JSON, we assume each entry already contains chunks
-            for entry in new_entry:
-                for chunk in entry.get("chunks", []):
-                    if not chunk.get("vector"):
-                        text = chunk.get("text", "")
-                        chunk["vector"] = vectorize_content(text) if text else [[0.0] * 768]
-                    else:
-                        vector = chunk["vector"]
-                        expected_dim = 768
-                        if not isinstance(vector, list):
-                            text = chunk.get("text", "")
-                            chunk["vector"] = vectorize_content(text) if text else [[0.0]*expected_dim]
-                        elif len(vector) != expected_dim and isinstance(vector[0], (int, float)):
-                            chunk["vector"] = [vector[:expected_dim]] if len(vector) >= expected_dim else [vector + [0.0]*(expected_dim - len(vector))]
-                    chunk["text_vis"] = normalize_text_vis(chunk.get("text_vis", ""))
-            new_entry = new_entry  # Already in proper structure
-        # PPTX 파일 처리
-        elif ext == ".pptx":
-            temp_path = os.path.join("temp", file.filename)
-            os.makedirs("temp", exist_ok=True)
-            file.save(temp_path)
-            content = extract_text_from_pptx(temp_path)
-            os.remove(temp_path)
-            vector = vectorize_content(content)
-            text_vis = content
-            new_chunk = {
-                "chunk_id": 1,
-                "title": os.path.splitext(file.filename)[0],
-                "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                "type": "pptx",
-                "text": content,
-                "text_short": content[:200],
-                "vector": vector,
-                "text_vis": normalize_text_vis(text_vis)
-            }
-        # PDF 파일 처리
-        elif ext == ".pdf":
-            temp_path = os.path.join("temp", file.filename)
-            os.makedirs("temp", exist_ok=True)
-            file.save(temp_path)
-            content = extract_text_from_pdf(temp_path)
-            os.remove(temp_path)
-            vector = vectorize_content(content)
-            text_vis = content
-            new_chunk = {
-                "chunk_id": 1,
-                "title": os.path.splitext(file.filename)[0],
-                "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                "type": "pdf",
-                "text": content,
-                "text_short": content[:200],
-                "vector": vector,
-                "text_vis": normalize_text_vis(text_vis)
-            }
-        else:
-            return jsonify({"message": "지원되지 않는 파일 형식입니다."}), 400
+    files = request.files.getlist("dataFile")
+    if not files:
+        return jsonify({"message": "업로드할 파일이 없습니다."}), 400
 
-        # Load existing data
-        if os.path.exists(DATA_PATH):
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                existing_data = json.load(f)
-        else:
-            existing_data = []
-
-        # If the file is a JSON with a list of entries, merge them directly
-        if ext == ".json":
-            if isinstance(new_entry, list):
-                existing_data.extend(new_entry)
-            else:
-                existing_data.append(new_entry)
-        else:
-            # For other file types, check if an entry with the same file name exists
-            existing_entry = next((entry for entry in existing_data if entry.get("file_name") == file.filename), None)
-            if existing_entry:
-                # If found, update chunk_id to be last chunk_id + 1
-                if "chunks" in existing_entry and existing_entry["chunks"]:
-                    last_chunk_id = max(chunk.get("chunk_id", 0) for chunk in existing_entry["chunks"])
-                else:
-                    last_chunk_id = 0
-                new_chunk["chunk_id"] = last_chunk_id + 1
-                existing_entry.setdefault("chunks", []).append(new_chunk)
-            else:
-                # Otherwise, create new entry with the chunk
-                new_entry = {
-                    "file_name": file.filename,
-                    "chunks": [new_chunk]
+    # 기존 데이터 로드
+    if os.path.exists(DATA_PATH):
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            existing_data = json.load(f)
+    else:
+        existing_data = []
+        
+    # 모든 파일에 걸쳐 최대 chunk_id 찾기
+    max_chunk_id = 0
+    for entry in existing_data:
+        for chunk in entry.get("chunks", []):
+            max_chunk_id = max(max_chunk_id, chunk.get("chunk_id", 0))
+    
+    print(f"기존 데이터의 최대 chunk_id: {max_chunk_id}")
+    
+    messages = []
+    for file in files:
+        if file.filename == "":
+            messages.append("파일 이름이 없습니다.")
+            continue
+        ext = os.path.splitext(file.filename)[1].lower()
+        try:
+            new_chunk = None
+            # TXT 파일 처리
+            if ext == ".txt":
+                content = file.read().decode("utf-8")
+                vector = vectorize_content(content)
+                text_vis = content
+                new_chunk = {
+                    "chunk_id": None,  # 이후에 할당
+                    "title": os.path.splitext(file.filename)[0],
+                    "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                    "type": "text",
+                    "text": content,
+                    "text_short": content[:200],
+                    "vector": vector,
+                    "text_vis": normalize_text_vis(text_vis)
                 }
-                existing_data.append(new_entry)
+            # JSON 파일 처리
+            elif ext == ".json":
+                new_entry = json.load(file)
+                if not isinstance(new_entry, list):
+                    new_entry = [new_entry]
+                # JSON 파일의 각 청크에 대해 벡터 처리
+                for entry in new_entry:
+                    for chunk in entry.get("chunks", []):
+                        if not chunk.get("vector"):
+                            text = chunk.get("text", "")
+                            chunk["vector"] = vectorize_content(text) if text else [[0.0] * 768]
+                        else:
+                            vector = chunk["vector"]
+                            expected_dim = 768
+                            if not isinstance(vector, list):
+                                text = chunk.get("text", "")
+                                chunk["vector"] = vectorize_content(text) if text else [[0.0]*expected_dim]
+                            elif len(vector) != expected_dim and isinstance(vector[0], (int, float)):
+                                chunk["vector"] = vector[:expected_dim] if len(vector) >= expected_dim else vector + [0.0]*(expected_dim - len(vector))
+                        chunk["text_vis"] = normalize_text_vis(chunk.get("text_vis", ""))
+                # JSON 파일은 전체 엔트리 추가
+                for entry in new_entry:
+                    for chunk in entry.get("chunks", []):
+                        max_chunk_id += 1
+                        chunk["chunk_id"] = max_chunk_id
+                    existing_data.append(entry)
+                messages.append(f"{file.filename}: 업로드 및 벡터화 성공.")
+                continue  # 다음 파일로 넘어감
+            # PPTX 파일 처리
+            elif ext == ".pptx":
+                temp_path = os.path.join("temp", file.filename)
+                os.makedirs("temp", exist_ok=True)
+                file.save(temp_path)
+                content = extract_text_from_pptx(temp_path)
+                os.remove(temp_path)
+                vector = vectorize_content(content)
+                text_vis = content
+                new_chunk = {
+                    "chunk_id": None,
+                    "title": os.path.splitext(file.filename)[0],
+                    "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                    "type": "pptx",
+                    "text": content,
+                    "text_short": content[:200],
+                    "vector": vector,
+                    "text_vis": normalize_text_vis(text_vis)
+                }
+            # PDF 파일 처리
+            elif ext == ".pdf":
+                temp_path = os.path.join("temp", file.filename)
+                os.makedirs("temp", exist_ok=True)
+                file.save(temp_path)
+                content = extract_text_from_pdf(temp_path)
+                os.remove(temp_path)
+                vector = vectorize_content(content)
+                text_vis = content
+                new_chunk = {
+                    "chunk_id": None,
+                    "title": os.path.splitext(file.filename)[0],
+                    "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                    "type": "pdf",
+                    "text": content,
+                    "text_short": content[:200],
+                    "vector": vector,
+                    "text_vis": normalize_text_vis(text_vis)
+                }
+            else:
+                messages.append(f"{file.filename}: 지원되지 않는 파일 형식입니다.")
+                continue
 
-        # Save updated data
-        with open(DATA_PATH, "w", encoding="utf-8") as f:
-            json.dump(existing_data, f, ensure_ascii=False, indent=2)
+            # 단일 파일(텍스트, pptx, pdf)의 경우
+            if new_chunk is not None:
+                existing_entry = next((entry for entry in existing_data if entry.get("file_name") == file.filename), None)
+                if existing_entry:
+                    max_chunk_id += 1
+                    new_chunk["chunk_id"] = max_chunk_id
+                    existing_entry.setdefault("chunks", []).append(new_chunk)
+                else:
+                    max_chunk_id += 1
+                    new_chunk["chunk_id"] = max_chunk_id
+                    new_entry = {
+                        "file_name": file.filename,
+                        "chunks": [new_chunk]
+                    }
+                    existing_data.append(new_entry)
+                messages.append(f"{file.filename}: 업로드 및 벡터화 성공.")
+        except Exception as e:
+            messages.append(f"{file.filename}: 업로드 실패: {str(e)}")
+    # 업데이트된 데이터 저장
+    with open(DATA_PATH, "w", encoding="utf-8") as f:
+        json.dump(existing_data, f, ensure_ascii=False, indent=2)
+    return jsonify({"message": "\n".join(messages)})
 
-        return jsonify({"message": "파일 업로드 및 벡터화가 완료되었습니다."})
-    except Exception as e:
-        return jsonify({"message": f"업로드 실패: {str(e)}"}), 500
-
-
+# --- 페이지네이션 및 인덱스 포함 데이터 목록 (수정됨) ---
 @data_control_bp.route("/list", methods=["GET"])
 def data_list():
     try:
@@ -188,23 +203,52 @@ def data_list():
         else:
             data_entries = []
         summary = []
-        for entry in data_entries:
+        for idx, entry in enumerate(data_entries):
             if "chunks" in entry and entry["chunks"]:
                 chunk = entry["chunks"][0]
                 summary.append({
+                    "index": idx,
                     "file_name": entry.get("file_name", ""),
                     "title": chunk.get("title", ""),
-                    "date": chunk.get("date", ""),
+                    "date": chunk.get("date", "")
                 })
             else:
                 summary.append({
+                    "index": idx,
                     "file_name": entry.get("file_name", ""),
                     "title": "",
                     "date": ""
                 })
-        return jsonify(summary)
+        # 페이지네이션: 기본 페이지 1, 한 페이지당 30개
+        page = request.args.get("page", 1, type=int)
+        per_page = 30
+        total = len(summary)
+        start = (page - 1) * per_page
+        end = start + per_page
+        paginated = summary[start:end]
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "data": paginated
+        })
     except Exception as e:
         return jsonify({"message": f"데이터 목록 불러오기 실패: {str(e)}"}), 500
+
+# --- 상세보기 엔드포인트 추가 ---
+@data_control_bp.route("/detail/<int:index>", methods=["GET"])
+def data_detail(index):
+    try:
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                data_entries = json.load(f)
+        else:
+            return jsonify({"message": "데이터 파일이 존재하지 않습니다."}), 404
+        if index < 0 or index >= len(data_entries):
+            return jsonify({"message": "유효하지 않은 인덱스입니다."}), 400
+        return jsonify(data_entries[index])
+    except Exception as e:
+        return jsonify({"message": f"데이터 상세 보기 실패: {str(e)}"}), 500
 
 @data_control_bp.route("/delete", methods=["POST"])
 def data_delete():
@@ -227,7 +271,7 @@ def data_delete():
     except Exception as e:
         return jsonify({"message": f"데이터 삭제 실패: {str(e)}"}), 500
 
-# --- Search and highlight endpoint ---
+# --- 검색 엔드포인트 ---
 @data_control_bp.route("/search", methods=["GET"])
 def search_data():
     query = request.args.get("q", "").lower()
@@ -250,25 +294,18 @@ def search_data():
             })
     return jsonify(results)
 
-
-@data_control_bp.route("/umap_visualization")
-def umap_visualization_page():
-    return render_template("umap_visualization.html")
-
+# --- UMAP 시각화 API (최적화 적용) ---
 @data_control_bp.route("/api/umap_data", methods=["GET"])
 def get_umap_data():
     try:
-        # Load vector data
         if os.path.exists(DATA_PATH):
             with open(DATA_PATH, "r", encoding="utf-8") as f:
                 data_entries = json.load(f)
         else:
             return jsonify({"error": "데이터 파일을 찾을 수 없습니다."}), 404
         
-        # Extract vectors and metadata
         vectors = []
         metadata = []
-        
         for entry in data_entries:
             for chunk in entry.get("chunks", []):
                 if "vector" in chunk and chunk["vector"]:
@@ -283,22 +320,26 @@ def get_umap_data():
         
         if not vectors:
             return jsonify({"error": "벡터 데이터가 없습니다."}), 404
-        
-        # Convert to numpy array and squeeze extra dimensions
+
+        # Optimization: If the number of vectors exceeds a threshold, downsample them
+        MAX_VECTORS = 10000
+        if len(vectors) > MAX_VECTORS:
+            indices = np.random.choice(len(vectors), MAX_VECTORS, replace=False)
+            vectors = [vectors[i] for i in indices]
+            metadata = [metadata[i] for i in indices]
+
         vectors_array = np.array(vectors)
         vectors_array = np.squeeze(vectors_array)
         
-        # Apply UMAP for dimensionality reduction
-        from umap import UMAP
-        n_neighbors = min(15, len(vectors) - 1)  # Adjust based on data size
+        # UMAP embedding
+        n_neighbors = min(15, len(vectors) - 1)
         umap_model = UMAP(n_components=2, 
-                            n_neighbors=n_neighbors, 
-                            min_dist=0.1, 
-                            metric='cosine', 
-                            random_state=42)
+                          n_neighbors=n_neighbors, 
+                          min_dist=0.1, 
+                          metric='cosine', 
+                          random_state=42)
         embedding = umap_model.fit_transform(vectors_array)
         
-        # Prepare response data
         nodes = []
         for i, (x, y) in enumerate(embedding):
             nodes.append({
@@ -311,7 +352,7 @@ def get_umap_data():
                 "text_short": metadata[i]["text_short"]
             })
         
-        # Calculate edges (connections between similar vectors)
+        # Compute edges (optional, can be heavy for very large datasets)
         edges = []
         if len(vectors) > 1:
             from sklearn.metrics.pairwise import cosine_similarity

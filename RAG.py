@@ -5,6 +5,7 @@ import numpy as np
 import rank_bm25
 import random
 import uuid
+import logging
 from datetime import datetime, timedelta
 from sql import generate_sql
 
@@ -22,7 +23,7 @@ beep = "------------------------------------------------------------------------
 
 @time_tracker
 def execute_rag(QU, KE, TA, TI, **kwargs):
-    # print("[SOOWAN]: execute_rag : 진입")
+    print("[SOOWAN]: execute_rag : 진입")
     model = kwargs.get("model")
     tokenizer = kwargs.get("tokenizer")
     embed_model = kwargs.get("embed_model")
@@ -31,7 +32,7 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
     config = kwargs.get("config")
 
     if TA == "yes":  # Table 이 필요하면
-        # print("[SOOWAN]: execute_rag : 테이블 필요")
+        print("[SOOWAN]: execute_rag : 테이블 필요")
         # SQL
         final_sql_query, title, explain, table_json, chart_json = generate_sql(
             QU, model, tokenizer, config
@@ -52,10 +53,14 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
         return PROMPT, docs_list
 
     else:
-        # print("[SOOWAN]: execute_rag : 테이블 필요없음")
-        # RAG
-        data = sort_by_time(TI, data)
-        docs, docs_list = retrieve(KE, data, config.N, embed_model, embed_tokenizer)
+        print("[SOOWAN]: execute_rag : 테이블 필요없음")
+        # 적응형 시간 필터링으로 RAG 실행
+        filtered_data = expand_time_range_if_needed(TI, data, min_docs=50)
+        
+        # 디버깅을 위해 문서 수 로깅
+        print(f"[RETRIEVE] 검색에 사용되는 문서 수: {len(filtered_data.get('vectors', []))}")
+        
+        docs, docs_list = retrieve(KE, filtered_data, config.N, embed_model, embed_tokenizer)
         return docs, docs_list
 
 
@@ -160,79 +165,234 @@ async def query_sort(params):
     return QU, KE, TA, TI
 
 
+# @time_tracker
+# def sort_by_time(time_bound, data):
+#     date_format = "%Y-%m-%d"
+#     target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
+#     target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
+
+#     matching_indices = [
+#         i
+#         for i, date in enumerate(data["times"])
+#         if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
+#     ]
+
+#     (
+#         data["file_names"],
+#         data["titles"],
+#         data["times"],
+#         data["vectors"],
+#         data["texts"],
+#         data["texts_short"],
+#         data["texts_vis"],
+#     ) = (
+#         [lst[i] for i in matching_indices]
+#         for lst in (
+#             data["file_names"],
+#             data["titles"],
+#             data["times"],
+#             data["vectors"],
+#             data["texts"],
+#             data["texts_short"],
+#             data["texts_vis"],
+#         )
+#     )
+#     return data
+
+
+# @time_tracker
+# def retrieve(query, data, N, embed_model, embed_tokenizer):
+#     print("[SOOWAN] retrieve : 진입")
+#     print("[SOOWAN] retrieve : 진입 정보 :", query)
+    
+#     sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
+#     print("[SOOWAN] retrieve : sim_score :", sim_score)
+    
+#     try:
+#         bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
+#     except Exception as e:
+#         print("[SOOWAN] retrieve : BM25 score exception, using zeros", e)
+#         bm25_score = np.zeros(len(data["texts_short"]))
+#     print("[SOOWAN] retrieve : bm25_score")
+    
+#     scaled_sim_score = min_max_scaling(sim_score)
+#     scaled_bm25_score = min_max_scaling(bm25_score)
+#     score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+#     top_k = score[:, 0, 0].argsort()[-N:][::-1]
+#     documents = ""
+#     documents_list = []
+#     for i, index in enumerate(top_k):
+#         documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
+#         documents_list.append({
+#             "file_name": data["file_names"][index],
+#             "title": data["titles"][index],
+#             "contents": data["texts_vis"][index],
+#         })
+#         print("\n" + beep)
+#     print("-------------자료 검색 성공--------------")
+#     return documents, documents_list
+
 @time_tracker
 def sort_by_time(time_bound, data):
+    """
+    원본 데이터는 유지하고 필터링된 복사본을 반환하는 함수
+    """
+    # 원본 문서 수 로깅
+    original_count = len(data["times"])
+    print(f"[시간 필터 전] 문서 수: {original_count}")
+    
+    # "all" 시간 범위 특별 처리
+    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
+        print(f"[시간 필터] 전체 기간 사용 - 모든 문서 포함")
+        return data  # 원본 데이터 그대로 반환
+    
+    # 시간 범위 파싱
     date_format = "%Y-%m-%d"
     target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
     target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
-
+    
+    # 시간 범위에 맞는 문서 인덱스 찾기
     matching_indices = [
         i
         for i, date in enumerate(data["times"])
         if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
     ]
-
-    (
-        data["file_names"],
-        data["titles"],
-        data["times"],
-        data["vectors"],
-        data["texts"],
-        data["texts_short"],
-        data["texts_vis"],
-    ) = (
-        [lst[i] for i in matching_indices]
-        for lst in (
-            data["file_names"],
-            data["titles"],
-            data["times"],
-            data["vectors"],
-            data["texts"],
-            data["texts_short"],
-            data["texts_vis"],
-        )
-    )
-    return data
-
+    
+    filtered_count = len(matching_indices)
+    print(f"[시간 필터 후] 문서 수: {filtered_count}, 기간: {time_bound}")
+    
+    # 너무 적은 문서가 남은 경우 경고 로그
+    if filtered_count < 50 and filtered_count < original_count * 0.1:
+        print(f"[경고] 시간 필터로 인해 문서가 크게 줄었습니다: {original_count} → {filtered_count}")
+    
+    # 필터링된 데이터를 새로운 딕셔너리에 복사
+    filtered_data = {}
+    filtered_data["file_names"] = [data["file_names"][i] for i in matching_indices]
+    filtered_data["titles"] = [data["titles"][i] for i in matching_indices]
+    filtered_data["times"] = [data["times"][i] for i in matching_indices]
+    
+    # 벡터 타입에 따른 다른 처리
+    if isinstance(data["vectors"], torch.Tensor):
+        filtered_data["vectors"] = data["vectors"][matching_indices]
+    else:
+        filtered_data["vectors"] = [data["vectors"][i] for i in matching_indices]
+    
+    filtered_data["texts"] = [data["texts"][i] for i in matching_indices]
+    filtered_data["texts_short"] = [data["texts_short"][i] for i in matching_indices]
+    filtered_data["texts_vis"] = [data["texts_vis"][i] for i in matching_indices]
+    
+    return filtered_data
 
 @time_tracker
 def retrieve(query, data, N, embed_model, embed_tokenizer):
-    # print("[SOOWAN] retrieve : 진입")
-    # print("[SOOWAN] retrieve : 진입 정보 :", query)
-    
-    sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
-    # print("[SOOWAN] retrieve : sim_score")
+    print("[SOOWAN] retrieve : 진입")
+    logging.info(f"Retrieval for query: '{query}'")
+    logging.info(f"Available documents: {len(data['vectors'])}")
     
     try:
+        sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
+        logging.info(f"Similarity score shape: {sim_score.shape}")
+        
         bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
+        logging.info(f"BM25 score shape: {bm25_score.shape}")
+        
+        scaled_sim_score = min_max_scaling(sim_score)
+        scaled_bm25_score = min_max_scaling(bm25_score)
+        
+        # Combined score (0.4 semantic + 0.6 lexical)
+        score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+        top_k = score[:, 0, 0].argsort()[-N:][::-1]
+        
+        # Log top results for debugging
+        logging.info(f"Top {N} document indices: {top_k}")
+        logging.info(f"Top {N} document scores: {[score[:, 0, 0][i] for i in top_k]}")
+        logging.info(f"Top document titles: {[data['titles'][i] for i in top_k]}")
+        
+        documents = ""
+        documents_list = []
+        for i, index in enumerate(top_k):
+            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
+            documents_list.append({
+                "file_name": data["file_names"][index],
+                "title": data["titles"][index],
+                "contents": data["texts_vis"][index],
+            })
+            print("\n" + beep)
+        print("-------------자료 검색 성공--------------")
+        return documents, documents_list
+        
+        # Continue with document assembly...
     except Exception as e:
-        # print("[SOOWAN] retrieve : BM25 score exception, using zeros", e)
-        bm25_score = np.zeros(len(data["texts_short"]))
-    # print("[SOOWAN] retrieve : bm25_score")
-    
-    scaled_sim_score = min_max_scaling(sim_score)
-    scaled_bm25_score = min_max_scaling(bm25_score)
-    score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
-    top_k = score[:, 0, 0].argsort()[-N:][::-1]
-    documents = ""
-    documents_list = []
-    for i, index in enumerate(top_k):
-        documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
-        documents_list.append({
-            "file_name": data["file_names"][index],
-            "title": data["titles"][index],
-            "contents": data["texts_vis"][index],
-        })
-        print("\n" + beep)
-    print("-------------자료 검색 성공--------------")
-    return documents, documents_list
+        logging.error(f"Retrieval error: {str(e)}", exc_info=True)
+        return "", []
 
+@time_tracker
+def expand_time_range_if_needed(time_bound, data, min_docs=50):
+    """
+    시간 필터링 결과가 너무 적은 경우 자동으로 시간 범위를 확장하는 함수
+    """
+    # "all" 시간 범위는 그대로 사용
+    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
+        print(f"[시간 범위] 전체 기간 사용")
+        return data
+    
+    # 원래 시간 범위로 먼저 시도
+    filtered_data = sort_by_time(time_bound, data)
+    filtered_count = len(filtered_data.get("times", []))
+    
+    # 필터링된 문서 수가 충분하면 바로 반환
+    if filtered_count >= min_docs:
+        print(f"[시간 범위] 원래 범위로 충분한 문서 확보: {filtered_count}개")
+        return filtered_data
+    
+    # 시간 범위 확장 시도
+    print(f"[시간 범위 확장] 원래 범위는 {filtered_count}개 문서만 제공 (최소 필요: {min_docs}개)")
+    
+    # 원래 날짜 파싱
+    date_format = "%Y-%m-%d"
+    try:
+        start_date = datetime.strptime(time_bound.split(":")[0], date_format)
+        end_date = datetime.strptime(time_bound.split(":")[1], date_format)
+    except Exception as e:
+        print(f"[시간 범위 오류] 날짜 형식 오류: {time_bound}, 오류: {e}")
+        return data  # 오류 시 원본 데이터 반환
+    
+    # 점진적으로 더 넓은 범위 시도
+    expansions = [
+        (3, "3개월"),
+        (6, "6개월"),
+        (12, "1년"),
+        (24, "2년"),
+        (60, "5년")
+    ]
+    
+    for months, label in expansions:
+        # 양방향으로 균등하게 확장
+        new_start = start_date - timedelta(days=30*months//2)
+        new_end = end_date + timedelta(days=30*months//2)
+        
+        new_range = f"{new_start.strftime(date_format)}:{new_end.strftime(date_format)}"
+        print(f"[시간 범위 확장] {label} 확장 시도: {new_range}")
+        
+        expanded_data = sort_by_time(new_range, data)
+        expanded_count = len(expanded_data.get("times", []))
+        
+        if expanded_count >= min_docs:
+            print(f"[시간 범위 확장] {label} 확장으로 {expanded_count}개 문서 확보")
+            return expanded_data
+    
+    # 모든 확장이 실패하면 전체 데이터셋 사용
+    print(f"[시간 범위 확장] 모든 확장 시도 실패, 전체 데이터셋 사용")
+    return data
 
 @time_tracker
 def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
+    print("[SOOWAN] cal_sim_score : 진입 / query : ", query)
     query_V = embed(query, embed_model, embed_tokenizer)
+    print("[SOOWAN] cal_sim_score : query_V 생산 완료")
     if len(query_V.shape) == 1:
         query_V = query_V.unsqueeze(0)
+        print("[SOOWAN] cal_sim_score : query_V.shape == 1")
     score = []
     for chunk in chunks:
         if len(chunk.shape) == 1:
@@ -244,55 +404,100 @@ def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
     return np.array(score)
 
 
+# @time_tracker
+# def cal_bm25_score(query, indexes, embed_tokenizer):
+#     print("[SOOWAN] cal_bm25_score : 진입")
+#     try:
+#         tokenized_corpus = [
+#             embed_tokenizer(
+#                 text,
+#                 return_token_type_ids=False,
+#                 return_attention_mask=False,
+#                 return_offsets_mapping=False,
+#             )
+#             for text in indexes
+#         ]
+#         tokenized_corpus = [
+#             embed_tokenizer.convert_ids_to_tokens(corpus["input_ids"])
+#             for corpus in tokenized_corpus
+#         ]
+#         print(f"[SOOWAN] cal_bm25_score : Tokenized corpus (first 2 items): {tokenized_corpus[:2]}")
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error tokenizing corpus: {str(e)}")
+#         return np.zeros(len(indexes))
+#     if not tokenized_corpus or all(len(tokens) == 0 for tokens in tokenized_corpus):
+#         print("[SOOWAN] cal_bm25_score: Empty tokenized corpus, returning zeros.")
+#         return np.zeros(len(indexes))
+#     try:
+#         bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error initializing BM25: {str(e)}")
+#         return np.zeros(len(indexes))
+#     try:
+#         tokenized_query = embed_tokenizer(query)
+#         tokenized_query = embed_tokenizer.convert_ids_to_tokens(tokenized_query["input_ids"])
+#         print(f"[SOOWAN] cal_bm25_score : Tokenized query: {tokenized_query}")
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error tokenizing query: {str(e)}")
+#         return np.zeros(len(indexes))
+#     try:
+#         bm25_score = bm25.get_scores(tokenized_query)
+#         print(f"[SOOWAN] cal_bm25_score : BM25 score: {bm25_score}")
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error computing BM25 scores: {str(e)}")
+#         return np.zeros(len(indexes))
+#     return np.array(bm25_score)
 @time_tracker
 def cal_bm25_score(query, indexes, embed_tokenizer):
-    # print("[SOOWAN] cal_bm25_score : 진입")
-    try:
-        tokenized_corpus = [
-            embed_tokenizer(
-                text,
-                return_token_type_ids=False,
-                return_attention_mask=False,
-                return_offsets_mapping=False,
-            )
-            for text in indexes
-        ]
-        tokenized_corpus = [
-            embed_tokenizer.convert_ids_to_tokens(corpus["input_ids"])
-            for corpus in tokenized_corpus
-        ]
-        # print(f"[SOOWAN] cal_bm25_score : Tokenized corpus (first 2 items): {tokenized_corpus[:2]}")
-    except Exception as e:
-        # print(f"[SOOWAN ERROR BM25] Error tokenizing corpus: {str(e)}")
-        return np.zeros(len(indexes))
-    if not tokenized_corpus or all(len(tokens) == 0 for tokens in tokenized_corpus):
-        # print("[SOOWAN] cal_bm25_score: Empty tokenized corpus, returning zeros.")
-        return np.zeros(len(indexes))
+    logging.info(f"Starting BM25 calculation for query: {query}")
+    logging.info(f"Document count: {len(indexes)}")
+    
+    if not indexes:
+        logging.warning("Empty document list provided to BM25")
+        return np.zeros(0)
+        
+    # Process documents individually to isolate failures
+    tokenized_corpus = []
+    for i, text in enumerate(indexes):
+        try:
+            tokens = embed_tokenizer(text, return_token_type_ids=False,
+                                    return_attention_mask=False,
+                                    return_offsets_mapping=False)
+            tokens = embed_tokenizer.convert_ids_to_tokens(tokens["input_ids"])
+            if len(tokens) == 0:
+                logging.warning(f"Document {i} tokenized to empty list")
+                tokens = ["<empty>"]  # Placeholder to avoid BM25 errors
+            tokenized_corpus.append(tokens)
+        except Exception as e:
+            logging.error(f"Failed to tokenize document {i}: {str(e)}")
+            tokenized_corpus.append(["<error>"])  # Placeholder
+    
     try:
         bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
+        tokenized_query = embed_tokenizer.convert_ids_to_tokens(
+            embed_tokenizer(query)["input_ids"]
+        )
+        scores = bm25.get_scores(tokenized_query)
+        
+        # Check for valid scores
+        if np.isnan(scores).any() or np.isinf(scores).any():
+            logging.warning("BM25 produced NaN/Inf scores - replacing with zeros")
+            scores = np.nan_to_num(scores)
+            
+        logging.info(f"BM25 scores: min={scores.min():.4f}, max={scores.max():.4f}, mean={scores.mean():.4f}")
+        return scores
     except Exception as e:
-        # print(f"[SOOWAN ERROR BM25] Error initializing BM25: {str(e)}")
+        logging.error(f"BM25 scoring failed: {str(e)}")
         return np.zeros(len(indexes))
-    try:
-        tokenized_query = embed_tokenizer(query)
-        tokenized_query = embed_tokenizer.convert_ids_to_tokens(tokenized_query["input_ids"])
-        # print(f"[SOOWAN] cal_bm25_score : Tokenized query: {tokenized_query}")
-    except Exception as e:
-        # print(f"[SOOWAN ERROR BM25] Error tokenizing query: {str(e)}")
-        return np.zeros(len(indexes))
-    try:
-        bm25_score = bm25.get_scores(tokenized_query)
-        # print(f"[SOOWAN] cal_bm25_score : BM25 score: {bm25_score}")
-    except Exception as e:
-        # print(f"[SOOWAN ERROR BM25] Error computing BM25 scores: {str(e)}")
-        return np.zeros(len(indexes))
-    return np.array(bm25_score)
+
 
 
 @time_tracker
 def embed(query, embed_model, embed_tokenizer):
+    print("[SOOWAN] embed: 진입")
     inputs = embed_tokenizer(query, padding=True, truncation=True, return_tensors="pt")
     embeddings, _ = embed_model(**inputs, return_dict=False)
+    print("[SOOWAN] embed: 완료")
     return embeddings[0][0]
 
 
@@ -301,7 +506,7 @@ def min_max_scaling(arr):
     arr_min = arr.min()
     arr_max = arr.max()
     if arr_max == arr_min:
-        # print("[SOOWAN] min_max_scaling: Zero range detected, returning zeros.")
+        print("[SOOWAN] min_max_scaling: Zero range detected, returning zeros.")
         return np.zeros_like(arr)
     return (arr - arr_min) / (arr_max - arr_min)
 

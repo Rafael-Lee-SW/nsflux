@@ -384,6 +384,7 @@ def load_data(data_path):
 
         # 데이터 전처리 (예: 리스트 변환 및 numpy, torch 변환)
         file_names = []
+        chunk_ids = []  # >>> CHANGED: Added to record each chunk's ID
         titles = []
         times = []
         vectors = []
@@ -395,8 +396,7 @@ def load_data(data_path):
         for file_obj in data:
             for chunk in file_obj["chunks"]:
                 file_names.append(file_obj["file_name"])
-                
-                # 여기서도 np.array()로 변환하며 에러가 있으면 except 처리
+                chunk_ids.append(chunk.get("chunk_id", 0))  # >>> CHANGED: Record chunk_id
                 try:
                     arr = np.array(chunk["vector"])
                     vectors.append(arr)
@@ -432,6 +432,7 @@ def load_data(data_path):
 
         _cached_data = {
             "file_names": file_names,
+            "chunk_ids": chunk_ids,  # >>> CHANGED: Saved chunk IDs here
             "titles": titles,
             "times": times,
             "vectors": vectors,
@@ -459,7 +460,7 @@ def debug_vector_format(data):
         for c_i, chunk in enumerate(chunks):
             vector_data = chunk.get("vector", None)
             if vector_data is None:
-                print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 없음(None)")
+                # print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 없음(None)")
                 continue
             # 자료형, 길이, shape 등 확인
             vector_type = type(vector_data)
@@ -467,7 +468,7 @@ def debug_vector_format(data):
             try:
                 arr = np.array(vector_data)
                 shape = arr.shape
-                print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector_type={vector_type}, shape={shape}")
+                # print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector_type={vector_type}, shape={shape}")
             except Exception as e:
                 print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 변환 실패: {str(e)}")
     print("[DEBUG] ===== 벡터 형식 검사 종료 =====\n")
@@ -752,3 +753,49 @@ def diagnose_and_fix_dataset(data_path, output_path=None):
     except Exception as e:
         print(f"데이터셋 진단 중 오류: {str(e)}")
         return False
+    
+# -------------------- 대화 요약 함수 수정 --------------------
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import logging
+
+### CHANGED: Explicitly load LED-base-16384 model and disable auto-padding by tokenizing manually.
+led_model_name = "allenai/led-base-16384"
+led_tokenizer = AutoTokenizer.from_pretrained(led_model_name)
+led_tokenizer.pad_to_multiple_of = None   # Disable auto-padding
+
+led_model = AutoModelForSeq2SeqLM.from_pretrained(led_model_name)
+led_model.config.max_position_embeddings = 16384  # Ensure long sequence support
+
+def summarize_conversation(conversation_text):
+    logging.info("[Summarize] Called with conversation length: %d", len(conversation_text))
+    try:
+        # Manually tokenize without padding (apply truncation during tokenization)
+        inputs = led_tokenizer(
+            conversation_text, 
+            return_tensors="pt", 
+            truncation=True, 
+            padding=False, 
+            max_length=16384
+        )
+        # Generate summary with adjusted parameters to prevent repetition
+        summary_ids = led_model.generate(
+            inputs["input_ids"],
+            max_length=150,
+            min_length=30,
+            no_repeat_ngram_size=3,  # New parameter to prevent repetition
+            temperature=0.7,
+            num_beams=4,             # Using beam search for higher quality output
+            do_sample=True
+        )
+        summary = led_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+        logging.info("[Summarize][LOG] Summarization result: %s", summary)
+        print("[Summarize][PRINT] Summarization result:", summary)
+    except Exception as e:
+        logging.error("[Summarize] Exception during generation: %s", str(e))
+        print("[Summarize][PRINT] Exception during generation:", e)
+        summary = ""  # Return an empty string on error
+    finally:
+        # Force flush logging handlers
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+    return summary
