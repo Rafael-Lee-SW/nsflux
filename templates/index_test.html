@@ -195,8 +195,8 @@
         padding: 1.5rem;
         margin-top: 1.5rem;
         overflow-wrap: break-word;
-        max-height: 500px;
         overflow-y: auto;
+        white-space: normal;
       }
 
       .output pre {
@@ -1187,11 +1187,7 @@
             <div class="test-item">
               <h4>${result.id} - ${result.text}</h4>
               <p><strong>도착 순서 (Arrival Order):</strong> ${result.arrival}</p>
-              <p><strong>전송 시간 (Send Time):</strong> ${result.sendTime}</p>
-              <p><strong>수신 시간 (Receive Time):</strong> ${result.receiveTime}</p>
-              <p><strong>소요 시간 (Elapsed Time):</strong> ${result.elapsed} ms</p>
               <p><strong>상태 (Status):</strong> ${result.success ? '성공 (Success)' : '실패 (Fail)'}</p>
-              <p><strong>응답 데이터 (Response Data):</strong></p>
               ${safeResultOutput}
             </div>
           `;
@@ -1494,22 +1490,22 @@
 
       function updateContainerTiming(container, start, first, end, chunkCount) {
         const infoBox = container.querySelector(".stream-info-box");
-        let infoMsg = `시작 (Started): ${start.toFixed(1)} ms\n`;
-        if (first) {
-          infoMsg += `첫 응답 (First chunk): ${first.toFixed(1)} ms (지연: ${(first - start).toFixed(1)} ms)\n`;
+        let infoMsg = "";
+        if (first !== null && first !== undefined) {
+          infoMsg += `<strong>첫 응답 도착 시간 ((TTFT)):</strong> ${(first - start).toFixed(1)} ms<br>`;
         } else {
-          infoMsg += "첫 응답 (First chunk): 아직 도착하지 않음 (not yet)\n";
+          infoMsg += `<strong>첫 응답 도착 시간 ((TTFT)):</strong> 아직 도착하지 않음 (not arrived yet)<br>`;
         }
-        if (end) {
-          infoMsg += `종료 (End): ${end.toFixed(1)} ms (총 소요: ${(end - start).toFixed(1)} ms)\n`;
-          if (first) {
-            infoMsg += `응답→종료 (Chunk→End): ${(end - first).toFixed(1)} ms\n`;
+        if (end !== null && end !== undefined) {
+          infoMsg += `<strong>스트리밍 종료 시간 (Streaming End Time):</strong> ${(end - start).toFixed(1)} ms<br>`;
+          if (first !== null && first !== undefined) {
+            infoMsg += `<strong>스트리밍 생성 시간 (Streaming Generation Time):</strong> ${(end - first).toFixed(1)} ms<br>`;
           }
         } else {
-          infoMsg += "종료 (End): 아직 도착하지 않음 (not yet)\n";
+          infoMsg += `<strong>스트리밍 종료 시간 (Streaming End Time):</strong> 아직 도착하지 않음 (not arrived yet)<br>`;
         }
-        infoMsg += `청크 수 (Chunk Count): ${chunkCount}\n`;
-        infoBox.textContent = infoMsg;
+        infoMsg += `<strong>청크 수 (Chunk Count):</strong> ${chunkCount}`;
+        infoBox.innerHTML = infoMsg;
       }
 
       function toggleReferencesInContainer(containerId) {
@@ -1540,10 +1536,6 @@
           div.style.marginBottom = "1rem";
           simulPartialsContainer.appendChild(div);
           return startSimulStreamPOST(q, containerId);
-        });
-
-        let results = await Promise.all(promises);
-        let  containerId);
         });
 
         let results = await Promise.all(promises);

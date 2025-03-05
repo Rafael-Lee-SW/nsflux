@@ -1456,6 +1456,57 @@ def load_model(config):
         model.eval()
         return model, tokenizer, embed_model, embed_tokenizer
 
+# @time_tracker
+# def load_data(data_path):
+#     global _cached_data, _cached_data_mtime
+#     try:
+#         current_mtime = os.path.getmtime(data_path)
+#     except Exception as e:
+#         print("파일 수정 시간 확인 실패:", e)
+#         return None
+
+#     # 캐시가 비어있거나 파일 수정 시간이 변경된 경우 데이터 재로드
+#     if _cached_data is None or current_mtime != _cached_data_mtime:
+#         with open(data_path, "r", encoding="utf-8") as json_file:
+#             data = json.load(json_file)
+#         # 데이터 전처리 (예: 리스트 변환 및 numpy, torch 변환)
+#         file_names = []
+#         titles = []
+#         times = []
+#         vectors = []
+#         texts = []
+#         texts_short = []
+#         texts_vis = []
+#         missing_time = 0
+#         for file in data:
+#             for chunk in file["chunks"]:
+#                 file_names.append(file["file_name"])
+#                 vectors.append(np.array(chunk["vector"]))
+#                 titles.append(chunk["title"])
+#                 if chunk["date"]:
+#                     times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
+#                 else:
+#                     missing_time += 1
+#                     times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+#                 texts.append(chunk["text"])
+#                 texts_short.append(chunk["text_short"])
+#                 texts_vis.append(chunk["text_vis"])
+#         vectors = np.array(vectors)
+#         vectors = torch.from_numpy(vectors).to(torch.float32)
+#         _cached_data = {
+#             "file_names": file_names,
+#             "titles": titles,
+#             "times": times,
+#             "vectors": vectors,
+#             "texts": texts,
+#             "texts_short": texts_short,
+#             "texts_vis": texts_vis,
+#         }
+#         _cached_data_mtime = current_mtime
+#         print(f"Data loaded! Length: {len(titles)}, Missing times: {missing_time}")
+#     else:
+#         print("Using cached data")
+#     return _cached_data
 
 @time_tracker
 def load_data(data_path):
@@ -1470,6 +1521,10 @@ def load_data(data_path):
     if _cached_data is None or current_mtime != _cached_data_mtime:
         with open(data_path, "r", encoding="utf-8") as json_file:
             data = json.load(json_file)
+
+        # --- 디버그 함수: 벡터 포맷 검사 ---
+        debug_vector_format(data)
+
         # 데이터 전처리 (예: 리스트 변환 및 numpy, torch 변환)
         file_names = []
         titles = []
@@ -1479,21 +1534,45 @@ def load_data(data_path):
         texts_short = []
         texts_vis = []
         missing_time = 0
-        for file in data:
-            for chunk in file["chunks"]:
-                file_names.append(file["file_name"])
-                vectors.append(np.array(chunk["vector"]))
+
+        for file_obj in data:
+            for chunk in file_obj["chunks"]:
+                file_names.append(file_obj["file_name"])
+                
+                # 여기서도 np.array()로 변환하며 에러가 있으면 except 처리
+                try:
+                    arr = np.array(chunk["vector"])
+                    vectors.append(arr)
+                except Exception as e:
+                    logging.warning(f"[load_data] 벡터 변환 오류: {e} → 빈 벡터로 대체")
+                    vectors.append(np.zeros((1, 768), dtype=np.float32))  # 임의로 1x768 형식
+                
                 titles.append(chunk["title"])
+                
+                # 날짜 파싱
                 if chunk["date"]:
-                    times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
+                    try:
+                        times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
+                    except ValueError:
+                        logging.warning(f"잘못된 날짜 형식: {chunk['date']} → 기본 날짜로 대체")
+                        times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+                        missing_time += 1
                 else:
                     missing_time += 1
                     times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+
                 texts.append(chunk["text"])
                 texts_short.append(chunk["text_short"])
                 texts_vis.append(chunk["text_vis"])
-        vectors = np.array(vectors)
-        vectors = torch.from_numpy(vectors).to(torch.float32)
+
+        # 실제 텐서로 변환
+        try:
+            vectors = np.array(vectors)
+            vectors = torch.from_numpy(vectors).to(torch.float32)
+        except Exception as e:
+            logging.error(f"[load_data] 최종 벡터 텐서 변환 오류: {str(e)}")
+            # 필요 시 추가 처리
+
         _cached_data = {
             "file_names": file_names,
             "titles": titles,
@@ -1507,7 +1586,34 @@ def load_data(data_path):
         print(f"Data loaded! Length: {len(titles)}, Missing times: {missing_time}")
     else:
         print("Using cached data")
+
     return _cached_data
+
+
+def debug_vector_format(data):
+    """
+    data(List[Dict]): load_data에서 JSON으로 로드된 객체.
+    각 file_obj에 대해 chunks 리스트를 순회하며 vector 형식을 디버깅 출력.
+    """
+    print("\n[DEBUG] ===== 벡터 형식 검사 시작 =====")
+    for f_i, file_obj in enumerate(data):
+        file_name = file_obj.get("file_name", f"Unknown_{f_i}")
+        chunks = file_obj.get("chunks", [])
+        for c_i, chunk in enumerate(chunks):
+            vector_data = chunk.get("vector", None)
+            if vector_data is None:
+                # print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 없음(None)")
+                continue
+            # 자료형, 길이, shape 등 확인
+            vector_type = type(vector_data)
+            # shape을 안전하게 얻기 위해 np.array 변환 시도
+            try:
+                arr = np.array(vector_data)
+                shape = arr.shape
+                # print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector_type={vector_type}, shape={shape}")
+            except Exception as e:
+                print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 변환 실패: {str(e)}")
+    print("[DEBUG] ===== 벡터 형식 검사 종료 =====\n")
 
 
 @time_tracker
@@ -1629,14 +1735,166 @@ embedding_model = AutoModel.from_pretrained(config.embed_model_id, cache_dir=con
 embedding_tokenizer = AutoTokenizer.from_pretrained(config.embed_model_id, cache_dir=config.cache_dir)
 embedding_model.eval()
 
-# 벡터화 코드
+# -------------------- 벡터화 함수 --------------------
+@time_tracker
 def vectorize_content(content):
-    inputs = embedding_tokenizer(content, padding=True, truncation=True, return_tensors="pt")
-    with torch.no_grad():
-        outputs = embedding_model(**inputs, return_dict=False)
-    # 첫 토큰의 임베딩을 사용 (필요에 따라 변경 가능)
-    vector = outputs[0][:,0,:].squeeze(0).tolist()
-    return vector
+    try:
+        inputs = embedding_tokenizer(content, padding=True, truncation=True, return_tensors="pt")
+        with torch.no_grad():
+            outputs = embedding_model(**inputs, return_dict=False)
+        # 첫 토큰의 임베딩을 사용 (1D 벡터)
+        vector = outputs[0][:, 0, :].squeeze(0).tolist()
+        
+        # 벡터 일관성 확인
+        expected_dim = 768  # 임베딩 모델 차원에 맞게 조정
+        
+        # 리스트가 아닌 경우 변환 시도
+        if not isinstance(vector, list):
+            print(f"경고: 벡터가 리스트가 아님, 타입: {type(vector)}")
+            try:
+                vector = list(vector)
+            except Exception as e:
+                print("오류: 벡터를 리스트로 변환 실패:", e)
+                vector = [0.0] * expected_dim  # 기본 벡터 제공
+        
+        # 벡터 차원 확인 및 조정
+        if len(vector) != expected_dim:
+            print(f"경고: 벡터 차원 불일치. 예상: {expected_dim}, 실제: {len(vector)}")
+            if len(vector) < expected_dim:
+                # 부족한 차원은 0으로 패딩
+                vector.extend([0.0] * (expected_dim - len(vector)))
+            else:
+                # 초과 차원은 자르기
+                vector = vector[:expected_dim]
+        
+        # 기존 파일 형식과 일치하도록 항상 2차원 배열 형식으로 반환 ([[...] 형태])
+        if vector and not isinstance(vector[0], list):
+            return [vector]
+        return vector
+    except Exception as e:
+        print(f"vectorize_content 함수 오류: {str(e)}")
+        # 오류 시 기본 벡터 반환 (2차원 형식)
+        return [[0.0] * 768]
+
+# -------------------- 텍스트 출력 필드 정규화 함수 --------------------
+def normalize_text_vis(text_vis):
+    """
+    text_vis가 이미 올바른 리스트-딕셔너리 구조이면 그대로 반환하고,
+    그렇지 않은 경우 기본 구조로 감싸서 반환합니다.
+    """
+    if isinstance(text_vis, list) and len(text_vis) > 0 and isinstance(text_vis[0], dict):
+        # 필요한 키가 존재하는지 확인
+        if all(k in text_vis[0] for k in ("rsp_type", "rsp_tit", "rsp_data")):
+            return text_vis
+    if isinstance(text_vis, str):
+        return [{
+            "rsp_type": "TT",
+            "rsp_tit": "",
+            "rsp_data": text_vis
+        }]
+    return [{
+        "rsp_type": "TT",
+        "rsp_tit": "",
+        "rsp_data": str(text_vis)
+    }]
+
+# -------------------- 데이터셋 진단 및 수정 도구 --------------------
+# 데이터셋 진단 및 복구 함수 (utils.py 또는 별도 파일에 추가)
+def diagnose_and_fix_dataset(data_path, output_path=None):
+    """
+    데이터셋의 벡터 차원 문제를 진단하고 수정합니다.
+    """
+    try:
+        print(f"데이터셋 진단 중: {data_path}")
+        with open(data_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        print(f"데이터셋 내 파일 수: {len(data)}")
+        dimensions = {}
+        fixed_count = 0
+        problem_count = 0
+        
+        # 1단계: 가장 흔한 차원 찾기
+        for file_idx, file in enumerate(data):
+            file_name = file.get("file_name", f"Unknown-{file_idx}")
+            for chunk_idx, chunk in enumerate(file.get("chunks", [])):
+                if "vector" in chunk and chunk["vector"]:
+                    vector = chunk["vector"]
+                    try:
+                        if isinstance(vector, list):
+                            dim = len(vector)
+                            dimensions[dim] = dimensions.get(dim, 0) + 1
+                        else:
+                            print(f"벡터가 리스트가 아님: {file_name}, 청크 {chunk_idx}")
+                            problem_count += 1
+                    except Exception as e:
+                        print(f"벡터 길이 확인 실패: {file_name}, 청크 {chunk_idx} - {str(e)}")
+                        problem_count += 1
+        
+        if dimensions:
+            # 가장 흔한 차원 찾기
+            expected_dim = max(dimensions.items(), key=lambda x: x[1])[0]
+            print(f"가장 흔한 벡터 차원: {expected_dim} (총 {dimensions[expected_dim]}개 발견)")
+            print(f"발견된 모든 차원: {dimensions}")
+        else:
+            print("데이터셋에서 유효한 벡터를 찾을 수 없습니다!")
+            return False
+        
+        # 2단계: 잘못된 차원의 벡터 수정
+        for file_idx, file in enumerate(data):
+            file_name = file.get("file_name", f"Unknown-{file_idx}")
+            for chunk_idx, chunk in enumerate(file.get("chunks", [])):
+                if "vector" in chunk and chunk["vector"]:
+                    vector = chunk["vector"]
+                    try:
+                        if not isinstance(vector, list):
+                            print(f"리스트가 아닌 벡터 수정 시도: {file_name}, 청크 {chunk_idx}")
+                            try:
+                                vector = list(vector)
+                                chunk["vector"] = vector
+                                fixed_count += 1
+                            except:
+                                # 변환 실패 시 빈 벡터 생성
+                                chunk["vector"] = [0.0] * expected_dim
+                                fixed_count += 1
+                                print(f"리스트 변환 실패, 기본 벡터 사용")
+                        
+                        dim = len(vector)
+                        if dim != expected_dim:
+                            print(f"벡터 차원 수정: {file_name}, 청크 {chunk_idx} (차원: {dim})")
+                            if dim < expected_dim:
+                                # 0으로 패딩
+                                chunk["vector"] = vector + [0.0] * (expected_dim - dim)
+                            else:
+                                # 자르기
+                                chunk["vector"] = vector[:expected_dim]
+                            fixed_count += 1
+                    except Exception as e:
+                        print(f"벡터 처리 중 오류: {file_name}, 청크 {chunk_idx} - {str(e)}")
+                        problem_count += 1
+        
+        print(f"고정된 벡터 수: {fixed_count}, 문제 벡터 수: {problem_count}")
+        
+        # 수정된 데이터셋 저장
+        if output_path is None:
+            output_path = data_path
+        
+        # 덮어쓰기 전 백업 생성
+        if output_path == data_path:
+            backup_path = f"{data_path}.bak"
+            print(f"백업 생성: {backup_path}")
+            with open(backup_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        print(f"수정된 데이터셋 저장: {output_path}")
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        return True
+    
+    except Exception as e:
+        print(f"데이터셋 진단 중 오류: {str(e)}")
+        return False
 
 ```
 
@@ -1652,6 +1910,7 @@ import numpy as np
 import rank_bm25
 import random
 import uuid
+import logging
 from datetime import datetime, timedelta
 from sql import generate_sql
 
@@ -1669,7 +1928,7 @@ beep = "------------------------------------------------------------------------
 
 @time_tracker
 def execute_rag(QU, KE, TA, TI, **kwargs):
-    # print("[SOOWAN]: execute_rag : 진입")
+    print("[SOOWAN]: execute_rag : 진입")
     model = kwargs.get("model")
     tokenizer = kwargs.get("tokenizer")
     embed_model = kwargs.get("embed_model")
@@ -1678,7 +1937,7 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
     config = kwargs.get("config")
 
     if TA == "yes":  # Table 이 필요하면
-        # print("[SOOWAN]: execute_rag : 테이블 필요")
+        print("[SOOWAN]: execute_rag : 테이블 필요")
         # SQL
         final_sql_query, title, explain, table_json, chart_json = generate_sql(
             QU, model, tokenizer, config
@@ -1699,10 +1958,14 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
         return PROMPT, docs_list
 
     else:
-        # print("[SOOWAN]: execute_rag : 테이블 필요없음")
-        # RAG
-        data = sort_by_time(TI, data)
-        docs, docs_list = retrieve(KE, data, config.N, embed_model, embed_tokenizer)
+        print("[SOOWAN]: execute_rag : 테이블 필요없음")
+        # 적응형 시간 필터링으로 RAG 실행
+        filtered_data = expand_time_range_if_needed(TI, data, min_docs=50)
+        
+        # 디버깅을 위해 문서 수 로깅
+        print(f"[RETRIEVE] 검색에 사용되는 문서 수: {len(filtered_data.get('vectors', []))}")
+        
+        docs, docs_list = retrieve(KE, filtered_data, config.N, embed_model, embed_tokenizer)
         return docs, docs_list
 
 
@@ -1807,79 +2070,234 @@ async def query_sort(params):
     return QU, KE, TA, TI
 
 
+# @time_tracker
+# def sort_by_time(time_bound, data):
+#     date_format = "%Y-%m-%d"
+#     target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
+#     target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
+
+#     matching_indices = [
+#         i
+#         for i, date in enumerate(data["times"])
+#         if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
+#     ]
+
+#     (
+#         data["file_names"],
+#         data["titles"],
+#         data["times"],
+#         data["vectors"],
+#         data["texts"],
+#         data["texts_short"],
+#         data["texts_vis"],
+#     ) = (
+#         [lst[i] for i in matching_indices]
+#         for lst in (
+#             data["file_names"],
+#             data["titles"],
+#             data["times"],
+#             data["vectors"],
+#             data["texts"],
+#             data["texts_short"],
+#             data["texts_vis"],
+#         )
+#     )
+#     return data
+
+
+# @time_tracker
+# def retrieve(query, data, N, embed_model, embed_tokenizer):
+#     print("[SOOWAN] retrieve : 진입")
+#     print("[SOOWAN] retrieve : 진입 정보 :", query)
+    
+#     sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
+#     print("[SOOWAN] retrieve : sim_score :", sim_score)
+    
+#     try:
+#         bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
+#     except Exception as e:
+#         print("[SOOWAN] retrieve : BM25 score exception, using zeros", e)
+#         bm25_score = np.zeros(len(data["texts_short"]))
+#     print("[SOOWAN] retrieve : bm25_score")
+    
+#     scaled_sim_score = min_max_scaling(sim_score)
+#     scaled_bm25_score = min_max_scaling(bm25_score)
+#     score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+#     top_k = score[:, 0, 0].argsort()[-N:][::-1]
+#     documents = ""
+#     documents_list = []
+#     for i, index in enumerate(top_k):
+#         documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
+#         documents_list.append({
+#             "file_name": data["file_names"][index],
+#             "title": data["titles"][index],
+#             "contents": data["texts_vis"][index],
+#         })
+#         print("\n" + beep)
+#     print("-------------자료 검색 성공--------------")
+#     return documents, documents_list
+
 @time_tracker
 def sort_by_time(time_bound, data):
+    """
+    원본 데이터는 유지하고 필터링된 복사본을 반환하는 함수
+    """
+    # 원본 문서 수 로깅
+    original_count = len(data["times"])
+    print(f"[시간 필터 전] 문서 수: {original_count}")
+    
+    # "all" 시간 범위 특별 처리
+    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
+        print(f"[시간 필터] 전체 기간 사용 - 모든 문서 포함")
+        return data  # 원본 데이터 그대로 반환
+    
+    # 시간 범위 파싱
     date_format = "%Y-%m-%d"
     target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
     target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
-
+    
+    # 시간 범위에 맞는 문서 인덱스 찾기
     matching_indices = [
         i
         for i, date in enumerate(data["times"])
         if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
     ]
-
-    (
-        data["file_names"],
-        data["titles"],
-        data["times"],
-        data["vectors"],
-        data["texts"],
-        data["texts_short"],
-        data["texts_vis"],
-    ) = (
-        [lst[i] for i in matching_indices]
-        for lst in (
-            data["file_names"],
-            data["titles"],
-            data["times"],
-            data["vectors"],
-            data["texts"],
-            data["texts_short"],
-            data["texts_vis"],
-        )
-    )
-    return data
-
+    
+    filtered_count = len(matching_indices)
+    print(f"[시간 필터 후] 문서 수: {filtered_count}, 기간: {time_bound}")
+    
+    # 너무 적은 문서가 남은 경우 경고 로그
+    if filtered_count < 50 and filtered_count < original_count * 0.1:
+        print(f"[경고] 시간 필터로 인해 문서가 크게 줄었습니다: {original_count} → {filtered_count}")
+    
+    # 필터링된 데이터를 새로운 딕셔너리에 복사
+    filtered_data = {}
+    filtered_data["file_names"] = [data["file_names"][i] for i in matching_indices]
+    filtered_data["titles"] = [data["titles"][i] for i in matching_indices]
+    filtered_data["times"] = [data["times"][i] for i in matching_indices]
+    
+    # 벡터 타입에 따른 다른 처리
+    if isinstance(data["vectors"], torch.Tensor):
+        filtered_data["vectors"] = data["vectors"][matching_indices]
+    else:
+        filtered_data["vectors"] = [data["vectors"][i] for i in matching_indices]
+    
+    filtered_data["texts"] = [data["texts"][i] for i in matching_indices]
+    filtered_data["texts_short"] = [data["texts_short"][i] for i in matching_indices]
+    filtered_data["texts_vis"] = [data["texts_vis"][i] for i in matching_indices]
+    
+    return filtered_data
 
 @time_tracker
 def retrieve(query, data, N, embed_model, embed_tokenizer):
-    # print("[SOOWAN] retrieve : 진입")
-    # print("[SOOWAN] retrieve : 진입 정보 :", query)
-    
-    sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
-    # print("[SOOWAN] retrieve : sim_score")
+    print("[SOOWAN] retrieve : 진입")
+    logging.info(f"Retrieval for query: '{query}'")
+    logging.info(f"Available documents: {len(data['vectors'])}")
     
     try:
+        sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
+        logging.info(f"Similarity score shape: {sim_score.shape}")
+        
         bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
+        logging.info(f"BM25 score shape: {bm25_score.shape}")
+        
+        scaled_sim_score = min_max_scaling(sim_score)
+        scaled_bm25_score = min_max_scaling(bm25_score)
+        
+        # Combined score (0.4 semantic + 0.6 lexical)
+        score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+        top_k = score[:, 0, 0].argsort()[-N:][::-1]
+        
+        # Log top results for debugging
+        logging.info(f"Top {N} document indices: {top_k}")
+        logging.info(f"Top {N} document scores: {[score[:, 0, 0][i] for i in top_k]}")
+        logging.info(f"Top document titles: {[data['titles'][i] for i in top_k]}")
+        
+        documents = ""
+        documents_list = []
+        for i, index in enumerate(top_k):
+            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
+            documents_list.append({
+                "file_name": data["file_names"][index],
+                "title": data["titles"][index],
+                "contents": data["texts_vis"][index],
+            })
+            print("\n" + beep)
+        print("-------------자료 검색 성공--------------")
+        return documents, documents_list
+        
+        # Continue with document assembly...
     except Exception as e:
-        # print("[SOOWAN] retrieve : BM25 score exception, using zeros", e)
-        bm25_score = np.zeros(len(data["texts_short"]))
-    # print("[SOOWAN] retrieve : bm25_score")
-    
-    scaled_sim_score = min_max_scaling(sim_score)
-    scaled_bm25_score = min_max_scaling(bm25_score)
-    score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
-    top_k = score[:, 0, 0].argsort()[-N:][::-1]
-    documents = ""
-    documents_list = []
-    for i, index in enumerate(top_k):
-        documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
-        documents_list.append({
-            "file_name": data["file_names"][index],
-            "title": data["titles"][index],
-            "contents": data["texts_vis"][index],
-        })
-        print("\n" + beep)
-    print("-------------자료 검색 성공--------------")
-    return documents, documents_list
+        logging.error(f"Retrieval error: {str(e)}", exc_info=True)
+        return "", []
 
+@time_tracker
+def expand_time_range_if_needed(time_bound, data, min_docs=50):
+    """
+    시간 필터링 결과가 너무 적은 경우 자동으로 시간 범위를 확장하는 함수
+    """
+    # "all" 시간 범위는 그대로 사용
+    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
+        print(f"[시간 범위] 전체 기간 사용")
+        return data
+    
+    # 원래 시간 범위로 먼저 시도
+    filtered_data = sort_by_time(time_bound, data)
+    filtered_count = len(filtered_data.get("times", []))
+    
+    # 필터링된 문서 수가 충분하면 바로 반환
+    if filtered_count >= min_docs:
+        print(f"[시간 범위] 원래 범위로 충분한 문서 확보: {filtered_count}개")
+        return filtered_data
+    
+    # 시간 범위 확장 시도
+    print(f"[시간 범위 확장] 원래 범위는 {filtered_count}개 문서만 제공 (최소 필요: {min_docs}개)")
+    
+    # 원래 날짜 파싱
+    date_format = "%Y-%m-%d"
+    try:
+        start_date = datetime.strptime(time_bound.split(":")[0], date_format)
+        end_date = datetime.strptime(time_bound.split(":")[1], date_format)
+    except Exception as e:
+        print(f"[시간 범위 오류] 날짜 형식 오류: {time_bound}, 오류: {e}")
+        return data  # 오류 시 원본 데이터 반환
+    
+    # 점진적으로 더 넓은 범위 시도
+    expansions = [
+        (3, "3개월"),
+        (6, "6개월"),
+        (12, "1년"),
+        (24, "2년"),
+        (60, "5년")
+    ]
+    
+    for months, label in expansions:
+        # 양방향으로 균등하게 확장
+        new_start = start_date - timedelta(days=30*months//2)
+        new_end = end_date + timedelta(days=30*months//2)
+        
+        new_range = f"{new_start.strftime(date_format)}:{new_end.strftime(date_format)}"
+        print(f"[시간 범위 확장] {label} 확장 시도: {new_range}")
+        
+        expanded_data = sort_by_time(new_range, data)
+        expanded_count = len(expanded_data.get("times", []))
+        
+        if expanded_count >= min_docs:
+            print(f"[시간 범위 확장] {label} 확장으로 {expanded_count}개 문서 확보")
+            return expanded_data
+    
+    # 모든 확장이 실패하면 전체 데이터셋 사용
+    print(f"[시간 범위 확장] 모든 확장 시도 실패, 전체 데이터셋 사용")
+    return data
 
 @time_tracker
 def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
+    print("[SOOWAN] cal_sim_score : 진입 / query : ", query)
     query_V = embed(query, embed_model, embed_tokenizer)
+    print("[SOOWAN] cal_sim_score : query_V 생산 완료")
     if len(query_V.shape) == 1:
         query_V = query_V.unsqueeze(0)
+        print("[SOOWAN] cal_sim_score : query_V.shape == 1")
     score = []
     for chunk in chunks:
         if len(chunk.shape) == 1:
@@ -1891,55 +2309,100 @@ def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
     return np.array(score)
 
 
+# @time_tracker
+# def cal_bm25_score(query, indexes, embed_tokenizer):
+#     print("[SOOWAN] cal_bm25_score : 진입")
+#     try:
+#         tokenized_corpus = [
+#             embed_tokenizer(
+#                 text,
+#                 return_token_type_ids=False,
+#                 return_attention_mask=False,
+#                 return_offsets_mapping=False,
+#             )
+#             for text in indexes
+#         ]
+#         tokenized_corpus = [
+#             embed_tokenizer.convert_ids_to_tokens(corpus["input_ids"])
+#             for corpus in tokenized_corpus
+#         ]
+#         print(f"[SOOWAN] cal_bm25_score : Tokenized corpus (first 2 items): {tokenized_corpus[:2]}")
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error tokenizing corpus: {str(e)}")
+#         return np.zeros(len(indexes))
+#     if not tokenized_corpus or all(len(tokens) == 0 for tokens in tokenized_corpus):
+#         print("[SOOWAN] cal_bm25_score: Empty tokenized corpus, returning zeros.")
+#         return np.zeros(len(indexes))
+#     try:
+#         bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error initializing BM25: {str(e)}")
+#         return np.zeros(len(indexes))
+#     try:
+#         tokenized_query = embed_tokenizer(query)
+#         tokenized_query = embed_tokenizer.convert_ids_to_tokens(tokenized_query["input_ids"])
+#         print(f"[SOOWAN] cal_bm25_score : Tokenized query: {tokenized_query}")
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error tokenizing query: {str(e)}")
+#         return np.zeros(len(indexes))
+#     try:
+#         bm25_score = bm25.get_scores(tokenized_query)
+#         print(f"[SOOWAN] cal_bm25_score : BM25 score: {bm25_score}")
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error computing BM25 scores: {str(e)}")
+#         return np.zeros(len(indexes))
+#     return np.array(bm25_score)
 @time_tracker
 def cal_bm25_score(query, indexes, embed_tokenizer):
-    # print("[SOOWAN] cal_bm25_score : 진입")
-    try:
-        tokenized_corpus = [
-            embed_tokenizer(
-                text,
-                return_token_type_ids=False,
-                return_attention_mask=False,
-                return_offsets_mapping=False,
-            )
-            for text in indexes
-        ]
-        tokenized_corpus = [
-            embed_tokenizer.convert_ids_to_tokens(corpus["input_ids"])
-            for corpus in tokenized_corpus
-        ]
-        # print(f"[SOOWAN] cal_bm25_score : Tokenized corpus (first 2 items): {tokenized_corpus[:2]}")
-    except Exception as e:
-        # print(f"[SOOWAN ERROR BM25] Error tokenizing corpus: {str(e)}")
-        return np.zeros(len(indexes))
-    if not tokenized_corpus or all(len(tokens) == 0 for tokens in tokenized_corpus):
-        # print("[SOOWAN] cal_bm25_score: Empty tokenized corpus, returning zeros.")
-        return np.zeros(len(indexes))
+    logging.info(f"Starting BM25 calculation for query: {query}")
+    logging.info(f"Document count: {len(indexes)}")
+    
+    if not indexes:
+        logging.warning("Empty document list provided to BM25")
+        return np.zeros(0)
+        
+    # Process documents individually to isolate failures
+    tokenized_corpus = []
+    for i, text in enumerate(indexes):
+        try:
+            tokens = embed_tokenizer(text, return_token_type_ids=False,
+                                    return_attention_mask=False,
+                                    return_offsets_mapping=False)
+            tokens = embed_tokenizer.convert_ids_to_tokens(tokens["input_ids"])
+            if len(tokens) == 0:
+                logging.warning(f"Document {i} tokenized to empty list")
+                tokens = ["<empty>"]  # Placeholder to avoid BM25 errors
+            tokenized_corpus.append(tokens)
+        except Exception as e:
+            logging.error(f"Failed to tokenize document {i}: {str(e)}")
+            tokenized_corpus.append(["<error>"])  # Placeholder
+    
     try:
         bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
+        tokenized_query = embed_tokenizer.convert_ids_to_tokens(
+            embed_tokenizer(query)["input_ids"]
+        )
+        scores = bm25.get_scores(tokenized_query)
+        
+        # Check for valid scores
+        if np.isnan(scores).any() or np.isinf(scores).any():
+            logging.warning("BM25 produced NaN/Inf scores - replacing with zeros")
+            scores = np.nan_to_num(scores)
+            
+        logging.info(f"BM25 scores: min={scores.min():.4f}, max={scores.max():.4f}, mean={scores.mean():.4f}")
+        return scores
     except Exception as e:
-        # print(f"[SOOWAN ERROR BM25] Error initializing BM25: {str(e)}")
+        logging.error(f"BM25 scoring failed: {str(e)}")
         return np.zeros(len(indexes))
-    try:
-        tokenized_query = embed_tokenizer(query)
-        tokenized_query = embed_tokenizer.convert_ids_to_tokens(tokenized_query["input_ids"])
-        # print(f"[SOOWAN] cal_bm25_score : Tokenized query: {tokenized_query}")
-    except Exception as e:
-        # print(f"[SOOWAN ERROR BM25] Error tokenizing query: {str(e)}")
-        return np.zeros(len(indexes))
-    try:
-        bm25_score = bm25.get_scores(tokenized_query)
-        # print(f"[SOOWAN] cal_bm25_score : BM25 score: {bm25_score}")
-    except Exception as e:
-        # print(f"[SOOWAN ERROR BM25] Error computing BM25 scores: {str(e)}")
-        return np.zeros(len(indexes))
-    return np.array(bm25_score)
+
 
 
 @time_tracker
 def embed(query, embed_model, embed_tokenizer):
+    print("[SOOWAN] embed: 진입")
     inputs = embed_tokenizer(query, padding=True, truncation=True, return_tensors="pt")
     embeddings, _ = embed_model(**inputs, return_dict=False)
+    print("[SOOWAN] embed: 완료")
     return embeddings[0][0]
 
 
@@ -1948,7 +2411,7 @@ def min_max_scaling(arr):
     arr_min = arr.min()
     arr_max = arr.max()
     if arr_max == arr_min:
-        # print("[SOOWAN] min_max_scaling: Zero range detected, returning zeros.")
+        print("[SOOWAN] min_max_scaling: Zero range detected, returning zeros.")
         return np.zeros_like(arr)
     return (arr - arr_min) / (arr_max - arr_min)
 
@@ -2145,6 +2608,7 @@ GENERATE_PROMPT_TEMPLATE = """
 만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
 또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
 내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
+답변 형식은 markdown 형식으로 작성해줘.
 내부 자료: {docs}
 질문: {query}<end_of_turn>
 <start_of_turn>model
@@ -2154,7 +2618,12 @@ GENERATE_PROMPT_TEMPLATE = """
 # Template for the streaming version of answer generation
 STREAM_PROMPT_TEMPLATE = """
 <bos><start_of_turn>user
-... same instructions ...
+너는 남성해운의 도움을 주는 데이터 분석가야.
+주어진 내부 자료에 기반해서 내 질문에 대답해줘. 답변 형식은 보고서처럼 길고 자세하며 논리정연하게 사실만을 가지고 작성해줘.
+만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
+또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
+내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
+답변 형식은 markdown 형식으로 작성해줘.
 내부 자료: {docs}
 질문: {query}<end_of_turn>
 <start_of_turn>model
@@ -2457,6 +2926,7 @@ def time_tracker(func):
 
 ```python
 
+# data_control.py
 import os
 import json
 import datetime
@@ -2465,7 +2935,7 @@ import numpy as np
 from umap import UMAP
 from flask import Blueprint, request, jsonify, render_template
 from transformers import AutoModel, AutoTokenizer
-from utils import vectorize_content  # Assumes you have defined vectorize_content in utils.py
+from utils import vectorize_content, normalize_text_vis  # Assumes you have defined vectorize_content in utils.py
 
 # For PPTX extraction
 from pptx import Presentation
@@ -2511,110 +2981,147 @@ def extract_text_from_pdf(file_path):
 def data_control_page():
     return render_template("data_manager.html")
 
+# --- 다중 파일 업로드 지원 (수정됨) ---
 @data_control_bp.route("/upload", methods=["POST"])
 def data_upload():
     if "dataFile" not in request.files:
         return jsonify({"message": "파일이 업로드되지 않았습니다."}), 400
-    file = request.files["dataFile"]
-    if file.filename == "":
-        return jsonify({"message": "파일 이름이 없습니다."}), 400
-    ext = os.path.splitext(file.filename)[1].lower()
-    try:
-        # TXT file processing
-        if ext == ".txt":
-            content = file.read().decode("utf-8")
-            vector = vectorize_content(content)
-            new_entry = {
-                "file_name": file.filename,
-                "chunks": [
-                    {
-                        "chunk_id": 1,
-                        "title": os.path.splitext(file.filename)[0],
-                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                        "type": "text",
-                        "text": content,
-                        "text_short": content[:200],
-                        "vector": vector,
-                        "text_vis": content,
-                    }
-                ],
-            }
-        # JSON file processing
-        elif ext == ".json":
-            new_entry = json.load(file)
-            if not isinstance(new_entry, list):
-                new_entry = [new_entry]
-            for entry in new_entry:
-                for chunk in entry.get("chunks", []):
-                    if not chunk.get("vector"):
-                        text = chunk.get("text", "")
-                        chunk["vector"] = vectorize_content(text) if text else []
-        # PPTX file processing
-        elif ext == ".pptx":
-            temp_path = os.path.join("temp", file.filename)
-            os.makedirs("temp", exist_ok=True)
-            file.save(temp_path)
-            content = extract_text_from_pptx(temp_path)
-            os.remove(temp_path)
-            vector = vectorize_content(content)
-            new_entry = {
-                "file_name": file.filename,
-                "chunks": [
-                    {
-                        "chunk_id": 1,
-                        "title": os.path.splitext(file.filename)[0],
-                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                        "type": "pptx",
-                        "text": content,
-                        "text_short": content[:200],
-                        "vector": vector,
-                        "text_vis": content,
-                    }
-                ],
-            }
-        # PDF file processing
-        elif ext == ".pdf":
-            temp_path = os.path.join("temp", file.filename)
-            os.makedirs("temp", exist_ok=True)
-            file.save(temp_path)
-            content = extract_text_from_pdf(temp_path)
-            os.remove(temp_path)
-            vector = vectorize_content(content)
-            new_entry = {
-                "file_name": file.filename,
-                "chunks": [
-                    {
-                        "chunk_id": 1,
-                        "title": os.path.splitext(file.filename)[0],
-                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                        "type": "pdf",
-                        "text": content,
-                        "text_short": content[:200],
-                        "vector": vector,
-                        "text_vis": content,
-                    }
-                ],
-            }
-        else:
-            return jsonify({"message": "지원되지 않는 파일 형식입니다."}), 400
+    files = request.files.getlist("dataFile")
+    if not files:
+        return jsonify({"message": "업로드할 파일이 없습니다."}), 400
 
-        # Load existing data
-        if os.path.exists(DATA_PATH):
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                existing_data = json.load(f)
-        else:
-            existing_data = []
-        # Append new entry
-        if isinstance(new_entry, list):
-            existing_data.extend(new_entry)
-        else:
-            existing_data.append(new_entry)
-        with open(DATA_PATH, "w", encoding="utf-8") as f:
-            json.dump(existing_data, f, ensure_ascii=False, indent=2)
-        return jsonify({"message": "파일 업로드 및 벡터화가 완료되었습니다."})
-    except Exception as e:
-        return jsonify({"message": f"업로드 실패: {str(e)}"}), 500
+    # 기존 데이터 로드
+    if os.path.exists(DATA_PATH):
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            existing_data = json.load(f)
+    else:
+        existing_data = []
+        
+    # 모든 파일에 걸쳐 최대 chunk_id 찾기
+    max_chunk_id = 0
+    for entry in existing_data:
+        for chunk in entry.get("chunks", []):
+            max_chunk_id = max(max_chunk_id, chunk.get("chunk_id", 0))
+    
+    print(f"기존 데이터의 최대 chunk_id: {max_chunk_id}")
+    
+    messages = []
+    for file in files:
+        if file.filename == "":
+            messages.append("파일 이름이 없습니다.")
+            continue
+        ext = os.path.splitext(file.filename)[1].lower()
+        try:
+            new_chunk = None
+            # TXT 파일 처리
+            if ext == ".txt":
+                content = file.read().decode("utf-8")
+                vector = vectorize_content(content)
+                text_vis = content
+                new_chunk = {
+                    "chunk_id": None,  # 이후에 할당
+                    "title": os.path.splitext(file.filename)[0],
+                    "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                    "type": "text",
+                    "text": content,
+                    "text_short": content[:200],
+                    "vector": vector,
+                    "text_vis": normalize_text_vis(text_vis)
+                }
+            # JSON 파일 처리
+            elif ext == ".json":
+                new_entry = json.load(file)
+                if not isinstance(new_entry, list):
+                    new_entry = [new_entry]
+                # JSON 파일의 각 청크에 대해 벡터 처리
+                for entry in new_entry:
+                    for chunk in entry.get("chunks", []):
+                        if not chunk.get("vector"):
+                            text = chunk.get("text", "")
+                            chunk["vector"] = vectorize_content(text) if text else [[0.0] * 768]
+                        else:
+                            vector = chunk["vector"]
+                            expected_dim = 768
+                            if not isinstance(vector, list):
+                                text = chunk.get("text", "")
+                                chunk["vector"] = vectorize_content(text) if text else [[0.0]*expected_dim]
+                            elif len(vector) != expected_dim and isinstance(vector[0], (int, float)):
+                                chunk["vector"] = vector[:expected_dim] if len(vector) >= expected_dim else vector + [0.0]*(expected_dim - len(vector))
+                        chunk["text_vis"] = normalize_text_vis(chunk.get("text_vis", ""))
+                # JSON 파일은 전체 엔트리 추가
+                for entry in new_entry:
+                    for chunk in entry.get("chunks", []):
+                        max_chunk_id += 1
+                        chunk["chunk_id"] = max_chunk_id
+                    existing_data.append(entry)
+                messages.append(f"{file.filename}: 업로드 및 벡터화 성공.")
+                continue  # 다음 파일로 넘어감
+            # PPTX 파일 처리
+            elif ext == ".pptx":
+                temp_path = os.path.join("temp", file.filename)
+                os.makedirs("temp", exist_ok=True)
+                file.save(temp_path)
+                content = extract_text_from_pptx(temp_path)
+                os.remove(temp_path)
+                vector = vectorize_content(content)
+                text_vis = content
+                new_chunk = {
+                    "chunk_id": None,
+                    "title": os.path.splitext(file.filename)[0],
+                    "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                    "type": "pptx",
+                    "text": content,
+                    "text_short": content[:200],
+                    "vector": vector,
+                    "text_vis": normalize_text_vis(text_vis)
+                }
+            # PDF 파일 처리
+            elif ext == ".pdf":
+                temp_path = os.path.join("temp", file.filename)
+                os.makedirs("temp", exist_ok=True)
+                file.save(temp_path)
+                content = extract_text_from_pdf(temp_path)
+                os.remove(temp_path)
+                vector = vectorize_content(content)
+                text_vis = content
+                new_chunk = {
+                    "chunk_id": None,
+                    "title": os.path.splitext(file.filename)[0],
+                    "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                    "type": "pdf",
+                    "text": content,
+                    "text_short": content[:200],
+                    "vector": vector,
+                    "text_vis": normalize_text_vis(text_vis)
+                }
+            else:
+                messages.append(f"{file.filename}: 지원되지 않는 파일 형식입니다.")
+                continue
 
+            # 단일 파일(텍스트, pptx, pdf)의 경우
+            if new_chunk is not None:
+                existing_entry = next((entry for entry in existing_data if entry.get("file_name") == file.filename), None)
+                if existing_entry:
+                    max_chunk_id += 1
+                    new_chunk["chunk_id"] = max_chunk_id
+                    existing_entry.setdefault("chunks", []).append(new_chunk)
+                else:
+                    max_chunk_id += 1
+                    new_chunk["chunk_id"] = max_chunk_id
+                    new_entry = {
+                        "file_name": file.filename,
+                        "chunks": [new_chunk]
+                    }
+                    existing_data.append(new_entry)
+                messages.append(f"{file.filename}: 업로드 및 벡터화 성공.")
+        except Exception as e:
+            messages.append(f"{file.filename}: 업로드 실패: {str(e)}")
+    # 업데이트된 데이터 저장
+    with open(DATA_PATH, "w", encoding="utf-8") as f:
+        json.dump(existing_data, f, ensure_ascii=False, indent=2)
+    return jsonify({"message": "\n".join(messages)})
+
+# --- 페이지네이션 및 인덱스 포함 데이터 목록 (수정됨) ---
 @data_control_bp.route("/list", methods=["GET"])
 def data_list():
     try:
@@ -2624,23 +3131,52 @@ def data_list():
         else:
             data_entries = []
         summary = []
-        for entry in data_entries:
+        for idx, entry in enumerate(data_entries):
             if "chunks" in entry and entry["chunks"]:
                 chunk = entry["chunks"][0]
                 summary.append({
+                    "index": idx,
                     "file_name": entry.get("file_name", ""),
                     "title": chunk.get("title", ""),
-                    "date": chunk.get("date", ""),
+                    "date": chunk.get("date", "")
                 })
             else:
                 summary.append({
+                    "index": idx,
                     "file_name": entry.get("file_name", ""),
                     "title": "",
                     "date": ""
                 })
-        return jsonify(summary)
+        # 페이지네이션: 기본 페이지 1, 한 페이지당 30개
+        page = request.args.get("page", 1, type=int)
+        per_page = 30
+        total = len(summary)
+        start = (page - 1) * per_page
+        end = start + per_page
+        paginated = summary[start:end]
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "data": paginated
+        })
     except Exception as e:
         return jsonify({"message": f"데이터 목록 불러오기 실패: {str(e)}"}), 500
+
+# --- 상세보기 엔드포인트 추가 ---
+@data_control_bp.route("/detail/<int:index>", methods=["GET"])
+def data_detail(index):
+    try:
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                data_entries = json.load(f)
+        else:
+            return jsonify({"message": "데이터 파일이 존재하지 않습니다."}), 404
+        if index < 0 or index >= len(data_entries):
+            return jsonify({"message": "유효하지 않은 인덱스입니다."}), 400
+        return jsonify(data_entries[index])
+    except Exception as e:
+        return jsonify({"message": f"데이터 상세 보기 실패: {str(e)}"}), 500
 
 @data_control_bp.route("/delete", methods=["POST"])
 def data_delete():
@@ -2663,7 +3199,7 @@ def data_delete():
     except Exception as e:
         return jsonify({"message": f"데이터 삭제 실패: {str(e)}"}), 500
 
-# --- Search and highlight endpoint ---
+# --- 검색 및 UMAP 관련 엔드포인트는 기존 그대로 유지 ---
 @data_control_bp.route("/search", methods=["GET"])
 def search_data():
     query = request.args.get("q", "").lower()
@@ -2686,7 +3222,6 @@ def search_data():
             })
     return jsonify(results)
 
-
 @data_control_bp.route("/umap_visualization")
 def umap_visualization_page():
     return render_template("umap_visualization.html")
@@ -2694,14 +3229,12 @@ def umap_visualization_page():
 @data_control_bp.route("/api/umap_data", methods=["GET"])
 def get_umap_data():
     try:
-        # Load vector data
         if os.path.exists(DATA_PATH):
             with open(DATA_PATH, "r", encoding="utf-8") as f:
                 data_entries = json.load(f)
         else:
             return jsonify({"error": "데이터 파일을 찾을 수 없습니다."}), 404
         
-        # Extract vectors and metadata
         vectors = []
         metadata = []
         
@@ -2720,13 +3253,11 @@ def get_umap_data():
         if not vectors:
             return jsonify({"error": "벡터 데이터가 없습니다."}), 404
         
-        # Convert to numpy array and squeeze extra dimensions
         vectors_array = np.array(vectors)
         vectors_array = np.squeeze(vectors_array)
         
-        # Apply UMAP for dimensionality reduction
         from umap import UMAP
-        n_neighbors = min(15, len(vectors) - 1)  # Adjust based on data size
+        n_neighbors = min(15, len(vectors) - 1)
         umap_model = UMAP(n_components=2, 
                             n_neighbors=n_neighbors, 
                             min_dist=0.1, 
@@ -2734,7 +3265,6 @@ def get_umap_data():
                             random_state=42)
         embedding = umap_model.fit_transform(vectors_array)
         
-        # Prepare response data
         nodes = []
         for i, (x, y) in enumerate(embedding):
             nodes.append({
@@ -2747,7 +3277,6 @@ def get_umap_data():
                 "text_short": metadata[i]["text_short"]
             })
         
-        # Calculate edges (connections between similar vectors)
         edges = []
         if len(vectors) > 1:
             from sklearn.metrics.pairwise import cosine_similarity
@@ -2784,9 +3313,11 @@ def get_umap_data():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>데이터 관리</title>
+  <title>데이터 관리 및 대규모 UMAP 벡터 시각화</title>
+  <!-- d3.js for pagination and legends in the data management section -->
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
+    /* Shared styles */
     body {
       font-family: 'Inter', sans-serif;
       margin: 0;
@@ -2819,91 +3350,12 @@ def get_umap_data():
     button:hover {
       background-color: #6d28d9;
     }
-    .visualization {
-      background-color: white;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-      overflow: hidden;
-      position: relative;
-      height: 700px;
-    }
-    /* Use a canvas element instead of SVG */
-    canvas#visualizationCanvas {
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
-    .tooltip {
-      position: absolute;
-      padding: 10px;
-      background-color: rgba(0, 0, 0, 0.8);
-      color: white;
-      border-radius: 4px;
-      pointer-events: none;
-      max-width: 300px;
-      z-index: 100;
-      font-size: 14px;
-      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-    }
-    .tooltip h4 {
-      margin: 0 0 5px 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-      padding-bottom: 5px;
-    }
-    .tooltip p {
-      margin: 5px 0;
-    }
-    .legend {
-      position: absolute;
-      right: 20px;
-      top: 20px;
-      background-color: rgba(255, 255, 255, 0.9);
-      padding: 10px;
-      border-radius: 4px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    }
-    .legend-item {
-      display: flex;
-      align-items: center;
-      margin-bottom: 5px;
-    }
-    .legend-color {
-      width: 15px;
-      height: 15px;
-      margin-right: 8px;
-      border-radius: 3px;
-    }
-    .loading {
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background-color: rgba(255, 255, 255, 0.8);
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      z-index: 1000;
-    }
-    .loading-spinner {
-      border: 5px solid #f3f3f3;
-      border-top: 5px solid #7c3aed;
-      border-radius: 50%;
-      width: 50px;
-      height: 50px;
-      animation: spin 1s linear infinite;
-    }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-    /* Styles for search results */
-    #searchResults {
-      margin: 10px 0;
-      padding: 10px;
-      background: #fff;
+    /* Data management table styles */
+    #dataListContainer {
+      max-height: 300px;
+      overflow-y: auto;
       border: 1px solid #ddd;
-      border-radius: 4px;
+      margin-bottom: 20px;
     }
     table {
       width: 100%;
@@ -2917,15 +3369,72 @@ def get_umap_data():
       padding: 8px;
       text-align: center;
     }
+    tr:hover {
+      background-color: #f1f5f9;
+      cursor: pointer;
+    }
+    /* PIXI.js visualization styles */
+    #pixiSection {
+      position: relative;
+      height: 700px;
+      margin-top: 40px;
+      background-color: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      overflow: hidden;
+    }
+    /* Container for PIXI canvas */
+    #pixiContainer {
+      width: 100%;
+      height: 100%;
+    }
+    /* Loading overlay for PIXI visualization */
+    #pixiLoadingOverlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      font-size: 24px;
+      color: #333;
+    }
+    /* Legend styles for D3 in data management section */
+    .legend {
+      position: absolute;
+      right: 20px;
+      top: 20px;
+      background-color: rgba(255, 255, 255, 0.9);
+      padding: 10px;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+    .legend-color {
+      width: 15px;
+      height: 15px;
+      margin-right: 8px;
+      border-radius: 3px;
+    }
   </style>
 </head>
 <body>
   <div class="container">
+    <!-- Data Management Section -->
     <h1>데이터 관리</h1>
     
     <h2>데이터 업로드</h2>
+    <!-- 다중 파일 업로드 -->
     <form id="uploadForm" enctype="multipart/form-data">
-      <input type="file" id="dataFile" name="dataFile" accept=".txt,.json,.pptx,.pdf" required>
+      <input type="file" id="dataFile" name="dataFile" accept=".txt,.json,.pptx,.pdf" multiple required>
       <button type="submit">업로드 및 벡터화</button>
     </form>
 
@@ -2936,58 +3445,77 @@ def get_umap_data():
     </div>
     <div id="searchResults"></div>
 
-    <h1>UMAP 벡터 시각화 (Canvas Optimized)</h1>
-    <div class="controls">
-      <button id="colorByFile">파일별 색상</button>
-      <button id="showLinks">유사성 연결선 표시</button>
-      <button id="resetZoom">줌 초기화</button>
-    </div>
-    <div class="visualization">
-      <div id="loading" class="loading">
-        <div class="loading-spinner"></div>
-      </div>
-      <canvas id="visualizationCanvas"></canvas>
-      <div id="legend" class="legend"></div>
+    <h2>데이터 목록</h2>
+    <!-- 데이터 목록은 항상 보이도록 -->
+    <div id="dataListContainer">
+      <table id="dataTable">
+        <thead>
+          <tr>
+            <th>인덱스</th>
+            <th>파일 이름</th>
+            <th>제목</th>
+            <th>수정일자</th>
+            <th>액션</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="pagination"></div>
     </div>
 
-    <h2>현재 데이터 목록</h2>
-    <table id="dataTable">
-      <thead>
-        <tr>
-          <th>인덱스</th>
-          <th>파일 이름</th>
-          <th>제목</th>
-          <th>수정일자</th>
-          <th>액션</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
+    <!-- Optimized Visualization Section using PIXI.js -->
+    <h1>대규모 UMAP 벡터 시각화 (Optimized with PIXI.js)</h1>
+    <div id="pixiSection">
+      <div id="pixiContainer"></div>
+      <div id="pixiLoadingOverlay">데이터 로딩 중...</div>
+    </div>
   </div>
 
+  <!-- Data Management Scripts -->
   <script>
-    // Load and display data list
-    async function loadDataList() {
-      const response = await fetch('/data/list');
-      const data = await response.json();
+    let currentPage = 1;
+    const perPage = 30;
+
+    async function loadDataList(page = 1) {
+      currentPage = page;
+      const response = await fetch(`/data/list?page=${page}`);
+      const result = await response.json();
+      const data = result.data;
       const tbody = document.getElementById('dataTable').getElementsByTagName('tbody')[0];
       tbody.innerHTML = '';
-      data.forEach((item, index) => {
+      data.forEach(item => {
         const row = document.createElement('tr');
+        // 클릭 시 상세보기
+        row.onclick = () => { showDetail(item.index); };
         row.innerHTML = `
-          <td>${index}</td>
+          <td>${item.index}</td>
           <td>${item.file_name}</td>
           <td>${item.title}</td>
           <td>${item.date}</td>
-          <td>
-            <button onclick="deleteData(${index})">삭제</button>
-          </td>
+          <td><button onclick="deleteData(event, ${item.index})">삭제</button></td>
         `;
         tbody.appendChild(row);
       });
+      renderPagination(result.total, page);
     }
 
-    async function deleteData(index) {
+    function renderPagination(total, current) {
+      const paginationDiv = document.getElementById('pagination');
+      paginationDiv.innerHTML = '';
+      const totalPages = Math.ceil(total / perPage);
+      for (let i = 1; i <= totalPages; i++) {
+        const btn = document.createElement('button');
+        btn.textContent = i;
+        if (i === current) {
+          btn.disabled = true;
+        }
+        btn.onclick = () => { loadDataList(i); };
+        paginationDiv.appendChild(btn);
+      }
+    }
+
+    async function deleteData(event, index) {
+      event.stopPropagation();
       if (!confirm('이 데이터를 삭제하시겠습니까?')) return;
       const response = await fetch('/data/delete', {
         method: 'POST',
@@ -2996,27 +3524,38 @@ def get_umap_data():
       });
       const result = await response.json();
       alert(result.message);
-      loadDataList();
-      loadVisualization();
+      loadDataList(currentPage);
+      loadPixiVisualization();
+    }
+
+    async function showDetail(index) {
+      try {
+        const response = await fetch(`/data/detail/${index}`);
+        const data = await response.json();
+        alert(JSON.stringify(data, null, 2));
+      } catch (error) {
+        console.error('Error fetching detail:', error);
+        alert('상세 정보를 불러오는 중 오류 발생');
+      }
     }
 
     document.getElementById('uploadForm').addEventListener('submit', async function(e) {
       e.preventDefault();
       const fileInput = document.getElementById('dataFile');
       const formData = new FormData();
-      formData.append('dataFile', fileInput.files[0]);
-
+      for (let i = 0; i < fileInput.files.length; i++) {
+        formData.append('dataFile', fileInput.files[i]);
+      }
       const response = await fetch('/data/upload', {
         method: 'POST',
         body: formData
       });
       const result = await response.json();
       alert(result.message);
-      loadDataList();
-      loadVisualization();
+      loadDataList(currentPage);
+      loadPixiVisualization();
     });
 
-    // Search function integration
     async function performSearch() {
       const query = document.getElementById('searchInput').value.trim();
       if (!query) return alert('검색어를 입력하세요.');
@@ -3038,173 +3577,139 @@ def get_umap_data():
       }
       let html = '<ul>';
       results.forEach(item => {
-        html += `<li>[${item.index}] 파일: ${item.file_name}, 제목: ${item.title}</li>`;
+        html += `<li onclick="showDetail(${item.index})">[${item.index}] 파일: ${item.file_name}, 제목: ${item.title}</li>`;
       });
       html += '</ul>';
       container.innerHTML = html;
     }
 
-    // Visualization configuration and global variables
-    const config = {
-      colorByFile: true,
-      showLinks: false,
-      nodeSizeRange: [5, 15],
-      linkOpacity: 0.3,
-      zoomExtent: [0.1, 10]
-    };
+    // Initial load of data list
+    document.addEventListener('DOMContentLoaded', () => {
+      loadDataList();
+      loadPixiVisualization();
+    });
+  </script>
 
-    let colorScale = d3.scaleOrdinal(d3.schemeCategory10);
-    let graphData = { nodes: [], edges: [] };
-    let canvas, context;
-    let transform = { x: 0, y: 0, k: 1 };
+  <!-- PIXI.js Library -->
+  <script src="https://pixijs.download/release/pixi.min.js"></script>
+  <!-- Optimized Visualization using PIXI.js -->
+  <script>
+    // Create PIXI Application
+    const pixiApp = new PIXI.Application({
+      width: window.innerWidth,
+      height: 700,  // Fixed height for visualization section
+      backgroundColor: 0xffffff,
+      antialias: true,
+      resolution: window.devicePixelRatio || 1,
+    });
+    // Append PIXI view to pixiContainer
+    const pixiContainerDiv = document.getElementById('pixiContainer');
+    pixiContainerDiv.appendChild(pixiApp.view);
 
-    async function loadVisualization() {
-      try {
-        document.getElementById('loading').style.display = 'flex';
-        const response = await fetch('/data/api/umap_data');
-        if (!response.ok) throw new Error('데이터를 불러오는데 실패했습니다.');
-        graphData = await response.json();
+    // Create a PIXI container for the visualization content
+    const vizContainer = new PIXI.Container();
+    pixiApp.stage.addChild(vizContainer);
 
-        // Setup canvas
-        canvas = document.getElementById('visualizationCanvas');
-        context = canvas.getContext('2d');
-        const container = document.querySelector('.visualization');
-        canvas.width = container.clientWidth;
-        canvas.height = container.clientHeight;
+    // Load visualization data from API endpoint
+    async function loadVisualizationData() {
+      const response = await fetch('/data/api/umap_data');
+      if (!response.ok) {
+        throw new Error("데이터를 불러오는데 실패했습니다.");
+      }
+      const data = await response.json();
+      return data;
+    }
 
-        // Update color scale domain based on unique file names
-        const uniqueFiles = [...new Set(graphData.nodes.map(n => n.file_name))];
-        colorScale.domain(uniqueFiles);
-        createLegend(uniqueFiles);
+    // Downsample nodes to reduce load for very large datasets
+    function downsample(nodes, maxPoints) {
+      if (nodes.length <= maxPoints) return nodes;
+      const sampled = [];
+      const step = Math.floor(nodes.length / maxPoints);
+      for (let i = 0; i < nodes.length; i += step) {
+        sampled.push(nodes[i]);
+      }
+      return sampled;
+    }
 
-        // Calculate node sizes based on connections
-        const nodeConnections = {};
-        graphData.edges.forEach(edge => {
-          nodeConnections[edge.source] = (nodeConnections[edge.source] || 0) + 1;
-          nodeConnections[edge.target] = (nodeConnections[edge.target] || 0) + 1;
-        });
-        const sizeScale = d3.scaleLinear()
-          .domain([0, d3.max(Object.values(nodeConnections)) || 1])
-          .range(config.nodeSizeRange);
+    // Draw the visualization with PIXI Graphics
+    function drawVisualization(data) {
+      vizContainer.removeChildren();
+      const maxNodes = 10000; // Adjust as needed
+      const nodes = downsample(data.nodes, maxNodes);
+      // Filter edges to those connecting sampled nodes
+      const nodeIds = new Set(nodes.map(n => n.id));
+      const edges = data.edges.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target));
 
-        // Map UMAP coordinates to canvas coordinates
-        const width = canvas.width, height = canvas.height;
-        const xExtent = d3.extent(graphData.nodes, d => d.x);
-        const yExtent = d3.extent(graphData.nodes, d => d.y);
-        const xScale = d3.scaleLinear().domain(xExtent).range([50, width - 50]);
-        const yScale = d3.scaleLinear().domain(yExtent).range([50, height - 50]);
+      // Draw edges
+      const edgeGraphics = new PIXI.Graphics();
+      edgeGraphics.lineStyle(1, 0x999999, 0.3);
+      for (const edge of edges) {
+        const source = data.nodes.find(n => n.id === edge.source);
+        const target = data.nodes.find(n => n.id === edge.target);
+        if (source && target) {
+          edgeGraphics.moveTo(source.x, source.y);
+          edgeGraphics.lineTo(target.x, target.y);
+        }
+      }
+      vizContainer.addChild(edgeGraphics);
 
-        // Update nodes with new positions and radius
-        graphData.nodes.forEach(node => {
-          node.x = xScale(node.x);
-          node.y = yScale(node.y);
-          node.r = sizeScale(nodeConnections[node.id] || 0) || config.nodeSizeRange[0];
-        });
-
-        renderGraph();
-        setupCanvasInteractions();
-        document.getElementById('loading').style.display = 'none';
-      } catch (error) {
-        console.error('Error:', error);
-        document.getElementById('loading').style.display = 'none';
-        alert('시각화 생성 중 오류가 발생했습니다: ' + error.message);
+      // Draw nodes as circles
+      for (const node of nodes) {
+        const circle = new PIXI.Graphics();
+        circle.beginFill(0x1f77b4);
+        circle.drawCircle(0, 0, node.r || 5);
+        circle.endFill();
+        circle.x = node.x;
+        circle.y = node.y;
+        vizContainer.addChild(circle);
       }
     }
 
-    function renderGraph() {
-      context.save();
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      context.translate(transform.x, transform.y);
-      context.scale(transform.k, transform.k);
+    // Set up panning and zooming interactions for PIXI visualization
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let containerStart = { x: vizContainer.x, y: vizContainer.y };
 
-      // Draw links
-      context.strokeStyle = config.showLinks ? `rgba(150,150,150,${config.linkOpacity})` : 'rgba(150,150,150,0)';
-      context.lineWidth = 1;
-      graphData.edges.forEach(edge => {
-        const source = graphData.nodes.find(n => n.id === edge.source);
-        const target = graphData.nodes.find(n => n.id === edge.target);
-        if (source && target) {
-          context.beginPath();
-          context.moveTo(source.x, source.y);
-          context.lineTo(target.x, target.y);
-          context.stroke();
-        }
-      });
-
-      // Draw nodes
-      graphData.nodes.forEach(node => {
-        context.beginPath();
-        context.arc(node.x, node.y, node.r, 0, 2 * Math.PI);
-        context.fillStyle = config.colorByFile ? colorScale(node.file_name) : '#1f77b4';
-        context.fill();
-        context.lineWidth = 1.5;
-        context.strokeStyle = "#fff";
-        context.stroke();
-      });
-      context.restore();
-    }
-
-    // Pan and zoom interaction for canvas
-    function setupCanvasInteractions() {
-      let isDragging = false, startX, startY;
-      canvas.addEventListener("mousedown", (event) => {
-        isDragging = true;
-        startX = event.offsetX - transform.x;
-        startY = event.offsetY - transform.y;
-      });
-      canvas.addEventListener("mousemove", (event) => {
-        if (isDragging) {
-          transform.x = event.offsetX - startX;
-          transform.y = event.offsetY - startY;
-          renderGraph();
-        }
-      });
-      canvas.addEventListener("mouseup", () => { isDragging = false; });
-      canvas.addEventListener("mouseleave", () => { isDragging = false; });
-      canvas.addEventListener("wheel", (event) => {
-        event.preventDefault();
-        const zoomFactor = 1.05;
-        if (event.deltaY < 0) {
-          transform.k *= zoomFactor;
-        } else {
-          transform.k /= zoomFactor;
-        }
-        renderGraph();
-      });
-    }
-
-    // Create legend based on file names
-    function createLegend(uniqueFiles) {
-      const legend = d3.select('#legend');
-      legend.html('');
-      uniqueFiles.forEach(file => {
-        const legendItem = legend.append('div').attr('class', 'legend-item');
-        legendItem.append('div')
-          .attr('class', 'legend-color')
-          .style('background-color', colorScale(file));
-        legendItem.append('span').text(file);
-      });
-    }
-
-    // Control handlers
-    document.getElementById('colorByFile').addEventListener('click', () => {
-      config.colorByFile = !config.colorByFile;
-      renderGraph();
-      document.getElementById('legend').style.display = config.colorByFile ? 'block' : 'none';
+    pixiApp.view.addEventListener('mousedown', (event) => {
+      isDragging = true;
+      dragStart = { x: event.clientX, y: event.clientY };
+      containerStart = { x: vizContainer.x, y: vizContainer.y };
     });
-    document.getElementById('showLinks').addEventListener('click', () => {
-      config.showLinks = !config.showLinks;
-      renderGraph();
+    pixiApp.view.addEventListener('mousemove', (event) => {
+      if (isDragging) {
+        const dx = event.clientX - dragStart.x;
+        const dy = event.clientY - dragStart.y;
+        vizContainer.x = containerStart.x + dx;
+        vizContainer.y = containerStart.y + dy;
+      }
     });
-    document.getElementById('resetZoom').addEventListener('click', () => {
-      transform = { x: 0, y: 0, k: 1 };
-      renderGraph();
+    pixiApp.view.addEventListener('mouseup', () => { isDragging = false; });
+    pixiApp.view.addEventListener('mouseleave', () => { isDragging = false; });
+    pixiApp.view.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      const scaleFactor = event.deltaY > 0 ? 0.95 : 1.05;
+      vizContainer.scale.x *= scaleFactor;
+      vizContainer.scale.y *= scaleFactor;
     });
 
-    // Initialize visualization and data list on page load
-    document.addEventListener('DOMContentLoaded', () => {
-      loadVisualization();
-      loadDataList();
+    // Main function to load data and draw visualization
+    async function loadPixiVisualization() {
+      document.getElementById('pixiLoadingOverlay').style.display = 'flex';
+      try {
+        const data = await loadVisualizationData();
+        // Optionally, you could apply scaling to coordinates here if needed.
+        drawVisualization(data);
+      } catch (error) {
+        console.error(error);
+        document.getElementById('pixiLoadingOverlay').innerText = "데이터 로딩 오류";
+      } finally {
+        document.getElementById('pixiLoadingOverlay').style.display = 'none';
+      }
+    }
+
+    // Handle window resize for PIXI application
+    window.addEventListener('resize', () => {
+      pixiApp.renderer.resize(window.innerWidth, 700);
     });
   </script>
 </body>

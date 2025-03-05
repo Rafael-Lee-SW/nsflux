@@ -3,9 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>데이터 관리</title>
+  <title>데이터 관리 및 대규모 UMAP 벡터 시각화</title>
+  <!-- d3.js for pagination and legends in the data management section -->
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
+    /* Shared styles */
     body {
       font-family: 'Inter', sans-serif;
       margin: 0;
@@ -38,86 +40,7 @@
     button:hover {
       background-color: #6d28d9;
     }
-    .visualization {
-      background-color: white;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-      overflow: hidden;
-      position: relative;
-      height: 700px;
-      margin-bottom: 20px;
-    }
-    /* 캔버스 최적화를 위한 offscreen 활용 등은 브라우저 지원에 따라 추가 적용 가능 */
-    canvas#visualizationCanvas {
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
-    .tooltip {
-      position: absolute;
-      padding: 10px;
-      background-color: rgba(0, 0, 0, 0.8);
-      color: white;
-      border-radius: 4px;
-      pointer-events: none;
-      max-width: 300px;
-      z-index: 100;
-      font-size: 14px;
-      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-    }
-    .tooltip h4 {
-      margin: 0 0 5px 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-      padding-bottom: 5px;
-    }
-    .tooltip p {
-      margin: 5px 0;
-    }
-    .legend {
-      position: absolute;
-      right: 20px;
-      top: 20px;
-      background-color: rgba(255, 255, 255, 0.9);
-      padding: 10px;
-      border-radius: 4px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    }
-    .legend-item {
-      display: flex;
-      align-items: center;
-      margin-bottom: 5px;
-    }
-    .legend-color {
-      width: 15px;
-      height: 15px;
-      margin-right: 8px;
-      border-radius: 3px;
-    }
-    .loading {
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background-color: rgba(255, 255, 255, 0.8);
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      z-index: 1000;
-    }
-    .loading-spinner {
-      border: 5px solid #f3f3f3;
-      border-top: 5px solid #7c3aed;
-      border-radius: 50%;
-      width: 50px;
-      height: 50px;
-      animation: spin 1s linear infinite;
-    }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-    /* 데이터 목록 영역 - 스크롤 가능하도록 설정 */
+    /* Data management table styles */
     #dataListContainer {
       max-height: 300px;
       overflow-y: auto;
@@ -136,15 +59,72 @@
       padding: 8px;
       text-align: center;
     }
+    tr:hover {
+      background-color: #f1f5f9;
+      cursor: pointer;
+    }
+    /* PIXI.js visualization styles */
+    #pixiSection {
+      position: relative;
+      height: 700px;
+      margin-top: 40px;
+      background-color: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      overflow: hidden;
+    }
+    /* Container for PIXI canvas */
+    #pixiContainer {
+      width: 100%;
+      height: 100%;
+    }
+    /* Loading overlay for PIXI visualization */
+    #pixiLoadingOverlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      font-size: 24px;
+      color: #333;
+    }
+    /* Legend styles for D3 in data management section */
+    .legend {
+      position: absolute;
+      right: 20px;
+      top: 20px;
+      background-color: rgba(255, 255, 255, 0.9);
+      padding: 10px;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+    .legend-color {
+      width: 15px;
+      height: 15px;
+      margin-right: 8px;
+      border-radius: 3px;
+    }
   </style>
 </head>
 <body>
   <div class="container">
+    <!-- Data Management Section -->
     <h1>데이터 관리</h1>
     
     <h2>데이터 업로드</h2>
+    <!-- 다중 파일 업로드 -->
     <form id="uploadForm" enctype="multipart/form-data">
-      <input type="file" id="dataFile" name="dataFile" accept=".txt,.json,.pptx,.pdf" required>
+      <input type="file" id="dataFile" name="dataFile" accept=".txt,.json,.pptx,.pdf" multiple required>
       <button type="submit">업로드 및 벡터화</button>
     </form>
 
@@ -155,23 +135,9 @@
     </div>
     <div id="searchResults"></div>
 
-    <h1>UMAP 벡터 시각화 (Canvas Optimized)</h1>
-    <div class="controls">
-      <button id="colorByFile">파일별 색상</button>
-      <button id="showLinks">유사성 연결선 표시</button>
-      <button id="resetZoom">줌 초기화</button>
-    </div>
-    <div class="visualization">
-      <div id="loading" class="loading">
-        <div class="loading-spinner"></div>
-      </div>
-      <canvas id="visualizationCanvas"></canvas>
-      <div id="legend" class="legend"></div>
-    </div>
-
-    <!-- 데이터 목록 영역: 토글 버튼으로 보이기/숨기기 -->
-    <button id="toggleDataList">데이터 목록 보기/숨기기</button>
-    <div id="dataListContainer" style="display:none;">
+    <h2>데이터 목록</h2>
+    <!-- 데이터 목록은 항상 보이도록 -->
+    <div id="dataListContainer">
       <table id="dataTable">
         <thead>
           <tr>
@@ -184,32 +150,62 @@
         </thead>
         <tbody></tbody>
       </table>
+      <div id="pagination"></div>
+    </div>
+
+    <!-- Optimized Visualization Section using PIXI.js -->
+    <h1>대규모 UMAP 벡터 시각화 (Optimized with PIXI.js)</h1>
+    <div id="pixiSection">
+      <div id="pixiContainer"></div>
+      <div id="pixiLoadingOverlay">데이터 로딩 중...</div>
     </div>
   </div>
 
+  <!-- Data Management Scripts -->
   <script>
-    // 데이터 목록 로딩 함수
-    async function loadDataList() {
-      const response = await fetch('/data/list');
-      const data = await response.json();
+    let currentPage = 1;
+    const perPage = 30;
+
+    async function loadDataList(page = 1) {
+      currentPage = page;
+      const response = await fetch(`/data/list?page=${page}`);
+      const result = await response.json();
+      const data = result.data;
       const tbody = document.getElementById('dataTable').getElementsByTagName('tbody')[0];
       tbody.innerHTML = '';
-      data.forEach((item, index) => {
+      data.forEach(item => {
         const row = document.createElement('tr');
+        // 클릭 시 상세보기
+        row.onclick = () => { showDetail(item.index); };
         row.innerHTML = `
-          <td>${index}</td>
+          <td>${item.index}</td>
           <td>${item.file_name}</td>
           <td>${item.title}</td>
           <td>${item.date}</td>
-          <td>
-            <button onclick="deleteData(${index})">삭제</button>
-          </td>
+          <td><button onclick="deleteData(event, ${item.index})">삭제</button></td>
         `;
         tbody.appendChild(row);
       });
+      renderPagination(result.total, page);
     }
 
-    async function deleteData(index) {
+    function renderPagination(total, current) {
+      const paginationDiv = document.getElementById('pagination');
+      paginationDiv.innerHTML = '';
+      const totalPages = Math.ceil(total / perPage);
+      for (let i = 1; i <= totalPages; i++) {
+        const btn = document.createElement('button');
+        btn.textContent = i;
+        if (i === current) {
+          btn.disabled = true;
+        }
+        btn.onclick = () => { loadDataList(i); };
+        paginationDiv.appendChild(btn);
+      }
+    }
+
+    async function deleteData(event, index) {
+      event.stopPropagation();
       if (!confirm('이 데이터를 삭제하시겠습니까?')) return;
       const response = await fetch('/data/delete', {
         method: 'POST',
@@ -218,27 +214,38 @@
       });
       const result = await response.json();
       alert(result.message);
-      loadDataList();
-      loadVisualization();
+      loadDataList(currentPage);
+      loadPixiVisualization();
+    }
+
+    async function showDetail(index) {
+      try {
+        const response = await fetch(`/data/detail/${index}`);
+        const data = await response.json();
+        alert(JSON.stringify(data, null, 2));
+      } catch (error) {
+        console.error('Error fetching detail:', error);
+        alert('상세 정보를 불러오는 중 오류 발생');
+      }
     }
 
     document.getElementById('uploadForm').addEventListener('submit', async function(e) {
       e.preventDefault();
       const fileInput = document.getElementById('dataFile');
       const formData = new FormData();
-      formData.append('dataFile', fileInput.files[0]);
-
+      for (let i = 0; i < fileInput.files.length; i++) {
+        formData.append('dataFile', fileInput.files[i]);
+      }
       const response = await fetch('/data/upload', {
         method: 'POST',
         body: formData
       });
       const result = await response.json();
       alert(result.message);
-      loadDataList();
-      loadVisualization();
+      loadDataList(currentPage);
+      loadPixiVisualization();
     });
 
-    // 검색 함수
     async function performSearch() {
       const query = document.getElementById('searchInput').value.trim();
       if (!query) return alert('검색어를 입력하세요.');
@@ -260,196 +267,139 @@
       }
       let html = '<ul>';
       results.forEach(item => {
-        html += `<li>[${item.index}] 파일: ${item.file_name}, 제목: ${item.title}</li>`;
+        html += `<li onclick="showDetail(${item.index})">[${item.index}] 파일: ${item.file_name}, 제목: ${item.title}</li>`;
       });
       html += '</ul>';
       container.innerHTML = html;
     }
 
-    // 데이터 목록 토글 버튼
-    document.getElementById('toggleDataList').addEventListener('click', () => {
-      const container = document.getElementById('dataListContainer');
-      if (container.style.display === 'none') {
-        container.style.display = 'block';
-      } else {
-        container.style.display = 'none';
-      }
-    });
-
-    // 시각화 관련 전역 변수 및 설정
-    const config = {
-      colorByFile: true,
-      showLinks: false,
-      nodeSizeRange: [5, 15],
-      linkOpacity: 0.3,
-      zoomExtent: [0.1, 10]
-    };
-
-    let colorScale = d3.scaleOrdinal(d3.schemeCategory10);
-    let graphData = { nodes: [], edges: [] };
-    let canvas, context;
-    let transform = { x: 0, y: 0, k: 1 };
-
-    async function loadVisualization() {
-      try {
-        document.getElementById('loading').style.display = 'flex';
-        const response = await fetch('/data/api/umap_data');
-        if (!response.ok) throw new Error('데이터를 불러오는데 실패했습니다.');
-        graphData = await response.json();
-
-        // 캔버스 설정
-        canvas = document.getElementById('visualizationCanvas');
-        context = canvas.getContext('2d');
-        const container = document.querySelector('.visualization');
-        canvas.width = container.clientWidth;
-        canvas.height = container.clientHeight;
-
-        // 파일별 색상 스케일 업데이트
-        const uniqueFiles = [...new Set(graphData.nodes.map(n => n.file_name))];
-        colorScale.domain(uniqueFiles);
-        createLegend(uniqueFiles);
-
-        // 노드 크기는 연결수에 따라 계산 (연결수에 기반한 선형 스케일)
-        const nodeConnections = {};
-        graphData.edges.forEach(edge => {
-          nodeConnections[edge.source] = (nodeConnections[edge.source] || 0) + 1;
-          nodeConnections[edge.target] = (nodeConnections[edge.target] || 0) + 1;
-        });
-        const sizeScale = d3.scaleLinear()
-          .domain([0, d3.max(Object.values(nodeConnections)) || 1])
-          .range(config.nodeSizeRange);
-
-        // UMAP 좌표를 캔버스 좌표로 매핑
-        const width = canvas.width, height = canvas.height;
-        const xExtent = d3.extent(graphData.nodes, d => d.x);
-        const yExtent = d3.extent(graphData.nodes, d => d.y);
-        const xScale = d3.scaleLinear().domain(xExtent).range([50, width - 50]);
-        const yScale = d3.scaleLinear().domain(yExtent).range([50, height - 50]);
-
-        // 노드 위치 및 반지름 업데이트
-        graphData.nodes.forEach(node => {
-          node.x = xScale(node.x);
-          node.y = yScale(node.y);
-          node.r = sizeScale(nodeConnections[node.id] || 0) || config.nodeSizeRange[0];
-        });
-
-        renderGraph();
-        setupCanvasInteractions();
-        document.getElementById('loading').style.display = 'none';
-      } catch (error) {
-        console.error('Error:', error);
-        document.getElementById('loading').style.display = 'none';
-        alert('시각화 생성 중 오류가 발생했습니다: ' + error.message);
-      }
-    }
-
-    // 렌더링 함수: 현재 transform 값을 적용하여 그래프를 그립니다.
-    function renderGraph() {
-      context.save();
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      context.translate(transform.x, transform.y);
-      context.scale(transform.k, transform.k);
-
-      // 연결선 그리기
-      context.strokeStyle = config.showLinks ? `rgba(150,150,150,${config.linkOpacity})` : 'rgba(150,150,150,0)';
-      context.lineWidth = 1;
-      graphData.edges.forEach(edge => {
-        const source = graphData.nodes.find(n => n.id === edge.source);
-        const target = graphData.nodes.find(n => n.id === edge.target);
-        if (source && target) {
-          context.beginPath();
-          context.moveTo(source.x, source.y);
-          context.lineTo(target.x, target.y);
-          context.stroke();
-        }
-      });
-
-      // 노드 그리기
-      graphData.nodes.forEach(node => {
-        context.beginPath();
-        context.arc(node.x, node.y, node.r, 0, 2 * Math.PI);
-        context.fillStyle = config.colorByFile ? colorScale(node.file_name) : '#1f77b4';
-        context.fill();
-        context.lineWidth = 1.5;
-        context.strokeStyle = "#fff";
-        context.stroke();
-      });
-      context.restore();
-    }
-
-    // requestAnimationFrame을 사용하여 렌더링 호출을 throttling합니다.
-    let renderScheduled = false;
-    function scheduleRender() {
-      if (!renderScheduled) {
-        renderScheduled = true;
-        requestAnimationFrame(() => {
-          renderGraph();
-          renderScheduled = false;
-        });
-      }
-    }
-
-    // 캔버스 상호작용 설정 (드래그, 줌 등)
-    function setupCanvasInteractions() {
-      let isDragging = false, startX, startY;
-      canvas.addEventListener("mousedown", (event) => {
-        isDragging = true;
-        startX = event.offsetX - transform.x;
-        startY = event.offsetY - transform.y;
-      });
-      canvas.addEventListener("mousemove", (event) => {
-        if (isDragging) {
-          transform.x = event.offsetX - startX;
-          transform.y = event.offsetY - startY;
-          scheduleRender();
-        }
-      });
-      canvas.addEventListener("mouseup", () => { isDragging = false; });
-      canvas.addEventListener("mouseleave", () => { isDragging = false; });
-      canvas.addEventListener("wheel", (event) => {
-        event.preventDefault();
-        const zoomFactor = 1.05;
-        if (event.deltaY < 0) {
-          transform.k *= zoomFactor;
-        } else {
-          transform.k /= zoomFactor;
-        }
-        scheduleRender();
-      });
-    }
-
-    // 범례 생성 함수
-    function createLegend(uniqueFiles) {
-      const legend = d3.select('#legend');
-      legend.html('');
-      uniqueFiles.forEach(file => {
-        const legendItem = legend.append('div').attr('class', 'legend-item');
-        legendItem.append('div')
-          .attr('class', 'legend-color')
-          .style('background-color', colorScale(file));
-        legendItem.append('span').text(file);
-      });
-    }
-
-    // 제어 핸들러
-    document.getElementById('colorByFile').addEventListener('click', () => {
-      config.colorByFile = !config.colorByFile;
-      scheduleRender();
-      document.getElementById('legend').style.display = config.colorByFile ? 'block' : 'none';
-    });
-    document.getElementById('showLinks').addEventListener('click', () => {
-      config.showLinks = !config.showLinks;
-      scheduleRender();
-    });
-    document.getElementById('resetZoom').addEventListener('click', () => {
-      transform = { x: 0, y: 0, k: 1 };
-      scheduleRender();
-    });
-
-    // 페이지 로딩 시 시각화와 데이터 목록 초기화
+    // Initial load of data list
     document.addEventListener('DOMContentLoaded', () => {
-      loadVisualization();
       loadDataList();
+      loadPixiVisualization();
+    });
+  </script>
+
+  <!-- PIXI.js Library -->
+  <script src="https://pixijs.download/release/pixi.min.js"></script>
+  <!-- Optimized Visualization using PIXI.js -->
+  <script>
+    // Create PIXI Application
+    const pixiApp = new PIXI.Application({
+      width: window.innerWidth,
+      height: 700,  // Fixed height for visualization section
+      backgroundColor: 0xffffff,
+      antialias: true,
+      resolution: window.devicePixelRatio || 1,
+    });
+    // Append PIXI view to pixiContainer
+    const pixiContainerDiv = document.getElementById('pixiContainer');
+    pixiContainerDiv.appendChild(pixiApp.view);
+
+    // Create a PIXI container for the visualization content
+    const vizContainer = new PIXI.Container();
+    pixiApp.stage.addChild(vizContainer);
+
+    // Load visualization data from API endpoint
+    async function loadVisualizationData() {
+      const response = await fetch('/data/api/umap_data');
+      if (!response.ok) {
+        throw new Error("데이터를 불러오는데 실패했습니다.");
+      }
+      const data = await response.json();
+      return data;
+    }
+
+    // Downsample nodes to reduce load for very large datasets
+    function downsample(nodes, maxPoints) {
+      if (nodes.length <= maxPoints) return nodes;
+      const sampled = [];
+      const step = Math.floor(nodes.length / maxPoints);
+      for (let i = 0; i < nodes.length; i += step) {
+        sampled.push(nodes[i]);
+      }
+      return sampled;
+    }
+
+    // Draw the visualization with PIXI Graphics
+    function drawVisualization(data) {
+      vizContainer.removeChildren();
+      const maxNodes = 10000; // Adjust as needed
+      const nodes = downsample(data.nodes, maxNodes);
+      // Filter edges to those connecting sampled nodes
+      const nodeIds = new Set(nodes.map(n => n.id));
+      const edges = data.edges.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+
+      // Draw edges
+      const edgeGraphics = new PIXI.Graphics();
+      edgeGraphics.lineStyle(1, 0x999999, 0.3);
+      for (const edge of edges) {
+        const source = data.nodes.find(n => n.id === edge.source);
+        const target = data.nodes.find(n => n.id === edge.target);
+        if (source && target) {
+          edgeGraphics.moveTo(source.x, source.y);
+          edgeGraphics.lineTo(target.x, target.y);
+        }
+      }
+      vizContainer.addChild(edgeGraphics);
+
+      // Draw nodes as circles
+      for (const node of nodes) {
+        const circle = new PIXI.Graphics();
+        circle.beginFill(0x1f77b4);
+        circle.drawCircle(0, 0, node.r || 5);
+        circle.endFill();
+        circle.x = node.x;
+        circle.y = node.y;
+        vizContainer.addChild(circle);
+      }
+    }
+
+    // Set up panning and zooming interactions for PIXI visualization
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let containerStart = { x: vizContainer.x, y: vizContainer.y };
+
+    pixiApp.view.addEventListener('mousedown', (event) => {
+      isDragging = true;
+      dragStart = { x: event.clientX, y: event.clientY };
+      containerStart = { x: vizContainer.x, y: vizContainer.y };
+    });
+    pixiApp.view.addEventListener('mousemove', (event) => {
+      if (isDragging) {
+        const dx = event.clientX - dragStart.x;
+        const dy = event.clientY - dragStart.y;
+        vizContainer.x = containerStart.x + dx;
+        vizContainer.y = containerStart.y + dy;
+      }
+    });
+    pixiApp.view.addEventListener('mouseup', () => { isDragging = false; });
+    pixiApp.view.addEventListener('mouseleave', () => { isDragging = false; });
+    pixiApp.view.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      const scaleFactor = event.deltaY > 0 ? 0.95 : 1.05;
+      vizContainer.scale.x *= scaleFactor;
+      vizContainer.scale.y *= scaleFactor;
+    });
+
+    // Main function to load data and draw visualization
+    async function loadPixiVisualization() {
+      document.getElementById('pixiLoadingOverlay').style.display = 'flex';
+      try {
+        const data = await loadVisualizationData();
+        // Optionally, you could apply scaling to coordinates here if needed.
+        drawVisualization(data);
+      } catch (error) {
+        console.error(error);
+        document.getElementById('pixiLoadingOverlay').innerText = "데이터 로딩 오류";
+      } finally {
+        document.getElementById('pixiLoadingOverlay').style.display = 'none';
+      }
+    }
+
+    // Handle window resize for PIXI application
+    window.addEventListener('resize', () => {
+      pixiApp.renderer.resize(window.innerWidth, 700);
     });
   </script>
 </body>
