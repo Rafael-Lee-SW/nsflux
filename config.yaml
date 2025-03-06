@@ -2,6 +2,7 @@
 # Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
 ### Model
 model_id : 'google/gemma-2-27b-it'
+response_url : "http://202.20.84.16:8083/responseToUI"
 
 ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)
@@ -40,7 +41,8 @@ embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
 cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
-data_path : 'data/1104_NS_DB_old.json' # VectorDB Path
+data_path : 'data/0228_DB_.json'     # VectorDB Path - New one (계약서 데이터 포함)
+# data_path : 'data/1104_NS_DB_old.json' # VectorDB Path - Old one
 metadata_path : 'data/Metadata.json' # Metadata.json Path
 sql_data_path : 'data/poc.db'        # SQLite 데이터베이스 Path
 

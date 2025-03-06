@@ -18,7 +18,7 @@ os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
 # GPU 단독 사용(박상제 연구원님이랑 분기점)
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
 
 from flask import (
     Flask,
@@ -32,7 +32,7 @@ from flask import (
 import json
 import yaml
 from box import Box
-from utils import random_seed, error_format
+from utils import random_seed, error_format, send_data_to_server, process_format_to_response
 from datetime import datetime
 
 # Import the Ray modules
@@ -43,6 +43,7 @@ from ray_utils import InferenceService, SSEQueueManager
 
 # ------ checking process of the thread level
 import logging
+import threading
 
 # 로깅 설정: 요청 처리 시간과 현재 스레드 이름을 기록
 logging.basicConfig(
@@ -53,6 +54,7 @@ logging.basicConfig(
 import ray
 import uuid
 import asyncio
+import time
 
 # Configuration
 with open("./config.yaml", "r") as f:
@@ -188,7 +190,86 @@ def query_stream():
             print("[DEBUG] SSE closed.")
 
     return Response(sse_generator(), mimetype="text/event-stream")
-# --------------------- Streaming part ----------------------------
+
+
+# --------------------- CLT Streaming part ----------------------------
+
+@app.route("/queryToSLLM", methods=["POST"])
+def query_stream_to_clt():
+    """
+    POST 방식 SSE 스트리밍 엔드포인트.
+    클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
+    """
+    # POST 요청 params
+    body = request.json or {}
+    user_input = body.get("qry_contents", "")
+    query_id = body.get("qry_id", "")
+    response_url = config.response_url
+
+    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', ID={query_id}, url={response_url}")
+    http_query = {"qry_contents": user_input}
+    print(f"[DEBUG] Built http_query={http_query}")
+
+    # Obtain request_id from Ray
+    response = inference_handle.process_query_stream.remote(http_query, query_id=query_id, response_url=response_url)
+    obj_ref = response._to_object_ref_sync()
+    request_id = ray.get(obj_ref)
+
+    print(f"[DEBUG] streaming request_id={request_id}")
+    
+    def sse_generator(request_id, response_url):
+        try:
+            token_buffer = []  # To collect tokens
+            last_sent_time = time.time()  # To track the last time data was sent
+
+            while True:
+                # Retrieve token from SSEQueueManager
+                token = ray.get(sse_manager.get_token.remote(request_id, 120))
+                token_dict = json.loads(token) if isinstance(token, str) else token
+                
+                token_buffer.append(token_dict)  # Collect token
+                
+                current_time = time.time()
+
+                # If 1 second has passed, send the accumulated tokens
+                if current_time - last_sent_time >= 1:
+                    # Send the accumulated tokens
+                    buffer_format = process_format_to_response(token_buffer, request_id)
+                    send_data_to_server(buffer_format, response_url)
+                    token_buffer = []  # Reset the buffer
+                    last_sent_time = current_time  # Update the last sent time
+                
+                # If "continue" is "E", send the accumulated tokens with END signal
+                elif token_dict.get("continue") == "E":
+                    # Send the accumulated tokens --- EXCEPT LAST END TOKEN
+                    buffer_format = process_format_to_response(token_buffer[:-1], request_id, continue_="E")
+                    send_data_to_server(buffer_format, response_url)
+                    token_buffer = []  # Reset the buffer
+                    last_sent_time = current_time  # Update the last sent time
+
+                # If the "continue" key indicates to stop, break the loop
+                if token_dict.get("continue") == "E":
+                    break
+
+        except Exception as e:
+            # error_token = json.dumps({"type": "error", "message": str(e)})
+            # yield f"data: {error_token}\n\n"
+            print(e)
+
+        finally:
+            # Cleanup: close the SSE queue after streaming is done
+            try:
+                obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+                ray.get(obj_ref)
+            except Exception as ex:
+                print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+            print("[DEBUG] SSE closed.")
+    
+    job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
+    job.start()
+
+    return Response(error_format("수신양호", 200), content_type="application/json")
+
 
 # Flask app 실행
 if __name__ == "__main__":

@@ -499,7 +499,7 @@ def process_to_format(qry_contents, type):
     # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
     # 예제 응답 형식
     ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
-    # print("[SOOWAN] process_to_format 진입")
+    print("[SOOWAN] process_to_format 진입")
     if type == "Retrieval":
         print("[SOOWAN] 타입 : 리트리버")
         tmp_format = {"rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []}
@@ -512,7 +512,7 @@ def process_to_format(qry_contents, type):
         return tmp_format
 
     elif type == "SQL":
-        # print("[SOOWAN] 타입 : SQL")
+        print("[SOOWAN] 타입 : SQL")
         tmp_format = {
             "rsp_type": "R",
             "rsp_tit": "남성 내부 데이터",
@@ -535,14 +535,14 @@ def process_to_format(qry_contents, type):
     elif type == "Answer":
         print("[SOOWAN] 타입 : 대답")
         tmp_format = {"rsp_type": "A", "rsp_tit": "답변", "rsp_data": []}
-        for i, form in enumerate(qry_contents):
-            if i == 0:
-                tmp_format_ = {"rsp_type": "TT", "rsp_data": form}
-                tmp_format["rsp_data"].append(tmp_format_)
-            elif i == 1:
-                tmp_format["rsp_data"].append(form)
-            else:
-                None
+        # for i, form in enumerate(qry_contents):
+            # if i == 0:
+        tmp_format_ = {"rsp_type": "TT", "rsp_data": qry_contents}
+        tmp_format["rsp_data"].append(tmp_format_)
+            # elif i == 1:
+            #     tmp_format["rsp_data"].append(form)
+            # else:
+            #     None
 
         return tmp_format
 
@@ -552,20 +552,23 @@ def process_to_format(qry_contents, type):
 
 
 @time_tracker
-def process_format_to_response(*formats):
+def process_format_to_response(formats, qry_id, continue_="C"):
     # Get multiple formats to tuple
 
     ans_format = {
         "status_code": 200,
         "result": "OK",
         "detail": "",
-        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+        "continue":continue_,
+        "qry_id": qry_id,
+        "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
         "data_list": [],
     }
 
     for format in formats:
         ans_format["data_list"].append(format)
 
+    # return json.dumps(ans_format, ensure_ascii=False)
     return ans_format
 
 
@@ -578,6 +581,23 @@ def error_format(message, status):
         "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
     }
     return json.dumps(ans_format)
+
+@time_tracker
+def send_data_to_server(data, url):
+
+    headers = {
+        "Content-Type": "application/json; charset=utf-8"
+    }
+
+    try:
+        # 다른 서버로 데이터를 전송 (POST 요청)
+        response = requests.post(url, json=data, headers=headers)
+        if response.status_code == 200:
+            print(f"Data sent successfully: {data}")
+        else:
+            print(f"Failed to send data: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending data: {e}")
 
 # ---------------------- 벡터화 -----------------------
 
