@@ -19,7 +19,16 @@ import PyPDF2
 import plotly.express as px
 import pandas as pd
 
-DATA_PATH = "data/1104_NS_DB_old.json"
+
+# Configuration
+import yaml
+from box import Box
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
+
+DATA_PATH = config.data_path
+print("현재 사용 중인 데이터 : ", DATA_PATH)
 
 # 임베딩 모델 로드 (필요한 경우 캐싱 고려)
 embedding_model = AutoModel.from_pretrained("BM-K/KoSimCSE-roberta-multitask")

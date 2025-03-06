@@ -18,7 +18,7 @@ os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
 # GPU 단독 사용(박상제 연구원님이랑 분기점)
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
 
 from flask import (
     Flask,
@@ -118,7 +118,7 @@ async def query():
         result = await inference_handle.query.remote(http_query) # 다중
         if isinstance(result, dict):
             result = json.dumps(result, ensure_ascii=False)
-        # print("APP.py - 결과: ", result)
+        print("APP.py - 결과: ", result)
         return Response(result, content_type=content_type)
     except Exception as e:
         error_resp = error_format(f"서버 처리 중 오류 발생: {str(e)}", 500)
