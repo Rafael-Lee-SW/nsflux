@@ -4,15 +4,15 @@
 ├─ .dockerignore
 ├─ Dockerfile
 ├─ RAG.py
+├─ SQL_NS.py
 ├─ app.py
 ├─ config.yaml
-├─ data_control.py
+├─ debug_tracking.py
 ├─ prompt_rag.py
 ├─ ray_setup.py
 ├─ ray_utils.py
 ├─ requirements.txt
 ├─ sql.py
-├─ templates/data_manager.html
 ├─ tracking.py
 └─ utils.py
 ```
@@ -47,7 +47,7 @@ dist/
 *.tmp
 
 # If you have any large data or model files that are not needed in build context, ignore them
-data/
+# data/
 models/
 logs/
 
@@ -62,6 +62,7 @@ logs/
 # Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
 ### Model
 model_id : 'google/gemma-2-27b-it'
+response_url : "http://202.20.84.16:8083/responseToUI"
 
 ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)
@@ -78,11 +79,13 @@ vllm:
   enable_chunked_prefill: True
   tensor_parallel_size: 1         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
   max_num_seqs: 192               # v1에 따른 상향
-  max_num_batched_tokens: 24576   # v1에 따른 상향
+  max_num_batched_tokens: 8192   # v1에 따른 상향
   block_size: 128                 # 미적용
-  gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
+  gpu_memory_utilization: 0.95    # v0: 0.95 / v1: 0.99로 상향
   disable_custom_all_reduce: true
   enable_memory_defrag: True      # v1 신규 기능 활성화
+  # 추가할 설정
+  disable_sliding_window: True  # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
 
 model:
   quantization_4bit : False # Quantize 4-bit
@@ -100,7 +103,8 @@ embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
 cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
-data_path : 'data/1104_NS_DB_old.json' # VectorDB Path
+data_path : 'data/0228_DB_.json'     # VectorDB Path - New one (계약서 데이터 포함)
+# data_path : 'data/1104_NS_DB_old.json' # VectorDB Path - Old one
 metadata_path : 'data/Metadata.json' # Metadata.json Path
 sql_data_path : 'data/poc.db'        # SQLite 데이터베이스 Path
 
@@ -120,7 +124,7 @@ k : 15                        # SQL Max Rows (None=MAX)
 ```dockerfile
 
 # 베이스 이미지 선택
-FROM globeai/flux_ns:1.24
+FROM globeai/flux_ns:2.0
 
 # 작업 디렉토리 설정
 WORKDIR /workspace
@@ -217,7 +221,7 @@ python-box==7.3.2
 python-dotenv==1.0.1
 PyYAML==6.0.2
 rank-bm25==0.2.2
-ray[serve]==2.42.0
+ray[serve]==2.40.0
 referencing==0.36.2
 regex==2024.11.6
 requests==2.32.3
@@ -237,7 +241,7 @@ transformers==4.48.2
 typing_extensions==4.12.2
 urllib3==2.3.0
 virtualenv==20.29.1
-vllm==0.7.2
+vllm==0.7.3
 Werkzeug==3.1.3
 wrapt==1.17.2
 yarl==1.18.3
@@ -288,7 +292,7 @@ from flask import (
 import json
 import yaml
 from box import Box
-from utils import random_seed, error_format
+from utils import random_seed, error_format, send_data_to_server, process_format_to_response
 from datetime import datetime
 
 # Import the Ray modules
@@ -299,6 +303,7 @@ from ray_utils import InferenceService, SSEQueueManager
 
 # ------ checking process of the thread level
 import logging
+import threading
 
 # 로깅 설정: 요청 처리 시간과 현재 스레드 이름을 기록
 logging.basicConfig(
@@ -309,6 +314,7 @@ logging.basicConfig(
 import ray
 import uuid
 import asyncio
+import time
 
 # Configuration
 with open("./config.yaml", "r") as f:
@@ -372,7 +378,7 @@ async def query():
         result = await inference_handle.query.remote(http_query) # 다중
         if isinstance(result, dict):
             result = json.dumps(result, ensure_ascii=False)
-        # print("APP.py - 결과: ", result)
+        print("APP.py - 결과: ", result)
         return Response(result, content_type=content_type)
     except Exception as e:
         error_resp = error_format(f"서버 처리 중 오류 발생: {str(e)}", 500)
@@ -444,7 +450,86 @@ def query_stream():
             print("[DEBUG] SSE closed.")
 
     return Response(sse_generator(), mimetype="text/event-stream")
-# --------------------- Streaming part ----------------------------
+
+
+# --------------------- CLT Streaming part ----------------------------
+
+@app.route("/queryToSLLM", methods=["POST"])
+def query_stream_to_clt():
+    """
+    POST 방식 SSE 스트리밍 엔드포인트.
+    클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
+    """
+    # POST 요청 params
+    body = request.json or {}
+    user_input = body.get("qry_contents", "")
+    query_id = body.get("qry_id", "")
+    response_url = config.response_url
+
+    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', ID={query_id}, url={response_url}")
+    http_query = {"qry_contents": user_input}
+    print(f"[DEBUG] Built http_query={http_query}")
+
+    # Obtain request_id from Ray
+    response = inference_handle.process_query_stream.remote(http_query, query_id=query_id, response_url=response_url)
+    obj_ref = response._to_object_ref_sync()
+    request_id = ray.get(obj_ref)
+
+    print(f"[DEBUG] streaming request_id={request_id}")
+    
+    def sse_generator(request_id, response_url):
+        try:
+            token_buffer = []  # To collect tokens
+            last_sent_time = time.time()  # To track the last time data was sent
+
+            while True:
+                # Retrieve token from SSEQueueManager
+                token = ray.get(sse_manager.get_token.remote(request_id, 120))
+                token_dict = json.loads(token) if isinstance(token, str) else token
+                
+                token_buffer.append(token_dict)  # Collect token
+                
+                current_time = time.time()
+
+                # If 1 second has passed, send the accumulated tokens
+                if current_time - last_sent_time >= 1:
+                    # Send the accumulated tokens
+                    buffer_format = process_format_to_response(token_buffer, request_id)
+                    send_data_to_server(buffer_format, response_url)
+                    token_buffer = []  # Reset the buffer
+                    last_sent_time = current_time  # Update the last sent time
+                
+                # If "continue" is "E", send the accumulated tokens with END signal
+                elif token_dict.get("continue") == "E":
+                    # Send the accumulated tokens --- EXCEPT LAST END TOKEN
+                    buffer_format = process_format_to_response(token_buffer[:-1], request_id, continue_="E")
+                    send_data_to_server(buffer_format, response_url)
+                    token_buffer = []  # Reset the buffer
+                    last_sent_time = current_time  # Update the last sent time
+
+                # If the "continue" key indicates to stop, break the loop
+                if token_dict.get("continue") == "E":
+                    break
+
+        except Exception as e:
+            # error_token = json.dumps({"type": "error", "message": str(e)})
+            # yield f"data: {error_token}\n\n"
+            print(e)
+
+        finally:
+            # Cleanup: close the SSE queue after streaming is done
+            try:
+                obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+                ray.get(obj_ref)
+            except Exception as ex:
+                print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+            print("[DEBUG] SSE closed.")
+    
+    job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
+    job.start()
+
+    return Response(error_format("수신양호", 200), content_type="application/json")
+
 
 # Flask app 실행
 if __name__ == "__main__":
@@ -517,7 +602,9 @@ from utils import (
     process_format_to_response,
     process_to_format,
     error_format,
+    summarize_conversation
 )
+from debug_tracking import log_batch_info, log_system_info
 
 # 랭체인 도입
 from langchain.memory import ConversationBufferMemory
@@ -688,9 +775,10 @@ class InferenceActor:
                     )
                     break
             self.batch_counter += 1
-            print(
-                f"[BATCH {self.batch_counter}] In-Flight batch collected with {len(batch)} requests"
-            )
+            
+            # 현재 배치 정보 로깅
+            log_batch_info(batch)
+            log_system_info("배치 처리 전 상태")
 
             # We have a batch of items: each item is ( http_query_or_stream_dict, future, sse_queue )
             # We'll process them concurrently.
@@ -701,6 +789,7 @@ class InferenceActor:
 
             # Actually run them all concurrently
             await asyncio.gather(*tasks)
+            log_system_info("배치 처리 후 상태")
 
     async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
         """
@@ -810,8 +899,33 @@ class InferenceActor:
                             config=self.config,
                         )
                         answer = process_to_format([output, chart], type="Answer")
-                        outputs = process_format_to_response(retrieval, answer)
-                        memory.save_context({"input": user_input}, {"output": output}) # 랭체인
+                        final_data = [retrieval, answer]
+                        outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                        
+                        # >>> CHANGED: Record used chunk IDs and summarize the conversation
+                        chunk_ids_used = []
+                        for doc in docs_list:
+                            if "chunk_id" in doc:
+                                chunk_ids_used.append(doc["chunk_id"])
+                        loop = asyncio.get_event_loop()
+                        prev_summary = memory.load_memory_variables({}).get("summary", "")
+                        new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
+                        updated_conversation = prev_summary + "\n" + new_entry
+                        # Summarized CPU 사용
+                        import concurrent.futures
+
+                        # Create a dedicated pool with more workers (e.g., 4)
+                        summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+
+                        # Later, when calling the summarization function:
+                        summarized = await loop.run_in_executor(summary_pool, summarize_conversation, updated_conversation)
+                        # After obtaining 'summarized' in _process_single_query:
+                        if not summarized:
+                            print("[ERROR] Summarization returned an empty string.")
+                        else:
+                            print(f"[CHECK] Summarized conversation: {summarized}")
+                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
+                        # >>> CHANGED -----------------------------------------------------
                         future.set_result(outputs)
 
                 except Exception as e:
@@ -853,8 +967,27 @@ class InferenceActor:
                         print("process_to_format 이후에 OUTPUT 생성 완료")
                         answer = process_to_format([output], type="Answer")
                         print("process_to_format 이후에 ANSWER까지 생성 완료")
-                        outputs = process_format_to_response(retrieval, answer)
-                        memory.save_context({"input": user_input}, {"output": output}) # 랭체인
+                        final_data = [retrieval, answer]
+                        outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                        # >>> CHANGED: Record used chunk IDs and update conversation summary
+                        chunk_ids_used = []
+                        for doc in docs_list:
+                            if "chunk_id" in doc:
+                                chunk_ids_used.append(doc["chunk_id"])
+                        loop = asyncio.get_event_loop()
+                        prev_summary = memory.load_memory_variables({}).get("summary", "")
+                        new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
+                        updated_conversation = prev_summary + "\n" + new_entry
+                        # Summarized CPU 사용
+                        import concurrent.futures
+
+                        # Create a dedicated pool with more workers (e.g., 4)
+                        summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+
+                        # Later, when calling the summarization function:
+                        summarized = await loop.run_in_executor(summary_pool, summarize_conversation, updated_conversation)
+                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
+                        # --------------------------------------------------------------------
                         future.set_result(outputs)
 
                 except Exception as e:
@@ -973,6 +1106,32 @@ class InferenceActor:
             else:
                 ans = process_to_format([final_text], type="Answer")
                 final_res = process_format_to_response(retrieval, ans)
+            # >>> CHANGED: Update conversation summary in streaming branch as well
+            chunk_ids_used = []
+            for doc in retrieval:
+                if isinstance(doc, dict) and "chunk_id" in doc:
+                    chunk_ids_used.append(doc["chunk_id"])
+            loop = asyncio.get_event_loop() # CHANGED
+            prev_summary = memory.load_memory_variables({}).get("summary", "")
+            new_entry = f"User: {user_input}\nAssistant: {final_text}\nUsed Chunks: {chunk_ids_used}\n"
+            updated_conversation = prev_summary + "\n" + new_entry
+            # Inside _process_single_query, after getting the summarized text:
+            # Summarized CPU 사용
+            import concurrent.futures
+
+            # Create a dedicated pool with more workers (e.g., 4)
+            summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+
+            # Later, when calling the summarization function:
+            summarized = await loop.run_in_executor(summary_pool, summarize_conversation, updated_conversation)
+
+            if not summarized:
+                print("[ERROR] Summarization returned an empty string.")
+            else:
+                print("[CHECK] Summarized conversation:", summarized)
+            
+            memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used, "summary": summarized})
+            # >>> CHANGED: -------------------------------------------------------
             future.set_result(final_res)
             await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
             print(
@@ -1362,8 +1521,27 @@ def load_model(config):
         
         # engine_args.enable_memory_defrag = True # v1 새로운 기능
         
+        # ★★ 추가: 슬라이딩 윈도우 비활성화 옵션 적용 ★★
+        if vllm_conf.get("disable_sliding_window", False):
+            # cascade attention에서는 슬라이딩 윈도우가 (-1, -1)이어야 함
+            engine_args.sliding_window = (-1, -1)
+            print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
+        
         # print("Final EngineArgs:", engine_args)
         print("EngineArgs setting be finished")
+        
+                # ── 여기서 unified_attention 호출 추적을 위한 monkey-patch ──
+        try:
+            if hasattr(torch.ops.vllm, "unified_attention_with_output"):
+                orig_unified_attention = torch.ops.vllm.unified_attention_with_output
+                def tracking_unified_attention(*args, **kwargs):
+                    logging.info("Called unified_attention_with_output with args: %s, kwargs: %s", args, kwargs)
+                    return orig_unified_attention(*args, **kwargs)
+                torch.ops.vllm.unified_attention_with_output = tracking_unified_attention
+                logging.info("Monkey-patched unified_attention_with_output for tracking.")
+        except Exception as e:
+            logging.warning("Failed to monkey-patch unified_attention_with_output: %s", e)
+        # ── 끝 ──
 
         try:
             # --- v1 구동 해결책: 현재 스레드가 메인 스레드가 아니면 signal 함수를 임시 패치 ---
@@ -1527,6 +1705,7 @@ def load_data(data_path):
 
         # 데이터 전처리 (예: 리스트 변환 및 numpy, torch 변환)
         file_names = []
+        chunk_ids = []  # >>> CHANGED: Added to record each chunk's ID
         titles = []
         times = []
         vectors = []
@@ -1538,8 +1717,7 @@ def load_data(data_path):
         for file_obj in data:
             for chunk in file_obj["chunks"]:
                 file_names.append(file_obj["file_name"])
-                
-                # 여기서도 np.array()로 변환하며 에러가 있으면 except 처리
+                chunk_ids.append(chunk.get("chunk_id", 0))  # >>> CHANGED: Record chunk_id
                 try:
                     arr = np.array(chunk["vector"])
                     vectors.append(arr)
@@ -1575,6 +1753,7 @@ def load_data(data_path):
 
         _cached_data = {
             "file_names": file_names,
+            "chunk_ids": chunk_ids,  # >>> CHANGED: Saved chunk IDs here
             "titles": titles,
             "times": times,
             "vectors": vectors,
@@ -1641,7 +1820,7 @@ def process_to_format(qry_contents, type):
     # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
     # 예제 응답 형식
     ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
-    # print("[SOOWAN] process_to_format 진입")
+    print("[SOOWAN] process_to_format 진입")
     if type == "Retrieval":
         print("[SOOWAN] 타입 : 리트리버")
         tmp_format = {"rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []}
@@ -1654,7 +1833,7 @@ def process_to_format(qry_contents, type):
         return tmp_format
 
     elif type == "SQL":
-        # print("[SOOWAN] 타입 : SQL")
+        print("[SOOWAN] 타입 : SQL")
         tmp_format = {
             "rsp_type": "R",
             "rsp_tit": "남성 내부 데이터",
@@ -1677,14 +1856,14 @@ def process_to_format(qry_contents, type):
     elif type == "Answer":
         print("[SOOWAN] 타입 : 대답")
         tmp_format = {"rsp_type": "A", "rsp_tit": "답변", "rsp_data": []}
-        for i, form in enumerate(qry_contents):
-            if i == 0:
-                tmp_format_ = {"rsp_type": "TT", "rsp_data": form}
-                tmp_format["rsp_data"].append(tmp_format_)
-            elif i == 1:
-                tmp_format["rsp_data"].append(form)
-            else:
-                None
+        # for i, form in enumerate(qry_contents):
+            # if i == 0:
+        tmp_format_ = {"rsp_type": "TT", "rsp_data": qry_contents}
+        tmp_format["rsp_data"].append(tmp_format_)
+            # elif i == 1:
+            #     tmp_format["rsp_data"].append(form)
+            # else:
+            #     None
 
         return tmp_format
 
@@ -1694,20 +1873,23 @@ def process_to_format(qry_contents, type):
 
 
 @time_tracker
-def process_format_to_response(*formats):
+def process_format_to_response(formats, qry_id, continue_="C"):
     # Get multiple formats to tuple
 
     ans_format = {
         "status_code": 200,
         "result": "OK",
         "detail": "",
-        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+        "continue":continue_,
+        "qry_id": qry_id,
+        "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
         "data_list": [],
     }
 
     for format in formats:
         ans_format["data_list"].append(format)
 
+    # return json.dumps(ans_format, ensure_ascii=False)
     return ans_format
 
 
@@ -1720,6 +1902,23 @@ def error_format(message, status):
         "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
     }
     return json.dumps(ans_format)
+
+@time_tracker
+def send_data_to_server(data, url):
+
+    headers = {
+        "Content-Type": "application/json; charset=utf-8"
+    }
+
+    try:
+        # 다른 서버로 데이터를 전송 (POST 요청)
+        response = requests.post(url, json=data, headers=headers)
+        if response.status_code == 200:
+            print(f"Data sent successfully: {data}")
+        else:
+            print(f"Failed to send data: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending data: {e}")
 
 # ---------------------- 벡터화 -----------------------
 
@@ -1895,6 +2094,56 @@ def diagnose_and_fix_dataset(data_path, output_path=None):
     except Exception as e:
         print(f"데이터셋 진단 중 오류: {str(e)}")
         return False
+    
+# -------------------- 대화 요약 함수 개선 using Gemma2-2b-it as a causal LM --------------------
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import logging
+
+# Use the Gemma2-2b-it model as a causal LM (since its configuration isn’t recognized by AutoModelForSeq2SeqLM)
+gemma_model_name = "google/gemma-2-2b-it"
+gemma_tokenizer = AutoTokenizer.from_pretrained(gemma_model_name)
+gemma_tokenizer.pad_to_multiple_of = None   # Disable auto-padding
+
+# Load as a causal LM:
+gemma_model = AutoModelForCausalLM.from_pretrained(gemma_model_name)
+# Optionally adjust the max_position_embeddings if supported; otherwise use the model default.
+# For example, if you want a context limit of 2048 tokens (typical for many causal models):
+gemma_model.config.max_position_embeddings = 2048
+
+def summarize_conversation(conversation_text):
+    logging.info("[Summarize Gemma] Called with conversation length: %d", len(conversation_text))
+    try:
+        # Create a prompt instructing the model to summarize the input.
+        prompt = "Summarize the following text concisely:\n\n" + conversation_text
+        # Tokenize with truncation only (using a context limit that the model supports)
+        inputs = gemma_tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            padding=False,
+            max_length=2048
+        )
+        # Generate the summary with adjusted parameters.
+        summary_ids = gemma_model.generate(
+            inputs["input_ids"],
+            max_length=150,
+            min_length=30,
+            no_repeat_ngram_size=3,
+            temperature=0.7,
+            num_beams=4,
+            do_sample=True
+        )
+        summary = gemma_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+        logging.info("[Summarize Gemma][LOG] Summarization result: %s", summary)
+        print("[Summarize Gemma][PRINT] Summarization result:", summary)
+    except Exception as e:
+        logging.error("[Summarize Gemma] Exception during generation: %s", str(e))
+        print("[Summarize Gemma][PRINT] Exception during generation:", e)
+        summary = ""
+    finally:
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+    return summary
 
 ```
 
@@ -2608,6 +2857,7 @@ GENERATE_PROMPT_TEMPLATE = """
 만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
 또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
 내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
+문단 구분을 확실하게 해줘.
 답변 형식은 markdown 형식으로 작성해줘.
 내부 자료: {docs}
 질문: {query}<end_of_turn>
@@ -2623,12 +2873,80 @@ STREAM_PROMPT_TEMPLATE = """
 만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
 또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
 내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
+문단 구분을 확실하게 해줘.
 답변 형식은 markdown 형식으로 작성해줘.
 내부 자료: {docs}
 질문: {query}<end_of_turn>
 <start_of_turn>model
 답변:
 """
+
+```
+
+
+--- SQL_NS.py
+
+```python
+
+import os
+import subprocess
+
+# 환경 변수 설정
+os.environ['ORACLE_HOME'] = '/workspace/sql/instantclient_23_7'
+os.environ['LD_LIBRARY_PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('LD_LIBRARY_PATH', '')
+os.environ['PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('PATH', '')
+
+# sqlplus 실행 여부 확인
+def check_sqlplus():
+    try:
+        # sqlplus 버전 확인
+        result = subprocess.run(['sqlplus', '-version'], capture_output=True, text=True, check=True)
+        print("SQL*Plus is working!")
+        print("Version info:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e.stderr}")
+
+# DB 접속 확인
+def check_db_connection():
+    try:
+        # SQL*Plus를 실행하여 데이터베이스에 접속 가능한지 테스트
+        test_command = [
+            'sqlplus', '-S', 'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR', 
+            'SELECT 1 FROM dual;'
+        ]
+        result = subprocess.run(test_command, capture_output=True, text=True, check=True)
+        
+        # SQL*Plus 결과 출력
+        if "1" in result.stdout:
+            print("Successfully connected to the Namsung database!")
+        else:
+            print("Connection to the database failed!")
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e.stderr}")
+
+# Oracle sqlplus 명령어 실행 예시
+def run_sqlplus_query():
+    # SQL*Plus 명령어를 실행할 기본 명령어
+    sqlplus_command = [
+        'sqlplus',  # sqlplus 실행 파일
+        '-S',  # 간단한 출력 모드
+        'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR',  # Oracle 접속 정보
+        '@', '/workspace/sql/DG_check.sql'  # SQL 파일 실행 (예: DG_CHECK1.sql)
+    ]
+    
+    # subprocess를 사용하여 SQL*Plus 명령어 실행
+    try:
+        result = subprocess.run(sqlplus_command, capture_output=True, text=True, check=True)
+        # SQL*Plus의 출력 결과를 받아옵니다
+        print("SQL Query Results:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        # 오류가 발생한 경우 오류 메시지 출력
+        print(f"Error: {e.stderr}")
+
+if __name__ == "__main__":
+    check_sqlplus()  # sqlplus가 잘 동작하는지 확인
+    check_db_connection()  # 데이터베이스 접속 여부 확인
+    run_sqlplus_query()  # 실제 SQL 쿼리 실행
 
 ```
 
@@ -2922,798 +3240,36 @@ def time_tracker(func):
 ```
 
 
---- data_control.py
+--- debug_tracking.py
 
 ```python
 
-# data_control.py
 import os
-import json
-import datetime
 import torch
-import numpy as np
-from umap import UMAP
-from flask import Blueprint, request, jsonify, render_template
-from transformers import AutoModel, AutoTokenizer
-from utils import vectorize_content, normalize_text_vis  # Assumes you have defined vectorize_content in utils.py
+import psutil
+import logging
 
-# For PPTX extraction
-from pptx import Presentation
+def log_system_info(label=""):
+    """현재 프로세스와 GPU 메모리 사용량을 로깅합니다."""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    allocated = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+    reserved = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
+    logging.info(f"{label} - Process Memory: RSS={mem_info.rss/1024**2:.2f} MB, VMS={mem_info.vms/1024**2:.2f} MB")
+    logging.info(f"{label} - GPU Memory: allocated={allocated/1e6:.2f} MB, reserved={reserved/1e6:.2f} MB")
 
-# For PDF extraction
-import PyPDF2
-
-# For visualization we use Plotly
-import plotly.express as px
-import pandas as pd
-
-DATA_PATH = "data/1104_NS_DB_old.json"
-
-# 임베딩 모델 로드 (필요한 경우 캐싱 고려)
-embedding_model = AutoModel.from_pretrained("BM-K/KoSimCSE-roberta-multitask")
-embedding_tokenizer = AutoTokenizer.from_pretrained("BM-K/KoSimCSE-roberta-multitask")
-embedding_model.eval()
-
-data_control_bp = Blueprint("data_manager", __name__, template_folder="templates")
-
-# --- Helper functions for new file types ---
-
-def extract_text_from_pptx(file_path):
-    prs = Presentation(file_path)
-    texts = []
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if hasattr(shape, "text") and shape.text:
-                texts.append(shape.text)
-    return "\n".join(texts)
-
-def extract_text_from_pdf(file_path):
-    pdf_text = ""
-    with open(file_path, "rb") as f:
-        reader = PyPDF2.PdfReader(f)
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                pdf_text += page_text + "\n"
-    return pdf_text
-
-@data_control_bp.route("/manager")
-def data_control_page():
-    return render_template("data_manager.html")
-
-# --- 다중 파일 업로드 지원 (수정됨) ---
-@data_control_bp.route("/upload", methods=["POST"])
-def data_upload():
-    if "dataFile" not in request.files:
-        return jsonify({"message": "파일이 업로드되지 않았습니다."}), 400
-    files = request.files.getlist("dataFile")
-    if not files:
-        return jsonify({"message": "업로드할 파일이 없습니다."}), 400
-
-    # 기존 데이터 로드
-    if os.path.exists(DATA_PATH):
-        with open(DATA_PATH, "r", encoding="utf-8") as f:
-            existing_data = json.load(f)
-    else:
-        existing_data = []
-        
-    # 모든 파일에 걸쳐 최대 chunk_id 찾기
-    max_chunk_id = 0
-    for entry in existing_data:
-        for chunk in entry.get("chunks", []):
-            max_chunk_id = max(max_chunk_id, chunk.get("chunk_id", 0))
-    
-    print(f"기존 데이터의 최대 chunk_id: {max_chunk_id}")
-    
-    messages = []
-    for file in files:
-        if file.filename == "":
-            messages.append("파일 이름이 없습니다.")
-            continue
-        ext = os.path.splitext(file.filename)[1].lower()
-        try:
-            new_chunk = None
-            # TXT 파일 처리
-            if ext == ".txt":
-                content = file.read().decode("utf-8")
-                vector = vectorize_content(content)
-                text_vis = content
-                new_chunk = {
-                    "chunk_id": None,  # 이후에 할당
-                    "title": os.path.splitext(file.filename)[0],
-                    "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                    "type": "text",
-                    "text": content,
-                    "text_short": content[:200],
-                    "vector": vector,
-                    "text_vis": normalize_text_vis(text_vis)
-                }
-            # JSON 파일 처리
-            elif ext == ".json":
-                new_entry = json.load(file)
-                if not isinstance(new_entry, list):
-                    new_entry = [new_entry]
-                # JSON 파일의 각 청크에 대해 벡터 처리
-                for entry in new_entry:
-                    for chunk in entry.get("chunks", []):
-                        if not chunk.get("vector"):
-                            text = chunk.get("text", "")
-                            chunk["vector"] = vectorize_content(text) if text else [[0.0] * 768]
-                        else:
-                            vector = chunk["vector"]
-                            expected_dim = 768
-                            if not isinstance(vector, list):
-                                text = chunk.get("text", "")
-                                chunk["vector"] = vectorize_content(text) if text else [[0.0]*expected_dim]
-                            elif len(vector) != expected_dim and isinstance(vector[0], (int, float)):
-                                chunk["vector"] = vector[:expected_dim] if len(vector) >= expected_dim else vector + [0.0]*(expected_dim - len(vector))
-                        chunk["text_vis"] = normalize_text_vis(chunk.get("text_vis", ""))
-                # JSON 파일은 전체 엔트리 추가
-                for entry in new_entry:
-                    for chunk in entry.get("chunks", []):
-                        max_chunk_id += 1
-                        chunk["chunk_id"] = max_chunk_id
-                    existing_data.append(entry)
-                messages.append(f"{file.filename}: 업로드 및 벡터화 성공.")
-                continue  # 다음 파일로 넘어감
-            # PPTX 파일 처리
-            elif ext == ".pptx":
-                temp_path = os.path.join("temp", file.filename)
-                os.makedirs("temp", exist_ok=True)
-                file.save(temp_path)
-                content = extract_text_from_pptx(temp_path)
-                os.remove(temp_path)
-                vector = vectorize_content(content)
-                text_vis = content
-                new_chunk = {
-                    "chunk_id": None,
-                    "title": os.path.splitext(file.filename)[0],
-                    "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                    "type": "pptx",
-                    "text": content,
-                    "text_short": content[:200],
-                    "vector": vector,
-                    "text_vis": normalize_text_vis(text_vis)
-                }
-            # PDF 파일 처리
-            elif ext == ".pdf":
-                temp_path = os.path.join("temp", file.filename)
-                os.makedirs("temp", exist_ok=True)
-                file.save(temp_path)
-                content = extract_text_from_pdf(temp_path)
-                os.remove(temp_path)
-                vector = vectorize_content(content)
-                text_vis = content
-                new_chunk = {
-                    "chunk_id": None,
-                    "title": os.path.splitext(file.filename)[0],
-                    "date": datetime.datetime.now().strftime("%Y-%m-%d"),
-                    "type": "pdf",
-                    "text": content,
-                    "text_short": content[:200],
-                    "vector": vector,
-                    "text_vis": normalize_text_vis(text_vis)
-                }
-            else:
-                messages.append(f"{file.filename}: 지원되지 않는 파일 형식입니다.")
-                continue
-
-            # 단일 파일(텍스트, pptx, pdf)의 경우
-            if new_chunk is not None:
-                existing_entry = next((entry for entry in existing_data if entry.get("file_name") == file.filename), None)
-                if existing_entry:
-                    max_chunk_id += 1
-                    new_chunk["chunk_id"] = max_chunk_id
-                    existing_entry.setdefault("chunks", []).append(new_chunk)
-                else:
-                    max_chunk_id += 1
-                    new_chunk["chunk_id"] = max_chunk_id
-                    new_entry = {
-                        "file_name": file.filename,
-                        "chunks": [new_chunk]
-                    }
-                    existing_data.append(new_entry)
-                messages.append(f"{file.filename}: 업로드 및 벡터화 성공.")
-        except Exception as e:
-            messages.append(f"{file.filename}: 업로드 실패: {str(e)}")
-    # 업데이트된 데이터 저장
-    with open(DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(existing_data, f, ensure_ascii=False, indent=2)
-    return jsonify({"message": "\n".join(messages)})
-
-# --- 페이지네이션 및 인덱스 포함 데이터 목록 (수정됨) ---
-@data_control_bp.route("/list", methods=["GET"])
-def data_list():
-    try:
-        if os.path.exists(DATA_PATH):
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                data_entries = json.load(f)
-        else:
-            data_entries = []
-        summary = []
-        for idx, entry in enumerate(data_entries):
-            if "chunks" in entry and entry["chunks"]:
-                chunk = entry["chunks"][0]
-                summary.append({
-                    "index": idx,
-                    "file_name": entry.get("file_name", ""),
-                    "title": chunk.get("title", ""),
-                    "date": chunk.get("date", "")
-                })
-            else:
-                summary.append({
-                    "index": idx,
-                    "file_name": entry.get("file_name", ""),
-                    "title": "",
-                    "date": ""
-                })
-        # 페이지네이션: 기본 페이지 1, 한 페이지당 30개
-        page = request.args.get("page", 1, type=int)
-        per_page = 30
-        total = len(summary)
-        start = (page - 1) * per_page
-        end = start + per_page
-        paginated = summary[start:end]
-        return jsonify({
-            "page": page,
-            "per_page": per_page,
-            "total": total,
-            "data": paginated
-        })
-    except Exception as e:
-        return jsonify({"message": f"데이터 목록 불러오기 실패: {str(e)}"}), 500
-
-# --- 상세보기 엔드포인트 추가 ---
-@data_control_bp.route("/detail/<int:index>", methods=["GET"])
-def data_detail(index):
-    try:
-        if os.path.exists(DATA_PATH):
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                data_entries = json.load(f)
-        else:
-            return jsonify({"message": "데이터 파일이 존재하지 않습니다."}), 404
-        if index < 0 or index >= len(data_entries):
-            return jsonify({"message": "유효하지 않은 인덱스입니다."}), 400
-        return jsonify(data_entries[index])
-    except Exception as e:
-        return jsonify({"message": f"데이터 상세 보기 실패: {str(e)}"}), 500
-
-@data_control_bp.route("/delete", methods=["POST"])
-def data_delete():
-    try:
-        req = request.get_json()
-        index = req.get("index")
-        if index is None:
-            return jsonify({"message": "삭제할 인덱스가 제공되지 않았습니다."}), 400
-        if os.path.exists(DATA_PATH):
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                data_entries = json.load(f)
-        else:
-            return jsonify({"message": "데이터 파일이 존재하지 않습니다."}), 404
-        if not (0 <= index < len(data_entries)):
-            return jsonify({"message": "유효하지 않은 인덱스입니다."}), 400
-        del data_entries[index]
-        with open(DATA_PATH, "w", encoding="utf-8") as f:
-            json.dump(data_entries, f, ensure_ascii=False, indent=2)
-        return jsonify({"message": "데이터 삭제가 완료되었습니다."})
-    except Exception as e:
-        return jsonify({"message": f"데이터 삭제 실패: {str(e)}"}), 500
-
-# --- 검색 및 UMAP 관련 엔드포인트는 기존 그대로 유지 ---
-@data_control_bp.route("/search", methods=["GET"])
-def search_data():
-    query = request.args.get("q", "").lower()
-    if os.path.exists(DATA_PATH):
-        with open(DATA_PATH, "r", encoding="utf-8") as f:
-            data_entries = json.load(f)
-    else:
-        data_entries = []
-    results = []
-    for idx, entry in enumerate(data_entries):
-        file_name = entry.get("file_name", "").lower()
-        title = ""
-        if "chunks" in entry and entry["chunks"]:
-            title = entry["chunks"][0].get("title", "").lower()
-        if query in file_name or query in title:
-            results.append({
-                "index": idx,
-                "file_name": entry.get("file_name", ""),
-                "title": title,
-            })
-    return jsonify(results)
-
-@data_control_bp.route("/umap_visualization")
-def umap_visualization_page():
-    return render_template("umap_visualization.html")
-
-@data_control_bp.route("/api/umap_data", methods=["GET"])
-def get_umap_data():
-    try:
-        if os.path.exists(DATA_PATH):
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                data_entries = json.load(f)
-        else:
-            return jsonify({"error": "데이터 파일을 찾을 수 없습니다."}), 404
-        
-        vectors = []
-        metadata = []
-        
-        for entry in data_entries:
-            for chunk in entry.get("chunks", []):
-                if "vector" in chunk and chunk["vector"]:
-                    vectors.append(chunk["vector"])
-                    metadata.append({
-                        "id": f"{entry.get('file_name', 'unknown')}_{chunk.get('chunk_id', '0')}",
-                        "file_name": entry.get("file_name", "Unknown"),
-                        "title": chunk.get("title", ""),
-                        "date": chunk.get("date", ""),
-                        "text_short": chunk.get("text_short", "")[:100] + "..."
-                    })
-        
-        if not vectors:
-            return jsonify({"error": "벡터 데이터가 없습니다."}), 404
-        
-        vectors_array = np.array(vectors)
-        vectors_array = np.squeeze(vectors_array)
-        
-        from umap import UMAP
-        n_neighbors = min(15, len(vectors) - 1)
-        umap_model = UMAP(n_components=2, 
-                            n_neighbors=n_neighbors, 
-                            min_dist=0.1, 
-                            metric='cosine', 
-                            random_state=42)
-        embedding = umap_model.fit_transform(vectors_array)
-        
-        nodes = []
-        for i, (x, y) in enumerate(embedding):
-            nodes.append({
-                "id": metadata[i]["id"],
-                "x": float(x),
-                "y": float(y),
-                "file_name": metadata[i]["file_name"],
-                "title": metadata[i]["title"],
-                "date": metadata[i]["date"],
-                "text_short": metadata[i]["text_short"]
-            })
-        
-        edges = []
-        if len(vectors) > 1:
-            from sklearn.metrics.pairwise import cosine_similarity
-            similarity = cosine_similarity(vectors_array)
-            threshold = 0.7
-            for i in range(len(vectors)):
-                for j in range(i+1, len(vectors)):
-                    if similarity[i, j] > threshold:
-                        edges.append({
-                            "source": metadata[i]["id"],
-                            "target": metadata[j]["id"],
-                            "value": float(similarity[i, j])
-                        })
-        
-        return jsonify({
-            "nodes": nodes,
-            "edges": edges
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": f"UMAP 시각화 처리 중 오류 발생: {str(e)}"}), 500
-
-```
-
-
---- templates/data_manager.html
-
-```html
-
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>데이터 관리 및 대규모 UMAP 벡터 시각화</title>
-  <!-- d3.js for pagination and legends in the data management section -->
-  <script src="https://d3js.org/d3.v7.min.js"></script>
-  <style>
-    /* Shared styles */
-    body {
-      font-family: 'Inter', sans-serif;
-      margin: 0;
-      padding: 0;
-      background-color: #f9fafb;
-    }
-    .container {
-      width: 100%;
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 20px;
-    }
-    h1, h2 {
-      color: #111827;
-    }
-    .controls {
-      margin-bottom: 15px;
-      display: flex;
-      gap: 10px;
-      align-items: center;
-    }
-    button {
-      padding: 8px 16px;
-      background-color: #7c3aed;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    button:hover {
-      background-color: #6d28d9;
-    }
-    /* Data management table styles */
-    #dataListContainer {
-      max-height: 300px;
-      overflow-y: auto;
-      border: 1px solid #ddd;
-      margin-bottom: 20px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 15px;
-    }
-    table, th, td {
-      border: 1px solid #ccc;
-    }
-    th, td {
-      padding: 8px;
-      text-align: center;
-    }
-    tr:hover {
-      background-color: #f1f5f9;
-      cursor: pointer;
-    }
-    /* PIXI.js visualization styles */
-    #pixiSection {
-      position: relative;
-      height: 700px;
-      margin-top: 40px;
-      background-color: #ffffff;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-      overflow: hidden;
-    }
-    /* Container for PIXI canvas */
-    #pixiContainer {
-      width: 100%;
-      height: 100%;
-    }
-    /* Loading overlay for PIXI visualization */
-    #pixiLoadingOverlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(255, 255, 255, 0.8);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 10;
-      font-size: 24px;
-      color: #333;
-    }
-    /* Legend styles for D3 in data management section */
-    .legend {
-      position: absolute;
-      right: 20px;
-      top: 20px;
-      background-color: rgba(255, 255, 255, 0.9);
-      padding: 10px;
-      border-radius: 4px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-    .legend-item {
-      display: flex;
-      align-items: center;
-      margin-bottom: 5px;
-    }
-    .legend-color {
-      width: 15px;
-      height: 15px;
-      margin-right: 8px;
-      border-radius: 3px;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <!-- Data Management Section -->
-    <h1>데이터 관리</h1>
-    
-    <h2>데이터 업로드</h2>
-    <!-- 다중 파일 업로드 -->
-    <form id="uploadForm" enctype="multipart/form-data">
-      <input type="file" id="dataFile" name="dataFile" accept=".txt,.json,.pptx,.pdf" multiple required>
-      <button type="submit">업로드 및 벡터화</button>
-    </form>
-
-    <h2>데이터 검색</h2>
-    <div class="controls">
-      <input type="text" id="searchInput" placeholder="검색어를 입력하세요">
-      <button onclick="performSearch()">검색</button>
-    </div>
-    <div id="searchResults"></div>
-
-    <h2>데이터 목록</h2>
-    <!-- 데이터 목록은 항상 보이도록 -->
-    <div id="dataListContainer">
-      <table id="dataTable">
-        <thead>
-          <tr>
-            <th>인덱스</th>
-            <th>파일 이름</th>
-            <th>제목</th>
-            <th>수정일자</th>
-            <th>액션</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <div id="pagination"></div>
-    </div>
-
-    <!-- Optimized Visualization Section using PIXI.js -->
-    <h1>대규모 UMAP 벡터 시각화 (Optimized with PIXI.js)</h1>
-    <div id="pixiSection">
-      <div id="pixiContainer"></div>
-      <div id="pixiLoadingOverlay">데이터 로딩 중...</div>
-    </div>
-  </div>
-
-  <!-- Data Management Scripts -->
-  <script>
-    let currentPage = 1;
-    const perPage = 30;
-
-    async function loadDataList(page = 1) {
-      currentPage = page;
-      const response = await fetch(`/data/list?page=${page}`);
-      const result = await response.json();
-      const data = result.data;
-      const tbody = document.getElementById('dataTable').getElementsByTagName('tbody')[0];
-      tbody.innerHTML = '';
-      data.forEach(item => {
-        const row = document.createElement('tr');
-        // 클릭 시 상세보기
-        row.onclick = () => { showDetail(item.index); };
-        row.innerHTML = `
-          <td>${item.index}</td>
-          <td>${item.file_name}</td>
-          <td>${item.title}</td>
-          <td>${item.date}</td>
-          <td><button onclick="deleteData(event, ${item.index})">삭제</button></td>
-        `;
-        tbody.appendChild(row);
-      });
-      renderPagination(result.total, page);
-    }
-
-    function renderPagination(total, current) {
-      const paginationDiv = document.getElementById('pagination');
-      paginationDiv.innerHTML = '';
-      const totalPages = Math.ceil(total / perPage);
-      for (let i = 1; i <= totalPages; i++) {
-        const btn = document.createElement('button');
-        btn.textContent = i;
-        if (i === current) {
-          btn.disabled = true;
-        }
-        btn.onclick = () => { loadDataList(i); };
-        paginationDiv.appendChild(btn);
-      }
-    }
-
-    async function deleteData(event, index) {
-      event.stopPropagation();
-      if (!confirm('이 데이터를 삭제하시겠습니까?')) return;
-      const response = await fetch('/data/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ index: index })
-      });
-      const result = await response.json();
-      alert(result.message);
-      loadDataList(currentPage);
-      loadPixiVisualization();
-    }
-
-    async function showDetail(index) {
-      try {
-        const response = await fetch(`/data/detail/${index}`);
-        const data = await response.json();
-        alert(JSON.stringify(data, null, 2));
-      } catch (error) {
-        console.error('Error fetching detail:', error);
-        alert('상세 정보를 불러오는 중 오류 발생');
-      }
-    }
-
-    document.getElementById('uploadForm').addEventListener('submit', async function(e) {
-      e.preventDefault();
-      const fileInput = document.getElementById('dataFile');
-      const formData = new FormData();
-      for (let i = 0; i < fileInput.files.length; i++) {
-        formData.append('dataFile', fileInput.files[i]);
-      }
-      const response = await fetch('/data/upload', {
-        method: 'POST',
-        body: formData
-      });
-      const result = await response.json();
-      alert(result.message);
-      loadDataList(currentPage);
-      loadPixiVisualization();
-    });
-
-    async function performSearch() {
-      const query = document.getElementById('searchInput').value.trim();
-      if (!query) return alert('검색어를 입력하세요.');
-      try {
-        const response = await fetch(`/data/search?q=${encodeURIComponent(query)}`);
-        const results = await response.json();
-        displaySearchResults(results);
-      } catch (error) {
-        console.error('검색 오류:', error);
-        alert('검색 중 오류가 발생했습니다.');
-      }
-    }
-
-    function displaySearchResults(results) {
-      const container = document.getElementById('searchResults');
-      if (results.length === 0) {
-        container.innerHTML = '<p>검색 결과가 없습니다.</p>';
-        return;
-      }
-      let html = '<ul>';
-      results.forEach(item => {
-        html += `<li onclick="showDetail(${item.index})">[${item.index}] 파일: ${item.file_name}, 제목: ${item.title}</li>`;
-      });
-      html += '</ul>';
-      container.innerHTML = html;
-    }
-
-    // Initial load of data list
-    document.addEventListener('DOMContentLoaded', () => {
-      loadDataList();
-      loadPixiVisualization();
-    });
-  </script>
-
-  <!-- PIXI.js Library -->
-  <script src="https://pixijs.download/release/pixi.min.js"></script>
-  <!-- Optimized Visualization using PIXI.js -->
-  <script>
-    // Create PIXI Application
-    const pixiApp = new PIXI.Application({
-      width: window.innerWidth,
-      height: 700,  // Fixed height for visualization section
-      backgroundColor: 0xffffff,
-      antialias: true,
-      resolution: window.devicePixelRatio || 1,
-    });
-    // Append PIXI view to pixiContainer
-    const pixiContainerDiv = document.getElementById('pixiContainer');
-    pixiContainerDiv.appendChild(pixiApp.view);
-
-    // Create a PIXI container for the visualization content
-    const vizContainer = new PIXI.Container();
-    pixiApp.stage.addChild(vizContainer);
-
-    // Load visualization data from API endpoint
-    async function loadVisualizationData() {
-      const response = await fetch('/data/api/umap_data');
-      if (!response.ok) {
-        throw new Error("데이터를 불러오는데 실패했습니다.");
-      }
-      const data = await response.json();
-      return data;
-    }
-
-    // Downsample nodes to reduce load for very large datasets
-    function downsample(nodes, maxPoints) {
-      if (nodes.length <= maxPoints) return nodes;
-      const sampled = [];
-      const step = Math.floor(nodes.length / maxPoints);
-      for (let i = 0; i < nodes.length; i += step) {
-        sampled.push(nodes[i]);
-      }
-      return sampled;
-    }
-
-    // Draw the visualization with PIXI Graphics
-    function drawVisualization(data) {
-      vizContainer.removeChildren();
-      const maxNodes = 10000; // Adjust as needed
-      const nodes = downsample(data.nodes, maxNodes);
-      // Filter edges to those connecting sampled nodes
-      const nodeIds = new Set(nodes.map(n => n.id));
-      const edges = data.edges.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target));
-
-      // Draw edges
-      const edgeGraphics = new PIXI.Graphics();
-      edgeGraphics.lineStyle(1, 0x999999, 0.3);
-      for (const edge of edges) {
-        const source = data.nodes.find(n => n.id === edge.source);
-        const target = data.nodes.find(n => n.id === edge.target);
-        if (source && target) {
-          edgeGraphics.moveTo(source.x, source.y);
-          edgeGraphics.lineTo(target.x, target.y);
-        }
-      }
-      vizContainer.addChild(edgeGraphics);
-
-      // Draw nodes as circles
-      for (const node of nodes) {
-        const circle = new PIXI.Graphics();
-        circle.beginFill(0x1f77b4);
-        circle.drawCircle(0, 0, node.r || 5);
-        circle.endFill();
-        circle.x = node.x;
-        circle.y = node.y;
-        vizContainer.addChild(circle);
-      }
-    }
-
-    // Set up panning and zooming interactions for PIXI visualization
-    let isDragging = false;
-    let dragStart = { x: 0, y: 0 };
-    let containerStart = { x: vizContainer.x, y: vizContainer.y };
-
-    pixiApp.view.addEventListener('mousedown', (event) => {
-      isDragging = true;
-      dragStart = { x: event.clientX, y: event.clientY };
-      containerStart = { x: vizContainer.x, y: vizContainer.y };
-    });
-    pixiApp.view.addEventListener('mousemove', (event) => {
-      if (isDragging) {
-        const dx = event.clientX - dragStart.x;
-        const dy = event.clientY - dragStart.y;
-        vizContainer.x = containerStart.x + dx;
-        vizContainer.y = containerStart.y + dy;
-      }
-    });
-    pixiApp.view.addEventListener('mouseup', () => { isDragging = false; });
-    pixiApp.view.addEventListener('mouseleave', () => { isDragging = false; });
-    pixiApp.view.addEventListener('wheel', (event) => {
-      event.preventDefault();
-      const scaleFactor = event.deltaY > 0 ? 0.95 : 1.05;
-      vizContainer.scale.x *= scaleFactor;
-      vizContainer.scale.y *= scaleFactor;
-    });
-
-    // Main function to load data and draw visualization
-    async function loadPixiVisualization() {
-      document.getElementById('pixiLoadingOverlay').style.display = 'flex';
-      try {
-        const data = await loadVisualizationData();
-        // Optionally, you could apply scaling to coordinates here if needed.
-        drawVisualization(data);
-      } catch (error) {
-        console.error(error);
-        document.getElementById('pixiLoadingOverlay').innerText = "데이터 로딩 오류";
-      } finally {
-        document.getElementById('pixiLoadingOverlay').style.display = 'none';
-      }
-    }
-
-    // Handle window resize for PIXI application
-    window.addEventListener('resize', () => {
-      pixiApp.renderer.resize(window.innerWidth, 700);
-    });
-  </script>
-</body>
-</html>
+def log_batch_info(batch):
+    """현재 배치의 크기와 각 요청의 간단한 토큰 길이(공백 기준)를 로깅합니다."""
+    batch_size = len(batch)
+    token_counts = []
+    for item in batch:
+        # item은 (http_query, future, sse_queue) 튜플
+        http_query = item[0]
+        # http_query가 dict라면 qry_contents를 가져옵니다.
+        query = http_query.get("qry_contents", "") if isinstance(http_query, dict) else ""
+        tokens = query.split()
+        token_counts.append(len(tokens))
+    logging.info(f"[Batch Tracking] Batch size: {batch_size}, Token counts: {token_counts}")
 
 ```
 

@@ -4,701 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>RAG Query Interface</title>
-    <!-- Google Fonts -->
+    
+    <!-- (중요) 분리된 CSS 파일 로드 -->
+    <link rel="stylesheet" href="/static/test_styles.css" />
+
+    <!-- Google Fonts (선택 사항) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- 필요한 Google Fonts만 불러오십시오. -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-      :root {
-        --primary: #4f46e5;
-        --primary-hover: #4338ca;
-        --primary-light: #eef2ff;
-        --secondary: #64748b;
-        --success: #10b981;
-        --danger: #ef4444;
-        --warning: #f59e0b;
-        --info: #3b82f6;
-        --dark: #1e293b;
-        --light: #f8fafc;
-        --gray-100: #f1f5f9;
-        --gray-200: #e2e8f0;
-        --gray-300: #cbd5e1;
-        --gray-400: #94a3b8;
-        --gray-500: #64748b;
-        --gray-600: #475569;
-        --gray-700: #334155;
-        --gray-800: #1e293b;
-        --gray-900: #0f172a;
-        --border-radius: 0.5rem;
-        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-        --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
-        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-      }
-
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
-
-      body {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        line-height: 1.6;
-        color: var(--gray-800);
-        background-color: var(--gray-100);
-      }
-
-      .container {
-        max-width: 1200px;
-        margin: 0 auto;
-        padding: 2rem 1rem;
-      }
-
-      .header {
-        text-align: center;
-        margin-bottom: 2rem;
-      }
-
-      .header h1 {
-        font-size: 2.5rem;
-        font-weight: 700;
-        color: var(--gray-900);
-        margin-bottom: 0.5rem;
-      }
-
-      .header p {
-        color: var(--gray-600);
-        font-size: 1.1rem;
-      }
-
-      .card {
-        background: white;
-        border-radius: var(--border-radius);
-        box-shadow: var(--shadow);
-        padding: 1.5rem;
-        margin-bottom: 2rem;
-        transition: all 0.3s ease;
-      }
-
-      .card:hover {
-        box-shadow: var(--shadow-md);
-      }
-
-      .card-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 1.5rem;
-        border-bottom: 1px solid var(--gray-200);
-        padding-bottom: 1rem;
-      }
-
-      .card-header h2 {
-        font-size: 1.5rem;
-        font-weight: 600;
-        color: var(--gray-900);
-        margin: 0;
-      }
-
-      .card-header h5 {
-        font-size: 0.9rem;
-        font-weight: 500;
-        color: var(--gray-500);
-        margin: 0.25rem 0 0 0;
-      }
-
-      .input-group {
-        display: flex;
-        margin-bottom: 1rem;
-        gap: 0.5rem;
-      }
-
-      @media (max-width: 768px) {
-        .input-group {
-          flex-direction: column;
-        }
-      }
-
-      input[type='text'] {
-        flex: 1;
-        padding: 0.75rem 1rem;
-        font-size: 1rem;
-        border: 1px solid var(--gray-300);
-        border-radius: var(--border-radius);
-        outline: none;
-        transition: border-color 0.2s ease;
-      }
-
-      input[type='text']:focus {
-        border-color: var(--primary);
-        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
-      }
-
-      .btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0.75rem 1.5rem;
-        font-size: 0.95rem;
-        font-weight: 500;
-        text-align: center;
-        text-decoration: none;
-        border-radius: var(--border-radius);
-        border: none;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        white-space: nowrap;
-      }
-
-      .btn-primary {
-        background-color: var(--primary);
-        color: white;
-      }
-
-      .btn-primary:hover {
-        background-color: var(--primary-hover);
-      }
-
-      .btn-secondary {
-        background-color: var(--gray-200);
-        color: var(--gray-700);
-      }
-
-      .btn-secondary:hover {
-        background-color: var(--gray-300);
-      }
-
-      .btn-success {
-        background-color: var(--success);
-        color: white;
-      }
-
-      .btn-success:hover {
-        background-color: #0ca678;
-      }
-
-      .btn-sm {
-        padding: 0.5rem 1rem;
-        font-size: 0.875rem;
-      }
-
-      .btn-lg {
-        padding: 0.875rem 1.75rem;
-        font-size: 1.1rem;
-      }
-
-      .output {
-        background: white;
-        border-radius: var(--border-radius);
-        border: 1px solid var(--gray-200);
-        padding: 1.5rem;
-        margin-top: 1.5rem;
-        overflow-wrap: break-word;
-        overflow-y: auto;
-        white-space: normal;
-      }
-
-      .output pre {
-        white-space: pre-wrap;
-        background-color: var(--gray-100);
-        padding: 1rem;
-        border-radius: 0.375rem;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 0.9rem;
-        color: var(--gray-800);
-      }
-
-      .output code {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 0.9rem;
-        background-color: var(--gray-100);
-        padding: 0.2rem 0.4rem;
-        border-radius: 0.25rem;
-        color: var(--gray-800);
-      }
-
-      .output strong {
-        font-weight: 600;
-      }
-
-      .output em {
-        font-style: italic;
-      }
-
-      .output ul, .output ol {
-        padding-left: 1.5rem;
-        margin: 1rem 0;
-      }
-
-      .output li {
-        margin-bottom: 0.5rem;
-      }
-
-      .output p {
-        margin-bottom: 1rem;
-      }
-
-      .output h1, .output h2, .output h3, .output h4, .output h5, .output h6 {
-        margin-top: 1.5rem;
-        margin-bottom: 1rem;
-        font-weight: 600;
-        line-height: 1.25;
-      }
-
-      .output h1 {
-        font-size: 1.875rem;
-      }
-
-      .output h2 {
-        font-size: 1.5rem;
-      }
-
-      .output h3 {
-        font-size: 1.25rem;
-      }
-
-      .output h4 {
-        font-size: 1.125rem;
-      }
-
-      .output blockquote {
-        border-left: 4px solid var(--gray-300);
-        padding-left: 1rem;
-        margin-left: 0;
-        color: var(--gray-600);
-      }
-
-      .test-set-selector {
-        margin-bottom: 2rem;
-        text-align: center;
-      }
-
-      .test-set-selector label {
-        font-weight: 500;
-        margin-right: 0.75rem;
-        color: var(--gray-700);
-      }
-
-      .test-set-selector select {
-        padding: 0.5rem 1rem;
-        font-size: 0.95rem;
-        border: 1px solid var(--gray-300);
-        border-radius: var(--border-radius);
-        background-color: white;
-        outline: none;
-        transition: border-color 0.2s ease;
-      }
-
-      .test-set-selector select:focus {
-        border-color: var(--primary);
-        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
-      }
-
-      .progress-indicator {
-        font-weight: 500;
-        margin-bottom: 1rem;
-        text-align: center;
-        padding: 0.75rem;
-        background-color: var(--primary-light);
-        border-radius: var(--border-radius);
-        color: var(--primary);
-      }
-
-      .test-summary table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-bottom: 1.5rem;
-        font-size: 0.95rem;
-      }
-
-      .test-summary th,
-      .test-summary td {
-        border: 1px solid var(--gray-200);
-        padding: 0.75rem;
-        text-align: left;
-      }
-
-      .test-summary th {
-        background-color: var(--gray-100);
-        font-weight: 600;
-      }
-
-      .test-summary tr:nth-child(even) {
-        background-color: var(--gray-50);
-      }
-
-      .test-details .test-item {
-        margin-bottom: 1.5rem;
-        padding: 1.25rem;
-        background-color: white;
-        border: 1px solid var(--gray-200);
-        border-radius: var(--border-radius);
-      }
-
-      .test-details .test-item h4 {
-        margin-top: 0;
-        font-size: 1.1rem;
-        font-weight: 600;
-        color: var(--gray-800);
-        margin-bottom: 0.75rem;
-      }
-
-      .partial-chunk {
-        margin: 0.5rem 0;
-        padding: 0.5rem;
-        background-color: var(--gray-100);
-        border-radius: 0.375rem;
-        font-size: 0.95rem;
-      }
-
-      .hidden-retrieval {
-        display: none;
-        margin-top: 0.75rem;
-        background-color: var(--primary-light);
-        padding: 1rem;
-        border-radius: 0.375rem;
-        font-size: 0.95rem;
-      }
-
-      .stream-info-box {
-        margin-top: 1rem;
-        padding: 1rem;
-        border: 1px solid var(--gray-200);
-        border-radius: var(--border-radius);
-        background-color: white;
-        line-height: 1.5;
-        font-size: 0.95rem;
-      }
-
-      #referenceData {
-        display: none;
-        margin-top: 1rem;
-        padding: 1rem;
-        border: 1px solid var(--gray-200);
-        border-radius: var(--border-radius);
-        background-color: white;
-      }
-
-      .badge {
-        display: inline-block;
-        padding: 0.25rem 0.5rem;
-        font-size: 0.75rem;
-        font-weight: 600;
-        border-radius: 9999px;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-
-      .badge-success {
-        background-color: #d1fae5;
-        color: #065f46;
-      }
-
-      .badge-danger {
-        background-color: #fee2e2;
-        color: #b91c1c;
-      }
-
-      .tabs {
-        display: flex;
-        border-bottom: 1px solid var(--gray-200);
-        margin-bottom: 1.5rem;
-      }
-
-      .tab {
-        padding: 0.75rem 1.25rem;
-        cursor: pointer;
-        font-weight: 500;
-        color: var(--gray-600);
-        border-bottom: 2px solid transparent;
-        transition: all 0.2s ease;
-      }
-
-      .tab.active {
-        color: var(--primary);
-        border-bottom-color: var(--primary);
-      }
-
-      .tab:hover:not(.active) {
-        color: var(--gray-800);
-        border-bottom-color: var(--gray-300);
-      }
-
-      .tab-content {
-        display: none;
-      }
-
-      .tab-content.active {
-        display: block;
-      }
-
-      /* Markdown rendering styles */
-      .markdown-content p {
-        margin-bottom: 1rem;
-      }
-
-      .markdown-content h1, 
-      .markdown-content h2, 
-      .markdown-content h3, 
-      .markdown-content h4, 
-      .markdown-content h5, 
-      .markdown-content h6 {
-        margin-top: 1.5rem;
-        margin-bottom: 1rem;
-        font-weight: 600;
-      }
-
-      .markdown-content ul, 
-      .markdown-content ol {
-        padding-left: 1.5rem;
-        margin: 1rem 0;
-      }
-
-      .markdown-content li {
-        margin-bottom: 0.5rem;
-      }
-
-      .markdown-content code {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        background-color: var(--gray-100);
-        padding: 0.2rem 0.4rem;
-        border-radius: 0.25rem;
-        font-size: 0.9em;
-      }
-
-      .markdown-content pre {
-        background-color: var(--gray-100);
-        padding: 1rem;
-        border-radius: 0.375rem;
-        overflow-x: auto;
-        margin: 1rem 0;
-      }
-
-      .markdown-content pre code {
-        background-color: transparent;
-        padding: 0;
-        border-radius: 0;
-      }
-
-      .markdown-content blockquote {
-        border-left: 4px solid var(--gray-300);
-        padding-left: 1rem;
-        margin-left: 0;
-        color: var(--gray-600);
-      }
-
-      .markdown-content img {
-        max-width: 100%;
-        height: auto;
-        border-radius: 0.375rem;
-      }
-
-      .markdown-content table {
-        width: 100%;
-        border-collapse: collapse;
-        margin: 1rem 0;
-      }
-
-      .markdown-content table th,
-      .markdown-content table td {
-        border: 1px solid var(--gray-300);
-        padding: 0.5rem;
-      }
-
-      .markdown-content table th {
-        background-color: var(--gray-100);
-      }
-
-      /* Dark mode toggle */
-      .dark-mode-toggle {
-        position: fixed;
-        bottom: 2rem;
-        right: 2rem;
-        background-color: var(--gray-800);
-        color: white;
-        width: 3rem;
-        height: 3rem;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        box-shadow: var(--shadow-md);
-        z-index: 100;
-        transition: all 0.3s ease;
-      }
-
-      .dark-mode-toggle:hover {
-        transform: scale(1.1);
-      }
-
-      /* Dark mode styles */
-      .dark {
-        background-color: var(--gray-900);
-        color: var(--gray-200);
-      }
-
-      .dark .card {
-        background-color: var(--gray-800);
-        box-shadow: var(--shadow);
-      }
-
-      .dark .card-header {
-        border-bottom-color: var(--gray-700);
-      }
-
-      .dark .card-header h2 {
-        color: white;
-      }
-
-      .dark .card-header h5 {
-        color: var(--gray-400);
-      }
-
-      .dark input[type='text'] {
-        background-color: var(--gray-700);
-        border-color: var(--gray-600);
-        color: white;
-      }
-
-      .dark input[type='text']:focus {
-        border-color: var(--primary);
-      }
-
-      .dark .btn-secondary {
-        background-color: var(--gray-700);
-        color: var(--gray-200);
-      }
-
-      .dark .btn-secondary:hover {
-        background-color: var(--gray-600);
-      }
-
-      .dark .output {
-        background-color: var(--gray-800);
-        border-color: var(--gray-700);
-      }
-
-      .dark .output pre {
-        background-color: var(--gray-900);
-        color: var(--gray-300);
-      }
-
-      .dark .output code {
-        background-color: var(--gray-900);
-        color: var(--gray-300);
-      }
-
-      .dark .test-summary th {
-        background-color: var(--gray-700);
-        color: white;
-      }
-
-      .dark .test-summary td {
-        border-color: var(--gray-700);
-      }
-
-      .dark .test-summary tr:nth-child(even) {
-        background-color: var(--gray-800);
-      }
-
-      .dark .test-details .test-item {
-        background-color: var(--gray-800);
-        border-color: var(--gray-700);
-      }
-
-      .dark .partial-chunk {
-        background-color: var(--gray-700);
-      }
-
-      .dark .stream-info-box {
-        background-color: var(--gray-800);
-        border-color: var(--gray-700);
-      }
-
-      .dark #referenceData {
-        background-color: var(--gray-800);
-        border-color: var(--gray-700);
-      }
-
-      .dark .tabs {
-        border-bottom-color: var(--gray-700);
-      }
-
-      .dark .tab {
-        color: var(--gray-400);
-      }
-
-      .dark .tab.active {
-        color: var(--primary);
-      }
-
-      .dark .tab:hover:not(.active) {
-        color: white;
-        border-bottom-color: var(--gray-600);
-      }
-
-      .dark .markdown-content code {
-        background-color: var(--gray-700);
-      }
-
-      .dark .markdown-content pre {
-        background-color: var(--gray-700);
-      }
-
-      .dark .markdown-content blockquote {
-        border-left-color: var(--gray-600);
-        color: var(--gray-400);
-      }
-
-      .dark .markdown-content table th {
-        background-color: var(--gray-700);
-      }
-
-      .dark .markdown-content table th,
-      .dark .markdown-content table td {
-        border-color: var(--gray-600);
-      }
-
-      .dark .dark-mode-toggle {
-        background-color: var(--gray-200);
-        color: var(--gray-800);
-      }
-
-      .dark .test-set-selector select {
-        background-color: var(--gray-700);
-        border-color: var(--gray-600);
-        color: white;
-      }
-
-      .dark .progress-indicator {
-        background-color: rgba(79, 70, 229, 0.2);
-      }
-
-      /* Responsive styles */
-      @media (max-width: 768px) {
-        .container {
-          padding: 1rem;
-        }
-
-        .header h1 {
-          font-size: 2rem;
-        }
-
-        .card {
-          padding: 1rem;
-        }
-
-        .card-header h2 {
-          font-size: 1.25rem;
-        }
-
-        .btn {
-          padding: 0.625rem 1.25rem;
-        }
-      }
-    </style>
   </head>
   <body>
     <div class="container">
@@ -710,19 +24,29 @@
       <!-- Test Set Selector -->
       <div class="test-set-selector">
         <label for="testSetSelect" title="옵션별 설명:
-• 20 Multi SET1: SET1의 20개 질문
-• 20 Multi SET2: SET2의 20개 질문
-• Different Three Question Sets: 서로 다른 3개 질문 세트
-• Same Question 100 Times: 동일한 질문 ('디지털 전략') 100회 반복
-• 5 Questions Circulate 20 Times: 5개의 다른 질문을 20회씩 반복 (총 100개)
-• 100 Mixed: 100개의 다양한 혼합 질문 (Mix Test Set)">테스트 세트:</label>
-        <select id="testSetSelect">
-          <option value="set1" title="20개의 다른 질문 SET1" selected>20개의 다른 질문 세트 1번</option>
-          <option value="set2" title="20개의 다른 질문 SET2">20개의 다른 질문 세트 2번</option>
-          <option value="set3" title="서로 다른 3개 질문 세트">서로 다른 3개 질문 세트</option>
-          <option value="same100" title="동일한 질문 '디지털 전략'을 100회 반복">같은 질문('디지털 전략') 100개</option>
-          <option value="circulate5x20" title="5개의 다른 질문을 20회씩 반복 (총 100개)">5개의 다른 질문 세트 20번 반복</option>
-          <option value="mixed100" title="100개의 다양한 혼합 질문 (Mix Test Set)">100개의 다른 질문</option>
+• set_3_ask : 3개 질문
+• set_5_ask : 5개 질문
+• set_10_ask : 10개 질문
+• set_15_ask : 15개 질문
+• set_20_ask_1 : 20개 질문 1
+• sset_20_ask_2 : 20개 질문 2
+• same100 : 100개 (같은 질문)
+• circulate5x20 : 5개 질문 x 20회
+• mixed100 : 100개 다양한 질문
+">
+          테스트 세트:
+        </label>
+        <!-- onchange="updateContinuousCountMax()"를 추가하여, 셋이 바뀔 때마다 호출 -->
+        <select id="testSetSelect" onchange="updateContinuousCountMax()">
+          <option value="set_3_ask">3개짜리 (set_3_ask)</option>
+          <option value="set_5_ask">5개짜리 (set_5_ask)</option>
+          <option value="set_10_ask">10개짜리 (set_10_ask)</option>
+          <option value="set_15_ask">15개짜리 (set_15_ask)</option>
+          <option value="set_20_ask_1" selected>20개짜리 1 (set_20_ask_1)</option>
+          <option value="sset_20_ask_2">20개짜리 2 (sset_20_ask_2)</option>
+          <option value="same100">동일질문 100개 (same100)</option>
+          <option value="circulate5x20">5문항 × 20회 (circulate5x20)</option>
+          <option value="mixed100">100개 혼합(mixed100)</option>
         </select>
       </div>
       
@@ -824,10 +148,20 @@
             선택한 테스트 셋에 따라 연속적으로 쿼리를 실행하고 평균 응답 시간을 계산합니다.
           </p>
           <div id="continuousProgress" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
+          
           <div class="input-group">
-            <button class="btn btn-primary" onclick="continuousTest('nonstream')">일반 쿼리 연속 테스트 (Non-Streaming Test)</button>
-            <button class="btn btn-primary" onclick="continuousTest('stream')">스트리밍 연속 테스트 (Streaming Test)</button>
+            <label for="continuousCount" style="white-space: nowrap;">쿼리 개수 설정:</label>
+            <!-- 초기 max="100" 대신, 자바스크립트로 동적으로 갱신 -->
+            <input type="number" id="continuousCount" min="1" max="100" value="10" style="width:6rem;" />      
+            
+            <button class="btn btn-primary" onclick="continuousTest('nonstream')">
+              일반 쿼리 연속 테스트 (Non-Streaming Test)
+            </button>
+            <button class="btn btn-primary" onclick="continuousTest('stream')">
+              스트리밍 연속 테스트 (Streaming Test)
+            </button>
           </div>
+          
           <div class="output markdown-content" id="continuousTestResults"></div>
         </div>
       </div>
@@ -835,58 +169,60 @@
 
     <!-- Dark Mode Toggle -->
     <div class="dark-mode-toggle" onclick="toggleDarkMode()">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-moon">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-moon">
         <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
       </svg>
     </div>
 
+    <!-- 공통 스크립트 (HTML 내부) -->
     <script>
       /************************************************************
-       *  Common Utility Functions
+       *  공통 유틸 함수들
        ************************************************************/
-      // Helper: Format time => "HH:MM:SS.ms"
+      // 시간 포맷: "HH:MM:SS.ms"
       function formatTime(d) {
         if (!d) return '';
         const ms = d.getMilliseconds().toString().padStart(3, '0');
         return d.toLocaleTimeString() + '.' + ms;
       }
 
-      // Toggle dark mode
+      // 다크 모드 토글
       function toggleDarkMode() {
         document.body.classList.toggle('dark');
         localStorage.setItem('darkMode', document.body.classList.contains('dark'));
       }
 
-      // Check for saved dark mode preference
+      // 저장된 다크 모드 상태 확인
       if (localStorage.getItem('darkMode') === 'true') {
         document.body.classList.add('dark');
       }
 
-      // Switch between tabs
+      // 탭 전환
       function switchTab(tabId) {
-        // Hide all tab contents
+        // 모든 탭 콘텐츠 숨기기
         document.querySelectorAll('.tab-content').forEach(content => {
           content.classList.remove('active');
         });
         
-        // Deactivate all tabs
+        // 모든 탭 비활성화
         document.querySelectorAll('.tab').forEach(tab => {
           tab.classList.remove('active');
         });
         
-        // Activate the selected tab and content
+        // 선택된 탭/콘텐츠 활성화
         document.getElementById(tabId).classList.add('active');
         document.querySelector(`.tab[onclick="switchTab('${tabId}')"]`).classList.add('active');
       }
 
-      // Toggle retrieval or reference data blocks
+      // 숨김/토글
       function toggleHiddenDiv(divId) {
         const div = document.getElementById(divId);
         if (!div) return;
         div.style.display = (div.style.display === "none" || div.style.display === "") ? "block" : "none";
       }
 
-      // Toggle the reference data block
+      // 참조 데이터 토글
       function toggleReferences() {
         const refDiv = document.getElementById("referenceData");
         if (refDiv.style.display === "none" || refDiv.style.display === "") {
@@ -896,38 +232,30 @@
         }
       }
 
-      // Parse and render markdown
+      // 간단한 마크다운 렌더링 (볼드, 이탤릭, 코드 등)
       function renderMarkdown(text) {
         if (!text) return '';
-        
-        // Handle bold text
+        // **bold**
         text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        
-        // Handle italic text
+        // _italic_
         text = text.replace(/\_(.*?)\_/g, '<em>$1</em>');
-        
-        // Handle inline code
+        // `code`
         text = text.replace(/\`(.*?)\`/g, '<code>$1</code>');
-        
-        // Handle code blocks
+        // ```code block```
         text = text.replace(/\`\`\`([\s\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>');
-        
-        // Handle line breaks
+        // 줄바꿈
         text = text.replace(/\n/g, '<br>');
-        
-        // Handle lists
+        // 리스트 (단순 - 사용)
         text = text.replace(/^\s*\-\s+(.*?)$/gm, '<li>$1</li>');
         text = text.replace(/(<li>.*?<\/li>)/gs, '<ul>$1</ul>');
-        
-        // Handle headers
+        // 헤더(#, ##, ###)
         text = text.replace(/^#\s+(.*?)$/gm, '<h1>$1</h1>');
         text = text.replace(/^##\s+(.*?)$/gm, '<h2>$1</h2>');
         text = text.replace(/^###\s+(.*?)$/gm, '<h3>$1</h3>');
-        
         return text;
       }
 
-      // Build JSON output for non-streaming response with markdown support
+      // JSON 응답을 출력용 HTML로 변환
       function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
         let formattedOutput = `
           <strong>전송 시간 (Send Time):</strong> ${sendTime} <br>
@@ -949,13 +277,14 @@
             let retrievalHTML = "";
             data.data_list.forEach((item, idx) => {
               if (item.rsp_type === "A") {
-                // Render markdown in answers
+                // 답변 타입(A) → 마크다운으로 랜더링
                 if (item.answer) {
                   answerHTML += `<div class="markdown-content">${renderMarkdown(item.answer)}</div>`;
                 } else {
                   answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
                 }
               } else if (item.rsp_type === "R") {
+                // 참조 데이터(R)
                 const hiddenId = `retrieval_${uniquePrefix}_${idx}`;
                 retrievalHTML += `
                   <div>
@@ -966,6 +295,7 @@
                   </div>
                 `;
               } else {
+                // 기타
                 answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
               }
             });
@@ -983,12 +313,32 @@
         return formattedOutput;
       }
 
-      // Used by multiple tests to show concurrency progress
+      // 진행 상황 표시
       function updateProgressIndicator(elementId, current, total, successCount = 0, failCount = 0) {
         const elem = document.getElementById(elementId);
         if (elem) {
           const successRate = current > 0 ? ((successCount / current) * 100).toFixed(1) : 0;
           elem.innerHTML = `완료: ${current} / ${total} 쿼리 | 성공: ${successCount}, 실패: ${failCount}, 성공률: ${successRate}%`;
+        }
+      }
+
+      /************************************************************
+       *  (A) 동적으로 연속 테스트 개수의 max를 갱신하는 함수
+       ************************************************************/
+      function updateContinuousCountMax() {
+        const queries = buildTestQueries(); // 현재 선택된 테스트셋의 쿼리들
+        const length = queries.length;
+
+        // 'continuousCount' input 엘리먼트
+        const input = document.getElementById('continuousCount');
+
+        // input의 max를 갱신
+        input.max = length;
+
+        // 만약 현재 value가 새 max보다 크다면, clamp(최댓값으로 조정)
+        const currentValue = parseInt(input.value, 10) || 1;
+        if (currentValue > length) {
+          input.value = length; // length 이하로 조정
         }
       }
 
@@ -1038,7 +388,7 @@
       }
 
       /************************************************************
-       * (2) Concurrency Test (Non-Streaming POST) - 50 queries
+       * (2) Concurrency Test (Non-Streaming POST)
        ************************************************************/
       function testQueries() {
         const queries = buildTestQueries();
@@ -1067,7 +417,6 @@
               const receiveTimeStr = formatTime(receiveTime);
               const elapsed = Date.now() - startTimestamp;
 
-              // Check success or fail
               if (!response.ok) {
                 failCount++;
                 return response.text().then((errorData) => {
@@ -1106,7 +455,6 @@
               }
             })
             .catch((error) => {
-              // Real fetch error (network or something)
               const receiveTime = new Date();
               const receiveTimeStr = formatTime(receiveTime);
               const elapsed = Date.now() - startTimestamp;
@@ -1205,8 +553,6 @@
       let streamingInProgress = false;
       let answerAccumulated = "";
       let sseBuffer = "";
-      let querySentTime = null;
-
 
       async function startStreamPOST() {
         if (streamingInProgress) {
@@ -1221,7 +567,6 @@
         }
         
         streamingInProgress = true;
-        // 변수 초기화
         answerAccumulated = "";
         sseBuffer = "";
         postStreamFirstChunkTime = null;
@@ -1231,12 +576,9 @@
         document.getElementById('referenceData').innerHTML = "";
         document.getElementById('referenceData').style.display = "none";
         
-        // 로딩 표시
         document.getElementById('streamOutput').textContent = "스트리밍 응답을 기다리는 중... (Waiting for streaming response...)";
       
-        // 쿼리 전송 시각을 저장 (Date 객체 사용)
-        querySentTime = new Date();
-        // 성능 측정을 위해 시작 타임스탬프는 performance.now()로 저장
+        const querySentTime = new Date();
         postStreamStartTime = performance.now();
       
         try {
@@ -1250,7 +592,6 @@
             throw new Error('응답 오류 (Response not OK): ' + response.status + " " + errTxt);
           }
           
-          // 첫 응답이 오면 로딩 메시지 지우기
           document.getElementById('streamOutput').textContent = "";
           
           const reader = response.body.getReader();
@@ -1260,7 +601,7 @@
             const { done, value } = await reader.read();
             if (done) {
               postStreamEndTime = performance.now();
-              updatePostStreamTiming();
+              updatePostStreamTiming(querySentTime);
               break;
             }
             const chunk = decoder.decode(value, { stream: true });
@@ -1280,7 +621,7 @@
       function processPostSseChunk(chunk) {
         sseBuffer += chunk;
         let lines = sseBuffer.split("\n");
-        sseBuffer = lines.pop(); // leftover
+        sseBuffer = lines.pop(); 
         for (let line of lines) {
           line = line.trim();
           if (!line) continue;
@@ -1288,7 +629,6 @@
             const sseData = line.slice(5).trim();
             if (!postStreamFirstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
               postStreamFirstChunkTime = performance.now();
-              updatePostStreamTiming();
             }
             if (sseData === "[[STREAM_DONE]]") {
               postStreamEndTime = performance.now();
@@ -1312,41 +652,36 @@
                 answerAccumulated += jsonData.answer;
               }
             } catch (e) {
-              // Not valid JSON, treat as plain text
+              // JSON이 아닐 경우, 텍스트로 누적
               answerAccumulated += sseData;
             }
           }
         }
-        updatePostStreamTiming();
       }
 
-      function updatePostStreamTiming() {
+      function updatePostStreamTiming(querySentTime) {
         let msg = "";
-        if (querySentTime !== null) {
-          // 쿼리를 보낸 시간은 프론트에서 보낸 실제 시각을 표시
+        if (querySentTime) {
           msg += `쿼리 전송 시간 (Query Sent Time): ${querySentTime.toLocaleTimeString()}<br>`;
         }
         if (postStreamFirstChunkTime !== null) {
-          // 스트리밍 시작 시간은 첫 청크 도착 후 경과 시간만 표시
           msg += `첫 응답 도착 시간 (First Chunk Time): ${(postStreamFirstChunkTime - postStreamStartTime).toFixed(1)} ms<br>`;
         } else {
-          msg += "첫 응답 도착 시간 (First Chunk Time): 아직 도착하지 않음 (not arrived yet)<br>";
+          msg += "첫 응답 도착 시간: 아직 도착하지 않음<br>";
         }
         if (postStreamEndTime !== null) {
-          // 스트리밍 종료 시간: 전송 시작 후 전체 경과 시간
           msg += `스트리밍 종료 시간 (Streaming End Time): ${(postStreamEndTime - postStreamStartTime).toFixed(1)} ms<br>`;
-          // 스트리밍 생성 시간: 첫 청크 도착 후부터 종료까지의 시간
           if (postStreamFirstChunkTime !== null) {
             msg += `스트리밍 생성 시간 (Streaming Generation Time): ${(postStreamEndTime - postStreamFirstChunkTime).toFixed(1)} ms<br>`;
           }
         } else {
-          msg += "스트리밍 종료 시간 (Streaming End Time): 아직 도착하지 않음 (not arrived yet)<br>";
+          msg += "스트리밍 종료 시간: 아직 도착하지 않음<br>";
         }
         document.getElementById('streamTiming').innerHTML = msg;
       }
 
       /************************************************************
-       * (4) Simultaneous Streaming Test (POST-based streaming)
+       * (4) Simultaneous Streaming Test (POST-based)
        ************************************************************/
       async function startSimulStreamPOST(queryObj, containerId) {
         const container = document.getElementById(containerId);
@@ -1375,7 +710,7 @@
           });
           if (!response.ok) {
             success = false;
-            errorMessage = `응답 오류 (Response not OK): ${response.status}`;
+            errorMessage = `응답 오류: ${response.status}`;
             container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">${errorMessage}</span>`;
             return {
               id: queryObj.id,
@@ -1390,8 +725,7 @@
             };
           }
           
-          // 초기 로딩 메시지
-          container.querySelector(".stream-output").textContent = "스트리밍 응답을 기다리는 중... (Waiting for streaming response...)";
+          container.querySelector(".stream-output").textContent = "스트리밍 응답 대기 중...";
           
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
@@ -1403,8 +737,6 @@
               updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
               break;
             }
-            
-            // 첫 응답이 오면 로딩 메시지 지우기
             if (chunkCount === 0) {
               container.querySelector(".stream-output").textContent = "";
             }
@@ -1418,11 +750,9 @@
               if (!line) continue;
               if (line.startsWith("data:")) {
                 const sseData = line.slice(5).trim();
-                // Count every SSE line as a 'chunk' for demonstration
                 chunkCount++;
                 if (!firstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
                   firstChunkTime = performance.now();
-                  updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
                 }
                 if (sseData === "[[STREAM_DONE]]") {
                   endTime = performance.now();
@@ -1458,7 +788,6 @@
                     container.querySelector(".stream-output").innerHTML = renderMarkdown(answerAccumulated);
                   }
                 } catch (e) {
-                  // Not valid JSON => treat as text
                   answerAccumulated += sseData;
                   container.querySelector(".stream-output").innerHTML = renderMarkdown(answerAccumulated);
                 }
@@ -1469,10 +798,9 @@
         } catch (err) {
           success = false;
           errorMessage = err.message;
-          container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">오류 (Error): ${err.message}</span>`;
+          container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">오류: ${err.message}</span>`;
         }
 
-        // If we exit the loop or have an error:
         endTime = endTime || performance.now();
         updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
         return {
@@ -1492,19 +820,19 @@
         const infoBox = container.querySelector(".stream-info-box");
         let infoMsg = "";
         if (first !== null && first !== undefined) {
-          infoMsg += `<strong>첫 응답 도착 시간 ((TTFT)):</strong> ${(first - start).toFixed(1)} ms<br>`;
+          infoMsg += `<strong>첫 응답 도착(TTFT):</strong> ${(first - start).toFixed(1)} ms<br>`;
         } else {
-          infoMsg += `<strong>첫 응답 도착 시간 ((TTFT)):</strong> 아직 도착하지 않음 (not arrived yet)<br>`;
+          infoMsg += `<strong>첫 응답 도착:</strong> 아직 도착하지 않음<br>`;
         }
         if (end !== null && end !== undefined) {
-          infoMsg += `<strong>스트리밍 종료 시간 (Streaming End Time):</strong> ${(end - start).toFixed(1)} ms<br>`;
+          infoMsg += `<strong>스트리밍 종료:</strong> ${(end - start).toFixed(1)} ms<br>`;
           if (first !== null && first !== undefined) {
-            infoMsg += `<strong>스트리밍 생성 시간 (Streaming Generation Time):</strong> ${(end - first).toFixed(1)} ms<br>`;
+            infoMsg += `<strong>스트리밍 생성 시간:</strong> ${(end - first).toFixed(1)} ms<br>`;
           }
         } else {
-          infoMsg += `<strong>스트리밍 종료 시간 (Streaming End Time):</strong> 아직 도착하지 않음 (not arrived yet)<br>`;
+          infoMsg += `<strong>스트리밍 종료:</strong> 아직 도착하지 않음<br>`;
         }
-        infoMsg += `<strong>청크 수 (Chunk Count):</strong> ${chunkCount}`;
+        infoMsg += `<strong>청크 수(Chunk Count):</strong> ${chunkCount}`;
         infoBox.innerHTML = infoMsg;
       }
 
@@ -1520,15 +848,12 @@
 
       async function testSimulStreamPOST() {
         const queries = buildTestQueries();
-        // Use all queries in the test set
-        const simulQueries = queries;
         const simulPartialsContainer = document.getElementById("simul-partials");
         const simulResultsContainer = document.getElementById("simul-results");
-        simulPartialsContainer.innerHTML = '<div class="progress-indicator">동시 스트리밍 테스트 준비 중... (Preparing simultaneous streaming test...)</div>'; 
-        simulResultsContainer.innerHTML = "";   // Clear previous result table
+        simulPartialsContainer.innerHTML = '<div class="progress-indicator">동시 스트리밍 테스트 준비 중...</div>'; 
+        simulResultsContainer.innerHTML = "";
 
-        // Fire all streaming requests in parallel
-        const promises = simulQueries.map((q, index) => {
+        const promises = queries.map((q, index) => {
           const containerId = "simul-stream-" + index;
           const div = document.createElement("div");
           div.id = containerId;
@@ -1544,7 +869,6 @@
       }
 
       function buildSimulSummaryTable(results) {
-        // Calculate success/fail stats
         let successCount = 0;
         let failCount = 0;
         results.forEach(r => {
@@ -1552,28 +876,27 @@
           else failCount++;
         });
 
-        // Build summary table
         let html = `<div class="test-summary">
-                      <h3>동시 스트리밍 결과 (Simultaneous Streaming Results)</h3>
-                      <p>총 쿼리 수 (Total): ${results.length}, 성공 (Success): ${successCount}, 실패 (Fail): ${failCount}</p>
+                      <h3>동시 스트리밍 결과</h3>
+                      <p>총: ${results.length}, 성공: ${successCount}, 실패: ${failCount}</p>
                       <table>
                         <thead>
                           <tr>
                             <th>ID</th>
-                            <th>쿼리<br>(Query)</th>
-                            <th>전송 시간<br>(Send Time ms)</th>
-                            <th>첫 응답<br>(First Chunk ms)</th>
-                            <th>종료 시간<br>(End Time ms)</th>
-                            <th>소요 시간<br>(Duration ms)</th>
-                            <th>청크 수<br>(Chunk Count)</th>
-                            <th>상태<br>(Status)</th>
-                            <th>오류<br>(Error)</th>
+                            <th>쿼리</th>
+                            <th>전송 시간(ms)</th>
+                            <th>첫 응답(ms)</th>
+                            <th>종료(ms)</th>
+                            <th>소요(ms)</th>
+                            <th>청크 수</th>
+                            <th>상태</th>
+                            <th>오류</th>
                           </tr>
                         </thead>
                         <tbody>`;
 
         results.forEach(r => {
-          const statusText = r.success ? "성공 (Success)" : "실패 (Fail)";
+          const statusText = r.success ? "성공" : "실패";
           const statusClass = r.success ? "badge-success" : "badge-danger";
           const errorText = r.error || "";
           const firstTimeStr = r.firstChunkTime ? r.firstChunkTime.toFixed(1) : "n/a";
@@ -1597,40 +920,49 @@
       }
 
       /************************************************************
-       * (5) Continuous Sync Test
+       * (5) 연속 쿼리 테스트
        ************************************************************/
       async function continuousTest(mode) {
-        const queries = buildTestQueries();
+        let queries = buildTestQueries();
+      
+        const totalAvailable = queries.length; 
+        const userInputCount = parseInt(document.getElementById('continuousCount').value, 10) || 1;
+        const limit = Math.min(userInputCount, totalAvailable);
+      
+        const truncated = queries.slice(0, limit);
+      
         const results = [];
-        const total = queries.length;
-        document.getElementById('continuousTestResults').innerHTML = `<div class="progress-indicator">${mode === 'nonstream' ? '일반' : '스트리밍'} 테스트 실행 중... (Running ${mode} test...)</div>`;
+        const total = truncated.length;
+        document.getElementById('continuousTestResults').innerHTML = 
+          `<div class="progress-indicator">${mode === 'nonstream' ? '일반' : '스트리밍'} 테스트 실행 중...</div>`;
+        
         updateProgressIndicator('continuousProgress', 0, total);
-
-        for (let i = 0; i < queries.length; i++) {
+        
+        for (let i = 0; i < total; i++) {
           if (mode === 'nonstream') {
-            const r = await runNonStreamingQuery(queries[i]);
+            const r = await runNonStreamingQuery(truncated[i]);
             results.push(r);
           } else {
-            const r = await runStreamingQuery(queries[i]);
+            const r = await runStreamingQuery(truncated[i]);
             results.push(r);
           }
           updateProgressIndicator('continuousProgress', i + 1, total);
         }
-
+      
         let sum = 0;
         results.forEach(r => sum += r.duration);
         const avg = (sum / results.length).toFixed(2);
-
-        let html = `<h3>연속 ${mode === 'nonstream' ? '일반' : '스트리밍'} 테스트 (${total} 쿼리) 결과</h3>`;
-        html += `<p>평균 소요 시간 (Average Duration): <strong>${avg} ms</strong></p>`;
+      
+        let html = `<h3>연속 ${mode === 'nonstream' ? '일반' : '스트리밍'} 테스트 결과 (${total}개)</h3>`;
+        html += `<p>평균 소요 시간: <strong>${avg} ms</strong></p>`;
         html += "<ul>";
         results.forEach((r) => {
-          html += `<li><strong>${r.id}</strong> [${r.query}] - 시작 (Start): ${r.startTime}, 종료 (End): ${r.endTime}, 소요 시간 (Duration): ${r.duration} ms</li>`;
+          html += `<li><strong>${r.id}</strong> [${r.query}] - 시작: ${r.startTime}, 종료: ${r.endTime}, 소요: ${r.duration} ms</li>`;
         });
         html += "</ul>";
         document.getElementById('continuousTestResults').innerHTML = html;
       }
-
+      
       async function runNonStreamingQuery(qObj) {
         const sendTime = new Date();
         const startTs = Date.now();
@@ -1655,7 +987,6 @@
         };
       }
 
-      // POST 방식으로 스트리밍 쿼리 실행
       function runStreamingQuery(qObj) {
         return new Promise((resolve, reject) => {
           const sendTime = new Date();
@@ -1671,7 +1002,6 @@
               const reader = response.body.getReader();
               const decoder = new TextDecoder();
               
-              // 함수: 응답 스트림을 재귀적으로 읽어 처리
               function processStream({ done, value }) {
                 if (done) {
                   const endTime = new Date();
@@ -1686,9 +1016,7 @@
                   });
                   return;
                 }
-                // 수신한 청크를 디코딩하여 누적
                 accumulatedText += decoder.decode(value, { stream: true });
-                // 추가 청크 읽기
                 reader.read().then(processStream).catch(reject);
               }
               return reader.read().then(processStream);
@@ -1698,192 +1026,15 @@
             });
         });
       }
-      
-      /************************************************************
-       * Helper: Build Test Queries from the selector
-       ************************************************************/
-      function buildTestQueries() {
-        const testSet = document.getElementById('testSetSelect').value;
-        let queries = [];
-        if (testSet === 'set1') {
-          const mixed20Queries1 = [
-            { id: "ask1", text: "남성해운의 중국 시장 동향" },
-            { id: "ask2", text: "남성해운의 일본 시장 영업 전략" },
-            { id: "ask3", text: "남성해운의 동남아 시장 발전 가능성" },
-            { id: "ask4", text: "남성해운의 중국 시장 동향" },
-            { id: "ask5", text: "신입사원 인사 필수로 알아야 하는 것" },
-            { id: "ask6", text: "디지털화 근황" },
-            { id: "ask7", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask8", text: "남성해운 운임 동향" },
-            { id: "ask9", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask10", text: "최근 해운업계 동향" },
-            { id: "ask11", text: "디지털화 근황" },
-            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask13", text: "남성해운 운임 동향" },
-            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask15", text: "최근 해운업계 동향" },
-            { id: "ask16", text: "디지털화 근황" },
-            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask18", text: "남성해운 운임 동향" },
-            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask20", text: "최근 해운업계 동향" }
-          ];
-          queries = mixed20Queries1;
-        } else if (testSet === 'set2') {
-          const mixed20Queries2 = [
-            { id: "ask1", text: "타운사의 전략" },
-            { id: "ask2", text: "남성해운과 타운사의 차별점" },
-            { id: "ask3", text: "남성해운의 수익 구조" },
-            { id: "ask4", text: "해운사의 특징과 남성해운이 가진 고유의 특징" },
-            { id: "ask5", text: "지난해 매출과 앞으로의 전망" },
-            { id: "ask6", text: "남성해운의 AI 추진 과제 현황" },
-            { id: "ask7", text: "동영해운과 남성해운의 공통점과 차이점" },
-            { id: "ask8", text: "남성해운의 새로운 전략과 먹거리" },
-            { id: "ask9", text: "신입사원 채용 계획 및 교육 일정" },
-            { id: "ask10", text: "해운업계의 큰 흐름과 현재 남성해운의 판단" },
-            { id: "ask11", text: "디지털화 근황" },
-            { id: "ask12", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask13", text: "남성해운 운임 동향" },
-            { id: "ask14", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask15", text: "최근 해운업계 동향" },
-            { id: "ask16", text: "디지털화 근황" },
-            { id: "ask17", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "ask18", text: "남성해운 운임 동향" },
-            { id: "ask19", text: "주간회의 특징 및 주요 말씀" },
-            { id: "ask20", text: "최근 해운업계 동향" }
-          ];
-          queries = mixed20Queries2;
-        } else if (testSet === 'set3') {
-          const differentThreeQueries = [
-            { id: "only3-1", text: "남성해운 중국 시장 근황" },
-            { id: "only3-2", text: "공 컨테이너 수송 전략" },
-            { id: "only3-3", text: "남성해운의 새로운 전략" }
-          ];
-          queries = differentThreeQueries;
-        } else if (testSet === 'same100') {
-          for (let i = 1; i <= 100; i++) {
-            queries.push({ id: `same100-${i}`, text: "디지털 전략" });
-          }
-        } else if (testSet === 'circulate5x20') {
-          const baseQueries = [
-            { id: "q1", text: "남성해운 영업 전략" },
-            { id: "q2", text: "디지털화 근황" },
-            { id: "q3", text: "IOT 컨테이너 사업에 대해서" },
-            { id: "q4", text: "주간회의 특징 및 주요 말씀" },
-            { id: "q5", text: "해운업계의 경쟁 구도" }
-          ];
-          for (let k = 1; k <= 20; k++) {
-            baseQueries.forEach((q) => {
-              queries.push({ id: `circulate${k}-${q.id}`, text: q.text });
-            });
-          }
-        } else if (testSet === 'mixed100') {
-          const mixedQueries = [
-            { id: "mix-ask1", text: "타운사의 전략" },
-            { id: "mix-ask2", text: "남성해운의 중국 시장 동향" },
-            { id: "mix-ask3", text: "해운업계의 경쟁 구도" },
-            { id: "mix-ask4", text: "디지털화의 최신 트렌드" },
-            { id: "mix-ask5", text: "IOT 컨테이너 사업의 전망" },
-            { id: "mix-ask6", text: "타운사의 시장 점유율 분석" },
-            { id: "mix-ask7", text: "남성해운의 일본 시장 영업 전략" },
-            { id: "mix-ask8", text: "해운업계의 글로벌 시장 동향" },
-            { id: "mix-ask9", text: "디지털 전환의 성공 사례" },
-            { id: "mix-ask10", text: "IOT 기술을 활용한 물류 혁신" },
-            { id: "mix-ask11", text: "타운사의 경쟁 우위" },
-            { id: "mix-ask12", text: "남성해운의 동남아 시장 발전 가능성" },
-            { id: "mix-ask13", text: "해운업계의 기술 혁신 현황" },
-            { id: "mix-ask14", text: "디지털 기술이 기업에 미치는 영향" },
-            { id: "mix-ask15", text: "IOT와 빅데이터의 결합 사례" },
-            { id: "mix-ask16", text: "타운사의 성장 동력" },
-            { id: "mix-ask17", text: "남성해운의 미국 시장 진출 전략" },
-            { id: "mix-ask18", text: "해운업계의 운임 변동 요인" },
-            { id: "mix-ask19", text: "디지털화 도입의 비용 효율성" },
-            { id: "mix-ask20", text: "IOT 기술 도입의 장단점" },
-            { id: "mix-ask21", text: "타운사의 혁신 사례" },
-            { id: "mix-ask22", text: "남성해운의 수익 구조 분석" },
-            { id: "mix-ask23", text: "해운업계의 환경 규제 대응" },
-            { id: "mix-ask24", text: "디지털 전환 전략 수립 방법" },
-            { id: "mix-ask25", text: "IOT 컨테이너의 운영 효율성" },
-            { id: "mix-ask26", text: "타운사의 고객 만족도" },
-            { id: "mix-ask27", text: "남성해운의 비용 절감 전략" },
-            { id: "mix-ask28", text: "해운업계의 디지털 전환" },
-            { id: "mix-ask29", text: "디지털화와 빅데이터 활용" },
-            { id: "mix-ask30", text: "IOT 기반 실시간 모니터링 시스템" },
-            { id: "mix-ask31", text: "타운사의 재무 구조" },
-            { id: "mix-ask32", text: "남성해운의 신규 서비스 도입" },
-            { id: "mix-ask33", text: "해운업계의 물류 효율성 개선" },
-            { id: "mix-ask34", text: "디지털화의 보안 이슈" },
-            { id: "mix-ask35", text: "IOT와 인공지능의 결합 효과" },
-            { id: "mix-ask36", text: "타운사의 리스크 관리" },
-            { id: "mix-ask37", text: "남성해운의 고객 만족도 조사" },
-            { id: "mix-ask38", text: "해운업계의 비용 구조" },
-            { id: "mix-ask39", text: "디지털 트랜스포메이션의 장단점" },
-            { id: "mix-ask40", text: "IOT 기술을 활용한 비용 절감" },
-            { id: "mix-ask41", text: "타운사의 해외 진출 전략" },
-            { id: "mix-ask42", text: "남성해운의 운임 변동 분석" },
-            { id: "mix-ask43", text: "해운업계의 신규 시장 개척" },
-            { id: "mix-ask44", text: "디지털화 추진을 위한 조직 문화" },
-            { id: "mix-ask45", text: "IOT 컨테이너 사업의 경쟁력" },
-            { id: "mix-ask46", text: "타운사의 신규 사업 계획" },
-            { id: "mix-ask47", text: "남성해운의 미래 성장 전략" },
-            { id: "mix-ask48", text: "해운업계의 고객 서비스 혁신" },
-            { id: "mix-ask49", text: "디지털 전환과 고객 경험 혁신" },
-            { id: "mix-ask50", text: "IOT 기술 도입을 위한 투자 전략" },
-            { id: "mix-ask51", text: "타운사의 브랜드 가치" },
-            { id: "mix-ask52", text: "남성해운의 경쟁사 비교" },
-            { id: "mix-ask53", text: "해운업계의 글로벌 네트워크" },
-            { id: "mix-ask54", text: "디지털화와 인공지능의 결합" },
-            { id: "mix-ask55", text: "IOT와 클라우드 컴퓨팅의 연계" },
-            { id: "mix-ask56", text: "타운사의 공급망 관리" },
-            { id: "mix-ask57", text: "남성해운의 글로벌 네트워크" },
-            { id: "mix-ask58", text: "해운업계의 재무 안정성" },
-            { id: "mix-ask59", text: "디지털 전환의 글로벌 사례" },
-            { id: "mix-ask60", text: "IOT 기반 물류 자동화 사례" },
-            { id: "mix-ask61", text: "타운사의 인재 육성 전략" },
-            { id: "mix-ask62", text: "남성해운의 혁신 기술 도입" },
-            { id: "mix-ask63", text: "해운업계의 기술 투자" },
-            { id: "mix-ask64", text: "디지털화 추진 시 장애 요인" },
-            { id: "mix-ask65", text: "IOT 기술의 보안 이슈" },
-            { id: "mix-ask66", text: "타운사의 사회적 책임 활동" },
-            { id: "mix-ask67", text: "남성해운의 운영 효율성" },
-            { id: "mix-ask68", text: "해운업계의 공급망 관리" },
-            { id: "mix-ask69", text: "디지털화에 따른 비용 절감 효과" },
-            { id: "mix-ask70", text: "IOT 컨테이너 사업의 글로벌 동향" },
-            { id: "mix-ask71", text: "타운사의 기술 혁신" },
-            { id: "mix-ask72", text: "남성해운의 재무 건전성" },
-            { id: "mix-ask73", text: "해운업계의 미래 전망" },
-            { id: "mix-ask74", text: "디지털 트랜스포메이션의 미래 전망" },
-            { id: "mix-ask75", text: "IOT와 데이터 분석의 시너지 효과" },
-            { id: "mix-ask76", text: "타운사의 마케팅 전략" },
-            { id: "mix-ask77", text: "남성해운의 리스크 관리 전략" },
-            { id: "mix-ask78", text: "해운업계의 혁신 사례" },
-            { id: "mix-ask79", text: "디지털화 전략 수립 시 고려사항" },
-            { id: "mix-ask80", text: "IOT 기술 도입 시 장애 요인" },
-            { id: "mix-ask81", text: "타운사의 고객 서비스 개선" },
-            { id: "mix-ask82", text: "남성해운의 신규 투자 계획" },
-            { id: "mix-ask83", text: "해운업계의 위험 요인" },
-            { id: "mix-ask84", text: "디지털 전환이 기업 경쟁력에 미치는 영향" },
-            { id: "mix-ask85", text: "IOT 컨테이너의 미래 전략" },
-            { id: "mix-ask86", text: "타운사의 경쟁사 비교" },
-            { id: "mix-ask87", text: "남성해운의 시장 점유율 변화" },
-            { id: "mix-ask88", text: "해운업계의 인재 육성" },
-            { id: "mix-ask89", text: "디지털화와 클라우드 컴퓨팅" },
-            { id: "mix-ask90", text: "IOT 기술을 활용한 혁신 사례" },
-            { id: "mix-ask91", text: "타운사의 시장 성장 전망" },
-            { id: "mix-ask92", text: "남성해운의 고객 서비스 전략" },
-            { id: "mix-ask93", text: "해운업계의 시장 성장 동력" },
-            { id: "mix-ask94", text: "디지털 전환의 성공 요인" },
-            { id: "mix-ask95", text: "IOT 기반 스마트 물류 솔루션" },
-            { id: "mix-ask96", text: "타운사의 미래 비전" },
-            { id: "mix-ask97", text: "남성해운의 미래 비전" },
-            { id: "mix-ask98", text: "해운업계의 신기술 도입 현황" },
-            { id: "mix-ask99", text: "디지털 트랜스포메이션이 해운업계에 미치는 영향" },
-            { id: "mix-ask100", text: "IOT 기술이 해운업계에 미치는 영향" }
-          ];
-          queries = mixedQueries;
-        }
-        return queries;
-      }
+
+      // 페이지 로드시 초기로 한번 호출하여, 기본 값 세팅 
+      // (set_20_ask_1 옵션이 기본 selected이므로 길이는 20)
+      window.addEventListener('DOMContentLoaded', () => {
+        updateContinuousCountMax();
+      });
     </script>
+
+    <!-- (중요) 분리된 Test-Set JS 로드 -->
+    <script src="/static/test_set.js"></script>
   </body>
 </html>

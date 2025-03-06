@@ -22,8 +22,9 @@ from utils import (
     process_format_to_response,
     process_to_format,
     error_format,
-    summarize_conversation
 )
+from summarizer import Summarizer
+from debug_tracking import log_batch_info, log_system_info
 
 # 랭체인 도입
 from langchain.memory import ConversationBufferMemory
@@ -63,6 +64,11 @@ class InferenceActor:
         # key: request_id, value: ConversationBufferMemory()
         # ---------------------------
         self.memory_map = {}
+        
+        # Instantiate the summarizer inside the actor
+        # (Using Gemma2-2b-it here; adjust model name or parameters as needed)
+        self.summarizer = Summarizer(model_name="google/gemma-2-2b-it", max_position_embeddings=8192)
+
 
         # In-flight batching까지 추가 적용
         asyncio.create_task(self._in_flight_batch_processor())
@@ -194,9 +200,10 @@ class InferenceActor:
                     )
                     break
             self.batch_counter += 1
-            print(
-                f"[BATCH {self.batch_counter}] In-Flight batch collected with {len(batch)} requests"
-            )
+            
+            # 현재 배치 정보 로깅
+            log_batch_info(batch)
+            log_system_info("배치 처리 전 상태")
 
             # We have a batch of items: each item is ( http_query_or_stream_dict, future, sse_queue )
             # We'll process them concurrently.
@@ -207,6 +214,7 @@ class InferenceActor:
 
             # Actually run them all concurrently
             await asyncio.gather(*tasks)
+            log_system_info("배치 처리 후 상태")
 
     async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
         """
@@ -316,7 +324,8 @@ class InferenceActor:
                             config=self.config,
                         )
                         answer = process_to_format([output, chart], type="Answer")
-                        outputs = process_format_to_response(retrieval, answer)
+                        final_data = [retrieval, answer]
+                        outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
                         
                         # >>> CHANGED: Record used chunk IDs and summarize the conversation
                         chunk_ids_used = []
@@ -327,7 +336,14 @@ class InferenceActor:
                         prev_summary = memory.load_memory_variables({}).get("summary", "")
                         new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
                         updated_conversation = prev_summary + "\n" + new_entry
-                        summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        # Summarized CPU 사용
+                        import concurrent.futures
+
+                        # Create a dedicated pool with more workers (e.g., 4)
+                        summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+
+                        # Later, when calling the summarization function:
+                        summarized = await loop.run_in_executor(summary_pool, self.summarizer.summarize, updated_conversation)
                         # After obtaining 'summarized' in _process_single_query:
                         if not summarized:
                             print("[ERROR] Summarization returned an empty string.")
@@ -376,7 +392,8 @@ class InferenceActor:
                         print("process_to_format 이후에 OUTPUT 생성 완료")
                         answer = process_to_format([output], type="Answer")
                         print("process_to_format 이후에 ANSWER까지 생성 완료")
-                        outputs = process_format_to_response(retrieval, answer)
+                        final_data = [retrieval, answer]
+                        outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
                         # >>> CHANGED: Record used chunk IDs and update conversation summary
                         chunk_ids_used = []
                         for doc in docs_list:
@@ -386,7 +403,14 @@ class InferenceActor:
                         prev_summary = memory.load_memory_variables({}).get("summary", "")
                         new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
                         updated_conversation = prev_summary + "\n" + new_entry
-                        summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        # Summarized CPU 사용
+                        import concurrent.futures
+
+                        # Create a dedicated pool with more workers (e.g., 4)
+                        summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+
+                        # Later, when calling the summarization function:
+                        summarized = await loop.run_in_executor(summary_pool, self.summarizer.summarize, updated_conversation)
                         memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
                         # --------------------------------------------------------------------
                         future.set_result(outputs)
@@ -517,7 +541,14 @@ class InferenceActor:
             new_entry = f"User: {user_input}\nAssistant: {final_text}\nUsed Chunks: {chunk_ids_used}\n"
             updated_conversation = prev_summary + "\n" + new_entry
             # Inside _process_single_query, after getting the summarized text:
-            summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+            # Summarized CPU 사용
+            import concurrent.futures
+
+            # Create a dedicated pool with more workers (e.g., 4)
+            summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+
+            # Later, when calling the summarization function:
+            summarized = await loop.run_in_executor(summary_pool, self.summarizer.summarize, updated_conversation)
 
             if not summarized:
                 print("[ERROR] Summarization returned an empty string.")

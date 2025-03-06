@@ -219,8 +219,27 @@ def load_model(config):
         
         # engine_args.enable_memory_defrag = True # v1 새로운 기능
         
+        # ★★ 추가: 슬라이딩 윈도우 비활성화 옵션 적용 ★★
+        if vllm_conf.get("disable_sliding_window", False):
+            # cascade attention에서는 슬라이딩 윈도우가 (-1, -1)이어야 함
+            engine_args.sliding_window = (-1, -1)
+            print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
+        
         # print("Final EngineArgs:", engine_args)
         print("EngineArgs setting be finished")
+        
+                # ── 여기서 unified_attention 호출 추적을 위한 monkey-patch ──
+        try:
+            if hasattr(torch.ops.vllm, "unified_attention_with_output"):
+                orig_unified_attention = torch.ops.vllm.unified_attention_with_output
+                def tracking_unified_attention(*args, **kwargs):
+                    logging.info("Called unified_attention_with_output with args: %s, kwargs: %s", args, kwargs)
+                    return orig_unified_attention(*args, **kwargs)
+                torch.ops.vllm.unified_attention_with_output = tracking_unified_attention
+                logging.info("Monkey-patched unified_attention_with_output for tracking.")
+        except Exception as e:
+            logging.warning("Failed to monkey-patch unified_attention_with_output: %s", e)
+        # ── 끝 ──
 
         try:
             # --- v1 구동 해결책: 현재 스레드가 메인 스레드가 아니면 signal 함수를 임시 패치 ---
@@ -773,49 +792,3 @@ def diagnose_and_fix_dataset(data_path, output_path=None):
     except Exception as e:
         print(f"데이터셋 진단 중 오류: {str(e)}")
         return False
-    
-# -------------------- 대화 요약 함수 수정 --------------------
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-import logging
-
-### CHANGED: Explicitly load LED-base-16384 model and disable auto-padding by tokenizing manually.
-led_model_name = "allenai/led-base-16384"
-led_tokenizer = AutoTokenizer.from_pretrained(led_model_name)
-led_tokenizer.pad_to_multiple_of = None   # Disable auto-padding
-
-led_model = AutoModelForSeq2SeqLM.from_pretrained(led_model_name)
-led_model.config.max_position_embeddings = 16384  # Ensure long sequence support
-
-def summarize_conversation(conversation_text):
-    logging.info("[Summarize] Called with conversation length: %d", len(conversation_text))
-    try:
-        # Manually tokenize without padding (apply truncation during tokenization)
-        inputs = led_tokenizer(
-            conversation_text, 
-            return_tensors="pt", 
-            truncation=True, 
-            padding=False, 
-            max_length=16384
-        )
-        # Generate summary with adjusted parameters to prevent repetition
-        summary_ids = led_model.generate(
-            inputs["input_ids"],
-            max_length=150,
-            min_length=30,
-            no_repeat_ngram_size=3,  # New parameter to prevent repetition
-            temperature=0.7,
-            num_beams=4,             # Using beam search for higher quality output
-            do_sample=True
-        )
-        summary = led_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-        logging.info("[Summarize][LOG] Summarization result: %s", summary)
-        print("[Summarize][PRINT] Summarization result:", summary)
-    except Exception as e:
-        logging.error("[Summarize] Exception during generation: %s", str(e))
-        print("[Summarize][PRINT] Exception during generation:", e)
-        summary = ""  # Return an empty string on error
-    finally:
-        # Force flush logging handlers
-        for handler in logging.getLogger().handlers:
-            handler.flush()
-    return summary

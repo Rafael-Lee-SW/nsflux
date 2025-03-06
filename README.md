@@ -12,7 +12,7 @@ workspace
 ├─ requirements.txt
 ├─ sql.py
 ├─ templates
-│  └─ index_test_streaming.html
+│  └─ index_test.html
 ├─ tracking.py
 ├─ utils.py
 └─ vectorize.ipynb

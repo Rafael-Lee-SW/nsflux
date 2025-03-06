@@ -1,5 +1,5 @@
 # 베이스 이미지 선택
-FROM globeai/flux_ns:2.0
+FROM globeai/flux_ns:1.26
 
 # 작업 디렉토리 설정
 WORKDIR /workspace
