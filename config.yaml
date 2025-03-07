@@ -26,6 +26,7 @@ vllm:
   enable_memory_defrag: True      # v1 신규 기능 활성화
   # 추가할 설정
   disable_sliding_window: True  # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
+  max_model_len: 30000
 
 model:
   quantization_4bit : False # Quantize 4-bit

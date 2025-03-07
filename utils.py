@@ -208,7 +208,7 @@ def load_model(config):
         engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
         engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
-        # engine_args.max_num_seqs = vllm_conf.get("max_num_seqs", 128)
+        # engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
         engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
         # engine_args.block_size = vllm_conf.get("block_size", 128)
         engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization")
@@ -217,6 +217,7 @@ def load_model(config):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
         
         # engine_args.enable_memory_defrag = True # v1 새로운 기능
+        # engine_args.max_model_len = vllm_conf.get("max_model_len") # Context Length
         
         # # ★★ 추가: 슬라이딩 윈도우 비활성화 옵션 적용 ★★
         # if vllm_conf.get("disable_sliding_window", False):
