@@ -217,6 +217,8 @@ class InferenceActor:
         Process a single query from the micro-batch. If 'sse_queue' is given,
         we do partial-token streaming. Otherwise, normal final result.
         """
+        # 스트리밍 요청인 경우 request_id를 미리 초기화
+        request_id = None
         print(
             f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}"
         )
@@ -249,6 +251,29 @@ class InferenceActor:
             
             # 4) LangChain Memory에서 이전 대화 이력(history) 추출
             past_context = memory.load_memory_variables({})["history"]
+            # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
+            if isinstance(past_context, list):
+                recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
+                past_context = "\n\n".join(recent_messages)
+            else:
+                # 문자열인 경우, 메시지 구분자를 "\n\n"으로 가정하여 분리
+                messages = str(past_context).split("\n\n")
+                recent_messages = messages[-5:]
+                past_context = "\n\n".join(recent_messages)
+            
+            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
+            # past_tokens = self.tokenizer.tokenize(str(past_context))
+            # if len(past_tokens) > 4000:
+            #     past_tokens = past_tokens[-4000:]
+            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
+            
+            # ★ 토큰 수 계산 코드 추가 ★
+            # retrieval 자료는 dict나 리스트일 수 있으므로 문자열로 변환하여 토큰화합니다.
+            # 각 입력값을 명시적으로 str()로 변환합니다.
+            past_tokens = self.tokenizer.tokenize(str(past_context))
+            query_tokens = self.tokenizer.tokenize(str(user_input))
+            total_tokens = len(past_tokens) + len(query_tokens)
+            print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, 사용자 입력 질문: {len(query_tokens)}, 총합: {total_tokens}")
             
             # # To Calculate the token
             # tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
@@ -324,6 +349,7 @@ class InferenceActor:
                         outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
                         
                         # >>> CHANGED: Record used chunk IDs and summarize the conversation
+                        
                         chunk_ids_used = []
                         for doc in docs_list:
                             if "chunk_id" in doc:
@@ -339,15 +365,15 @@ class InferenceActor:
                         # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
 
                         # Later, when calling the summarization function:
-                        summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
                         # # After obtaining 'summarized' in _process_single_query:
                         # if not summarized:
                         #     print("[ERROR] Summarization returned an empty string.")
                         # else:
                         #     print(f"[CHECK] Summarized conversation: {summarized}")
-                        
                         memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
                         # >>> CHANGED -----------------------------------------------------
+                        
                         future.set_result(outputs)
 
                 except Exception as e:
@@ -391,6 +417,7 @@ class InferenceActor:
                         print("process_to_format 이후에 ANSWER까지 생성 완료")
                         final_data = [retrieval, answer]
                         outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                        
                         # >>> CHANGED: Record used chunk IDs and update conversation summary
                         chunk_ids_used = []
                         for doc in docs_list:
@@ -402,26 +429,59 @@ class InferenceActor:
                         updated_conversation = prev_summary + "\n" + new_entry
                         # # Summarized CPU 사용
                         # import concurrent.futures
-
+                        
                         # # Create a dedicated pool with more workers (e.g., 4)
                         # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-
+                        
                         # Later, when calling the summarization function:
-                        summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
                         
                         memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
                         # --------------------------------------------------------------------
+                        
                         future.set_result(outputs)
 
                 except Exception as e:
-                    outputs = error_format("내부 PPT에 해당 자료가 없습니다.", 552)
-                    future.set_result(outputs)
+                    # ====== 이 부분에서 SSE를 즉시 닫고 스트리밍 종료 ======
+                    err_msg = f"[ERROR] 처리 중 오류 발생: {str(e)}"
+                    print(err_msg)
 
+                    # SSE 전송 (error 이벤트)
+                    if request_id:
+                        try:
+                            error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                            await self.queue_manager.put_token.remote(request_id, error_token)
+                            # 스트리밍 종료
+                            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                        except Exception as e2:
+                            print(f"[ERROR] SSE 전송 중 추가 예외 발생: {str(e2)}")
+                        finally:
+                            # SSEQueue 정리
+                            await self.close_sse_queue(request_id)
+
+                    # Future 응답도 에러로
+                    future.set_result(error_format(str(e), 500))
+                    return
+                
         except Exception as e:
-            # If error, set the future
-            err_msg = f"처리 중 오류 발생: {str(e)}"
+            err_msg = f"[ERROR] 처리 중 오류 발생: {str(e)}"
             print("[ERROR]", err_msg)
+            # SSE 스트리밍인 경우 error 토큰과 종료 토큰 전송
+            if request_id:
+                try:
+                    error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                    await self.queue_manager.put_token.remote(request_id, error_token)
+                except Exception as e2:
+                    print(f"[ERROR] SSE 전송 중 추가 예외 발생: {str(e2)}")
             future.set_result(error_format(err_msg, 500))
+        finally:
+            # 스트리밍 요청인 경우 반드시 SSE 큐에 종료 토큰을 넣고 큐를 정리한다.
+            if request_id:
+                try:
+                    await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                except Exception as ex:
+                    print(f"[DEBUG] Error putting STREAM_DONE: {str(ex)}")
+                await self.close_sse_queue(request_id)
 
     # ------------------------------------------------------------
     # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
@@ -475,6 +535,21 @@ class InferenceActor:
         # 2) 과거 대화 이력 로드
         try:
             past_context = memory.load_memory_variables({})["history"]
+            # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
+            if isinstance(past_context, list):
+                recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
+                past_context = "\n\n".join(recent_messages)
+            else:
+                # 문자열인 경우, 메시지 구분자를 "\n\n"으로 가정하여 분리
+                messages = str(past_context).split("\n\n")
+                recent_messages = messages[-5:]
+                past_context = "\n\n".join(recent_messages)
+            
+            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
+            # past_tokens = self.tokenizer.tokenize(str(past_context))
+            # if len(past_tokens) > 4000:
+            #     past_tokens = past_tokens[-4000:]
+            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
         except KeyError:
             # 만약 "history" 키가 없으면 빈 문자열로 처리
             print(f"[STREAM] No 'history' in memory for {request_id}, using empty.")
@@ -491,6 +566,16 @@ class InferenceActor:
         # 3) 최종 프롬프트 구성
         final_query = f"{past_context}\n\n[사용자 질문]\n{QU}"
         print(f"[STREAM] final_query = \n{final_query}")
+        
+        # ★ 토큰 수 계산 코드 추가 ★
+        # retrieval 자료는 dict나 리스트일 수 있으므로 문자열로 변환하여 토큰화합니다.
+        retrieval_str = str(retrieval)
+        # 각 입력값을 명시적으로 str()로 변환합니다.
+        past_tokens = self.tokenizer.tokenize(str(past_context))
+        query_tokens = self.tokenizer.tokenize(str(QU))
+        retrieval_tokens = self.tokenizer.tokenize(retrieval_str)
+        total_tokens = len(self.tokenizer.tokenize(str(final_query))) + len(retrieval_tokens)
+        print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, RAG 검색 자료: {len(retrieval_tokens)}, 사용자 구체화 질문: {len(query_tokens)}, 총합: {total_tokens}")
         
         partial_accumulator = ""
 
@@ -546,7 +631,7 @@ class InferenceActor:
             # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
 
             # # Later, when calling the summarization function:
-            summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+            summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
             # if not summarized:
             #     print("[ERROR] Summarization returned an empty string.")
             # else:

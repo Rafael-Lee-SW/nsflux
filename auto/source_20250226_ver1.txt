@@ -906,6 +906,7 @@ class InferenceActor:
                         outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
                         
                         # >>> CHANGED: Record used chunk IDs and summarize the conversation
+                        
                         chunk_ids_used = []
                         for doc in docs_list:
                             if "chunk_id" in doc:
@@ -915,21 +916,21 @@ class InferenceActor:
                         new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
                         updated_conversation = prev_summary + "\n" + new_entry
                         # Summarized CPU 사용
-                        import concurrent.futures
+                        # import concurrent.futures
 
                         # Create a dedicated pool with more workers (e.g., 4)
-                        summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+                        # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
 
                         # Later, when calling the summarization function:
-                        summarized = await loop.run_in_executor(summary_pool, summarize_conversation, updated_conversation)
+                        summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
                         # # After obtaining 'summarized' in _process_single_query:
                         # if not summarized:
                         #     print("[ERROR] Summarization returned an empty string.")
                         # else:
                         #     print(f"[CHECK] Summarized conversation: {summarized}")
-                        
                         memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
                         # >>> CHANGED -----------------------------------------------------
+                        
                         future.set_result(outputs)
 
                 except Exception as e:
@@ -973,6 +974,7 @@ class InferenceActor:
                         print("process_to_format 이후에 ANSWER까지 생성 완료")
                         final_data = [retrieval, answer]
                         outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                        
                         # >>> CHANGED: Record used chunk IDs and update conversation summary
                         chunk_ids_used = []
                         for doc in docs_list:
@@ -982,22 +984,41 @@ class InferenceActor:
                         prev_summary = memory.load_memory_variables({}).get("summary", "")
                         new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
                         updated_conversation = prev_summary + "\n" + new_entry
-                        # Summarized CPU 사용
-                        import concurrent.futures
-
-                        # Create a dedicated pool with more workers (e.g., 4)
-                        summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-
+                        # # Summarized CPU 사용
+                        # import concurrent.futures
+                        
+                        # # Create a dedicated pool with more workers (e.g., 4)
+                        # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+                        
                         # Later, when calling the summarization function:
-                        summarized = await loop.run_in_executor(summary_pool, summarize_conversation, updated_conversation)
+                        summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
                         
                         memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
                         # --------------------------------------------------------------------
+                        
                         future.set_result(outputs)
 
                 except Exception as e:
-                    outputs = error_format("내부 PPT에 해당 자료가 없습니다.", 552)
-                    future.set_result(outputs)
+                    # ====== 이 부분에서 SSE를 즉시 닫고 스트리밍 종료 ======
+                    err_msg = f"[ERROR] 처리 중 오류 발생: {str(e)}"
+                    print(err_msg)
+
+                    # SSE 전송 (error 이벤트)
+                    if request_id:
+                        try:
+                            error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                            await self.queue_manager.put_token.remote(request_id, error_token)
+                            # 스트리밍 종료
+                            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                        except Exception as e2:
+                            print(f"[ERROR] SSE 전송 중 추가 예외 발생: {str(e2)}")
+                        finally:
+                            # SSEQueue 정리
+                            await self.close_sse_queue(request_id)
+
+                    # Future 응답도 에러로
+                    future.set_result(error_format(str(e), 500))
+                    return
 
         except Exception as e:
             # If error, set the future
@@ -1121,14 +1142,14 @@ class InferenceActor:
             new_entry = f"User: {user_input}\nAssistant: {final_text}\nUsed Chunks: {chunk_ids_used}\n"
             updated_conversation = prev_summary + "\n" + new_entry
             # Inside _process_single_query, after getting the summarized text:
-            # Summarized CPU 사용
-            import concurrent.futures
+            # # Summarized CPU 사용
+            # import concurrent.futures
 
-            # Create a dedicated pool with more workers (e.g., 4)
-            summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+            # # Create a dedicated pool with more workers (e.g., 4)
+            # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
 
             # # Later, when calling the summarization function:
-            summarized = await loop.run_in_executor(summary_pool, summarize_conversation, updated_conversation)
+            summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
             # if not summarized:
             #     print("[ERROR] Summarization returned an empty string.")
             # else:
@@ -2139,24 +2160,42 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
     config = kwargs.get("config")
 
     if TA == "yes":  # Table 이 필요하면
-        print("[SOOWAN]: execute_rag : 테이블 필요")
-        # SQL
-        final_sql_query, title, explain, table_json, chart_json = generate_sql(
-            QU, model, tokenizer, config
-        )
+        print("[SOOWAN]: execute_rag : 테이블 필요 (TA == yes). SQL 생성 시작합니다.")
+        try:
+            result = generate_sql(QU, model, tokenizer, config)
+        except Exception as e:
+            # 1) generate_sql() 자체가 도중에 예외를 던지는 경우
+            print("[ERROR] generate_sql() 도중 예외 발생:", e)
+            # 멈추지 않고, 에러 형식으로 데이터를 만들어 반환
+            docs = "테이블 조회 시도 중 예외가 발생했습니다. " \
+                "해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다."
+            docs_list = []
+            return docs, docs_list
 
-        # docs : 다음 LLM Input 으로 만들것 (String)
-        PROMPT = f"""\ 
-다음은 SQL 추출에 사용된 쿼리문이야 : {final_sql_query}. \
-추가 설명 : {explain}. \
-실제 SQL 추출된 데이터 : {str(table_json)}. \
-"""
-        # docs_list : 사용자들에게 보여줄 정보 (List)
+        # 2) 함수가 정상 실행됐지만 결과가 None인 경우(= SQL 쿼리 결과가 없거나 오류)
+        if result is None:
+            print("[WARNING] generate_sql()에서 None을 반환했습니다. " 
+                "SQL 수행 결과가 없거나 에러가 발생한 것일 수 있습니다.")
+            docs = "테이블 조회 결과가 비어 있습니다. " \
+                "조회할 데이터가 없거나 SQL 오류가 발생했습니다."
+            docs_list = []
+            return docs, docs_list
+
+        # 정상적인 경우(튜플 언패킹)
+        final_sql_query, title, explain, table_json, chart_json = result
+
+        # docs : LLM 입력용 (string)
+        PROMPT = (
+            f"다음은 SQL 추출에 사용된 쿼리문: {final_sql_query}\n\n"
+            f"추가 설명: {explain}\n\n"
+            f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
+        )
+        # docs_list : 사용자에게 보여줄 정보(List)
         docs_list = [
             {"title": title, "data": table_json},
             {"title": "시각화 차트", "data": chart_json},
         ]
-
+        print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
         return PROMPT, docs_list
 
     else:
@@ -2931,23 +2970,28 @@ def generate_sql(query, model, tokenizer, config):
     final_sql_query, title, explain, outputs_2 = second_llm(model, tokenizer, relevant_metadata, sql_query, query, retrival_metadata, parsed_columns, config)
     print(f'SecondLLM\n제목:{title}\n설명:{explain}\nSQL:{final_sql_query}')
     print(config.beep)
-    columns, results = execute_sql_query(final_sql_query, config)   # SQL 쿼리 실행 (데이터 조회)
-    print(f'Result\n컬럼:{columns}\n결과:{results}')
-    print(config.beep)
+    
+        # SQL 실행
+    columns, results = execute_sql_query(final_sql_query, config)
+    if columns is None and results is None:
+        # DB 에러 발생 등
+        print("[SQL Debug] DB 처리 중 오류가 발생했거나 SQL이 잘못되어 결과 없음.")
+        return None
+
+    # 결과 처리
+    if not results:
+        print("[SQL Debug] SQL 실행 결과가 비어 있습니다. (0개 행)")
+        # None을 반환하여 상위에서 체크하게끔.
+        return None
 
     # result -> json
     table_json = create_table_json(columns, results)
     chart_json = create_chart_json(columns, results)
     
-    # 결과 출력
-    if results:
-        print("조회된 컬럼:\n", columns)
-        for row in results:
-            print(row)
-        return final_sql_query, title, explain, table_json, chart_json
-    else:
-        print("조회 결과가 없습니다.")
-        return None
+    print("[SQL Debug] 조회된 컬럼:", columns)
+    print("[SQL Debug] 조회된 결과(Row) 예시:", results[:3], "...")
+    return final_sql_query, title, explain, table_json, chart_json
+
     
 def first_llm(model, tokenizer, column_usage, user_query, config):
     PROMPT =\
@@ -3225,295 +3269,272 @@ def log_batch_info(batch):
     logging.info(f"[Batch Tracking] Batch size: {batch_size}, Token counts: {token_counts}")
 
 ```
+# Server error log
+```log
 
-PC: @     0x778eafc1fbcf  (unknown)  poll
-    @     0x778eafb49520  (unknown)  (unknown)
-[2025-03-06 09:02:45,711 E 1 1] logging.cc:460: *** SIGTERM received at time=1741251765 on cpu 28 ***
-[2025-03-06 09:02:45,711 E 1 1] logging.cc:460: PC: @     0x778eafc1fbcf  (unknown)  poll
-[2025-03-06 09:02:45,711 E 1 1] logging.cc:460:     @     0x778eafb49520  (unknown)  (unknown)
-INFO 03-06 09:02:52 __init__.py:190] Automatically detected platform cuda.
-2025-03-06 09:02:55,476 INFO Entering random_seed()
-2025-03-06 09:02:55,477 INFO Exiting random_seed() -- Elapsed: 0.00s
-
-'########:'##::::'##:'##:::::::'##::::'##::::::::::'##::: ##::'######::
- ##.....:: ##:::: ##: ##:::::::. ##::'##::::::::::: ###:: ##:'##... ##:
- ##::::::: ##:::: ##: ##::::::::. ##'##:::::::::::: ####: ##: ##:::..::
- ######::: ##:::: ##: ##:::::::::. ###::::::::::::: ## ## ##:. ######::
- ##...:::: ##:::: ##: ##::::::::: ## ##:::::::::::: ##. ####::..... ##:
- ##::::::: ##:::: ##: ##:::::::: ##:. ##::::::::::: ##:. ###:'##::: ##:
- ##:::::::. #######:: ########: ##:::. ##:'#######: ##::. ##:. ######::
-..:::::::::.......:::........::..:::::..::.......::..::::..:::......:::
-
-2025-03-06 09:02:56,379 INFO worker.py:1832 -- Started a local Ray instance. View the dashboard at http://172.17.0.3:8265
-Ray initialized. DashBoard running at http://192.222.54.254:8265
-(ProxyActor pid=594) INFO 2025-03-06 09:02:58,324 proxy 172.17.0.3 -- Proxy starting on node fb972f615d56cb5de9d854b0310a1c6ddaadf93e6dafd2de39e80e9c (HTTP port: 8000).
-INFO 2025-03-06 09:02:58,374 serve 1 -- Started Serve in namespace "serve".
-INFO 2025-03-06 09:02:58,421 serve 1 -- Connecting to existing Serve app in namespace "serve". New http options will not be applied.
-(ProxyActor pid=594) INFO 2025-03-06 09:02:58,369 proxy 172.17.0.3 -- Got updated endpoints: {}.
-(ServeController pid=590) INFO 2025-03-06 09:02:58,545 controller 590 -- Deploying new version of Deployment(name='inference', app='default') (initial target replicas: 1).
-(ProxyActor pid=594) INFO 2025-03-06 09:02:58,547 proxy 172.17.0.3 -- Got updated endpoints: {Deployment(name='inference', app='default'): EndpointInfo(route='/', app_is_cross_language=False)}.
-(ProxyActor pid=594) INFO 2025-03-06 09:02:58,570 proxy 172.17.0.3 -- Started <ray.serve._private.router.SharedRouterLongPollClient object at 0x77c9fff6cc10>.
-(ServeController pid=590) INFO 2025-03-06 09:02:58,647 controller 590 -- Adding 1 replica to Deployment(name='inference', app='default').
-(ServeReplica:default:inference pid=593) INFO 03-06 09:03:01 __init__.py:190] Automatically detected platform cuda.
-INFO 2025-03-06 09:03:04,561 serve 1 -- Application 'default' is ready at http://127.0.0.1:8000/.
-INFO 2025-03-06 09:03:04,562 serve 1 -- Deployed app 'default' successfully.
-(pid=598) INFO 03-06 09:03:07 __init__.py:190] Automatically detected platform cuda.
-현재 사용 중인 데이터 :  data/0228_DB_.json
- * Serving Flask app 'app'
- * Debug mode: off
-2025-03-06 09:03:07,794 INFO WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
- * Running on all addresses (0.0.0.0)
- * Running on http://127.0.0.1:5000
- * Running on http://172.17.0.3:5000
-2025-03-06 09:03:07,794 INFO Press CTRL+C to quit
-(InferenceActor pid=598) 2025-03-06 09:03:09,520 INFO Entering load_model()
-(InferenceActor pid=598) 2025-03-06 09:03:09,520 INFO Starting model loading...
-(InferenceActor pid=598) Loading embedding model
-(InferenceActor pid=598) 2025-03-06 09:03:09,744 INFO Entering find_weight_directory()
-(InferenceActor pid=598) 2025-03-06 09:03:09,744 INFO Exiting find_weight_directory() -- Elapsed: 0.00s
-(InferenceActor pid=598) :Embedding tokenizer loaded successfully.
-(InferenceActor pid=598) vLLM mode enabled. Starting to load main LLM model via vLLM.
-(InferenceActor pid=598) Using pure option of Model(No quantization)
-(InferenceActor pid=598) EngineArgs setting be finished
-(InferenceActor pid=598) 비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.
-(InferenceActor pid=598) INFO 03-06 09:03:14 config.py:542] This model supports multiple tasks: {'classify', 'generate', 'embed', 'reward', 'score'}. Defaulting to 'generate'.
-(InferenceActor pid=598) INFO 03-06 09:03:14 config.py:1556] Chunked prefill is enabled with max_num_batched_tokens=8192.
-(InferenceActor pid=598) INFO 03-06 09:03:15 core.py:47] Initializing a V1 LLM engine (v0.7.2) with config: model='/workspace/huggingface/models--google--gemma-2-27b-it/snapshots/aaf20e6b9f4c0fcf043f6fb2a2068419086d77b0', speculative_config=None, tokenizer='google/gemma-2-27b-it', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, override_neuron_config=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=8192, download_dir='/workspace/huggingface', load_format=LoadFormat.SAFETENSORS, tensor_parallel_size=1, pipeline_parallel_size=1, disable_custom_all_reduce=True, quantization=None, enforce_eager=False, kv_cache_dtype=auto,  device_config=cuda, decoding_config=DecodingConfig(guided_decoding_backend='xgrammar'), observability_config=ObservabilityConfig(otlp_traces_endpoint=None, collect_model_forward_time=False, collect_model_execute_time=False), seed=0, served_model_name=/workspace/huggingface/models--google--gemma-2-27b-it/snapshots/aaf20e6b9f4c0fcf043f6fb2a2068419086d77b0, num_scheduler_steps=1, multi_step_stream_outputs=True, enable_prefix_caching=True, chunked_prefill_enabled=True, use_async_output_proc=True, disable_mm_preprocessor_cache=False, mm_processor_kwargs=None, pooler_config=None, compilation_config={"level":3,"custom_ops":["none"],"splitting_ops":["vllm.unified_attention","vllm.unified_attention_with_output"],"use_inductor":true,"compile_sizes":[],"use_cudagraph":true,"cudagraph_num_of_warmups":1,"cudagraph_capture_sizes":[512,504,496,488,480,472,464,456,448,440,432,424,416,408,400,392,384,376,368,360,352,344,336,328,320,312,304,296,288,280,272,264,256,248,240,232,224,216,208,200,192,184,176,168,160,152,144,136,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,4,2,1],"max_capture_size":512}
-(InferenceActor pid=598) WARNING 03-06 09:03:15 registry.py:340] `mm_limits` has already been set for model=/workspace/huggingface/models--google--gemma-2-27b-it/snapshots/aaf20e6b9f4c0fcf043f6fb2a2068419086d77b0, and will be overwritten by the new values.
-(InferenceActor pid=598) INFO 03-06 09:03:15 gpu_model_runner.py:867] Starting to load model /workspace/huggingface/models--google--gemma-2-27b-it/snapshots/aaf20e6b9f4c0fcf043f6fb2a2068419086d77b0...
-(InferenceActor pid=598) INFO 03-06 09:03:15 cuda.py:158] Using Flash Attention backend on V1 engine.
-Loading safetensors checkpoint shards:   0% Completed | 0/12 [00:00<?, ?it/s]
-(InferenceActor pid=598) WARNING 03-06 09:03:15 topk_topp_sampler.py:46] FlashInfer is not available. Falling back to the PyTorch-native implementation of top-p & top-k sampling. For the best performance, please install FlashInfer.
-Loading safetensors checkpoint shards:   8% Completed | 1/12 [00:00<00:06,  1.58it/s]
-Loading safetensors checkpoint shards:  17% Completed | 2/12 [00:01<00:06,  1.46it/s]
-Loading safetensors checkpoint shards:  25% Completed | 3/12 [00:02<00:06,  1.43it/s]
-Loading safetensors checkpoint shards:  33% Completed | 4/12 [00:02<00:03,  2.09it/s]
-Loading safetensors checkpoint shards:  42% Completed | 5/12 [00:02<00:03,  1.83it/s]
-Loading safetensors checkpoint shards:  50% Completed | 6/12 [00:03<00:03,  1.67it/s]
-Loading safetensors checkpoint shards:  58% Completed | 7/12 [00:04<00:03,  1.58it/s]
-Loading safetensors checkpoint shards:  67% Completed | 8/12 [00:04<00:02,  1.53it/s]
-Loading safetensors checkpoint shards:  75% Completed | 9/12 [00:05<00:02,  1.48it/s]
-Loading safetensors checkpoint shards:  83% Completed | 10/12 [00:06<00:01,  1.46it/s]
-Loading safetensors checkpoint shards:  92% Completed | 11/12 [00:07<00:00,  1.45it/s]
-Loading safetensors checkpoint shards: 100% Completed | 12/12 [00:07<00:00,  1.44it/s]
-Loading safetensors checkpoint shards: 100% Completed | 12/12 [00:07<00:00,  1.54it/s]
-(InferenceActor pid=598)
-(InferenceActor pid=598) INFO 03-06 09:03:24 gpu_model_runner.py:872] Loading model weights took 50.7165 GB
-(InferenceActor pid=598) INFO 03-06 09:03:32 backends.py:579] Using cache directory: /root/.cache/vllm/torch_compile_cache/0b848206e5/rank_0 for vLLM's torch.compile
-(InferenceActor pid=598) INFO 03-06 09:03:32 backends.py:587] Dynamo bytecode transform time: 8.25 s
-(InferenceActor pid=598) INFO 03-06 09:03:32 backends.py:209] Directly lookup the graph for shape None from the cache
-(InferenceActor pid=598) INFO 03-06 09:03:38 backends.py:323] Compiling a graph for general shape takes 5.66 s
-(InferenceActor pid=598) INFO 03-06 09:03:40 monitor.py:33] torch.compile takes 13.91 s in total
-(InferenceActor pid=598) INFO 03-06 09:03:41 kv_cache_utils.py:407] # GPU blocks: 2806
-(InferenceActor pid=598) INFO 03-06 09:03:41 kv_cache_utils.py:410] Maximum concurrency for 8192 tokens per request: 5.48x
-(InferenceActor pid=598) INFO 03-06 09:03:59 gpu_model_runner.py:1043] Graph capturing finished in 19 secs, took 0.89 GiB
-(InferenceActor pid=598) INFO 03-06 09:03:59 core.py:91] init engine (profile, create kv cache, warmup model) took 35.76 seconds
-(InferenceActor pid=598) DEBUG: vLLM engine successfully created.
-(InferenceActor pid=598) DEBUG: Loading main LLM tokenizer with token authentication.
-(InferenceActor pid=598) 2025-03-06 09:04:00,444 INFO Exiting load_model() -- Elapsed: 50.92s
-(InferenceActor pid=598) 2025-03-06 09:04:00,445 INFO Entering load_data()
-(InferenceActor pid=598)
-(InferenceActor pid=598) [DEBUG] ===== 벡터 형식 검사 시작 =====
-(InferenceActor pid=598) [DEBUG] ===== 벡터 형식 검사 종료 =====
-(InferenceActor pid=598)
-(InferenceActor pid=598) 2025-03-06 09:04:01,806 INFO Exiting load_data() -- Elapsed: 1.36s
-(InferenceActor pid=598) Data loaded! Length: 3511, Missing times: 0
-(InferenceActor pid=598) === [In-Flight Batching] Waiting for first item in request_queue... ===
-2025-03-06 09:04:04,232 INFO 14.39.16.61 - - [06/Mar/2025 09:04:04] "GET /chat HTTP/1.1" 200 -
-[DEBUG] /query_stream (POST) called with user_input='디지털 전략', request_id='1741251843480-8033'
-[DEBUG] Built http_query={'qry_contents': '디지털 전략', 'request_id': '1741251843480-8033'}
-INFO 2025-03-06 09:04:07,932 serve 1 -- Started <ray.serve._private.router.SharedRouterLongPollClient object at 0x79b58191fc10>.
-[DEBUG] streaming request_id=1741251843480-8033
-(ServeReplica:default:inference pid=593) INFO 2025-03-06 09:04:07,987 default_inference 9xgcuvdu 71ff39a0-4d23-4a81-987b-1aee4614f79a -- CALL process_query_stream OK 47.0ms
-(InferenceActor pid=598) 2025-03-06 09:04:08,036 INFO [Batch Tracking] Batch size: 1, Token counts: [0]
-(InferenceActor pid=598) [STREAM] process_query_stream => request_id=1741251843480-8033, http_query={'qry_contents': '디지털 전략', 'request_id': '1741251843480-8033'}
-(InferenceActor pid=598) [STREAM] Created SSE queue for request_id=1741251843480-8033
-(InferenceActor pid=598) [STREAM] Putting item into request_queue for request_id=1741251843480-8033
-(InferenceActor pid=598) [STREAM] Done putting item in queue => request_id=1741251843480-8033
-(InferenceActor pid=598) [In-Flight Batching] Got the first request. Attempting to fill a batch...
-(InferenceActor pid=598) [In-Flight Batching] Timeout reached => proceeding with the batch.
-(InferenceActor pid=598) 2025-03-06 09:04:08,071 INFO 배치 처리 전 상태 - Process Memory: RSS=1241.11 MB, VMS=24102.37 MB
-(InferenceActor pid=598) 2025-03-06 09:04:08,071 INFO 배치 처리 전 상태 - GPU Memory: allocated=0.00 MB, reserved=0.00 MB
-(InferenceActor pid=598) /workspace/ray_utils.py:243: LangChainDeprecationWarning: Please see the migration guide at: https://python.langchain.com/docs/versions/migrating_memory/
-(InferenceActor pid=598)   self.memory_map[request_id] = ConversationBufferMemory(return_messages=True)
-(InferenceActor pid=598) 2025-03-06 09:04:08,072 INFO Entering load_data()
-(InferenceActor pid=598) 2025-03-06 09:04:08,072 INFO Exiting load_data() -- Elapsed: 0.00s
-(InferenceActor pid=598) 2025-03-06 09:04:08,072 INFO Entering query_sort()
-(InferenceActor pid=598) 2025-03-06 09:04:08,072 INFO Exiting query_sort() -- Elapsed: 0.00s
-(InferenceActor pid=598) 2025-03-06 09:04:08,072 INFO Entering collect_vllm_text()
-(InferenceActor pid=598) 2025-03-06 09:04:08,072 INFO Exiting collect_vllm_text() -- Elapsed: 0.00s
-(InferenceActor pid=598) [DEBUG] _process_single_query 시작: 09:04:08, 요청 내용: {'request_id': '1741251843480-8033', 'http_query': {'qry_contents': '디지털 전략', 'request_id': '1741251843480-8033'}}, 현재 스레드: AsyncIO Thread: default
-(InferenceActor pid=598) [STREAM] _process_single_query: request_id=1741251843480-8033
-(InferenceActor pid=598) Using cached data
-(InferenceActor pid=598)    ... calling query_sort() ...
-(InferenceActor pid=598) ##### query_sort is starting #####
-(InferenceActor pid=598) INFO 03-06 09:04:08 async_llm.py:161] Added request 10b6e5c3-3377-4c45-9208-7a7b3274721c.
-(InferenceActor pid=598) INFO 03-06 09:04:08 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) 2025-03-06 09:04:09,353 INFO Entering execute_rag()
-(InferenceActor pid=598) 2025-03-06 09:04:09,353 INFO Entering expand_time_range_if_needed()
-(InferenceActor pid=598) 2025-03-06 09:04:09,353 INFO Exiting expand_time_range_if_needed() -- Elapsed: 0.00s
-(InferenceActor pid=598) 2025-03-06 09:04:09,353 INFO Entering retrieve()
-(InferenceActor pid=598) 2025-03-06 09:04:09,353 INFO Retrieval for query: '디지털 전략'
-(InferenceActor pid=598) 2025-03-06 09:04:09,353 INFO Available documents: 3511
-(InferenceActor pid=598) 2025-03-06 09:04:09,353 INFO Entering cal_sim_score()
-(InferenceActor pid=598) 2025-03-06 09:04:09,353 INFO Entering embed()
-(InferenceActor pid=598) [DEBUG query_sort] Generated answer:
-(InferenceActor pid=598) <query/>디지털 전략에 대해 알려줘<query>
-(InferenceActor pid=598) <keyword/>디지털 전략<keyword>
-(InferenceActor pid=598) <table/>no<table>
-(InferenceActor pid=598) <time/>all<time>
-(InferenceActor pid=598)
-(InferenceActor pid=598)
-(InferenceActor pid=598) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-(InferenceActor pid=598) 구체화 질문: 디지털 전략에 대해 알려줘, 키워드 : 디지털 전략, 테이블 필요 유무: no, 시간: 1900-01-01:2099-01-01
-(InferenceActor pid=598) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-(InferenceActor pid=598)    ... query_sort => QU=디지털 전략에 대해 알려줘, KE=디지털 전략, TA=no, TI=1900-01-01:2099-01-01
-(InferenceActor pid=598) [SOOWAN] TA is No, before make a retrieval
-(InferenceActor pid=598) [SOOWAN]: execute_rag : 진입
-(InferenceActor pid=598) [SOOWAN]: execute_rag : 테이블 필요없음
-(InferenceActor pid=598) [시간 범위] 전체 기간 사용
-(InferenceActor pid=598) [RETRIEVE] 검색에 사용되는 문서 수: 3511
-(InferenceActor pid=598) [SOOWAN] retrieve : 진입
-(InferenceActor pid=598) [SOOWAN] cal_sim_score : 진입 / query :  디지털 전략
-(InferenceActor pid=598) [SOOWAN] embed: 진입
-(InferenceActor pid=598) 2025-03-06 09:04:09,368 INFO Exiting embed() -- Elapsed: 0.01s
-(InferenceActor pid=598) [SOOWAN] embed: 완료
-(InferenceActor pid=598) [SOOWAN] cal_sim_score : query_V 생산 완료
-(InferenceActor pid=598) [SOOWAN] cal_sim_score : query_V.shape == 1
-(InferenceActor pid=598) 2025-03-06 09:04:09,478 INFO Exiting cal_sim_score() -- Elapsed: 0.12s
-(InferenceActor pid=598) 2025-03-06 09:04:09,479 INFO Similarity score shape: (3511, 1, 1)
-(InferenceActor pid=598) 2025-03-06 09:04:09,479 INFO Entering cal_bm25_score()
-(InferenceActor pid=598) 2025-03-06 09:04:09,479 INFO Starting BM25 calculation for query: 디지털 전략
-(InferenceActor pid=598) 2025-03-06 09:04:09,479 INFO Document count: 3511
-(InferenceActor pid=598) 2025-03-06 09:04:11,340 INFO BM25 scores: min=0.7488, max=15.9034, mean=3.3582
-(InferenceActor pid=598) 2025-03-06 09:04:11,361 INFO Exiting cal_bm25_score() -- Elapsed: 1.88s
-(InferenceActor pid=598) 2025-03-06 09:04:11,361 INFO BM25 score shape: (3511,)
-(InferenceActor pid=598) 2025-03-06 09:04:11,362 INFO Entering min_max_scaling()
-(InferenceActor pid=598) 2025-03-06 09:04:11,362 INFO Exiting min_max_scaling() -- Elapsed: 0.00s
-(InferenceActor pid=598) 2025-03-06 09:04:11,362 INFO Entering min_max_scaling()
-(InferenceActor pid=598) 2025-03-06 09:04:11,362 INFO Exiting min_max_scaling() -- Elapsed: 0.00s
-(InferenceActor pid=598) 2025-03-06 09:04:11,394 INFO Top 5 document indices: [ 878 1150 1291  118   13]
-(InferenceActor pid=598) 2025-03-06 09:04:11,394 INFO Top 5 document scores: [0.46520951627007034, 0.45045912502518204, 0.44683918593636063, 0.4433420920204213, 0.43589565394630936]
-(InferenceActor pid=598) 2025-03-06 09:04:11,394 INFO Top document titles: ['우수 선화주기업 인증제도 현장평가 > 7. 차별화 서비스 제공현황', '[신성장전략실] 디지털운영팀 > 23’ 차세대 운영 인프라 아키텍쳐 구축 (TO BE)', '[신성장전략실] 디지털운영팀장 > 운영 영역 수행 사항', '[신성장전략실] 신성장실현팀 > ’24년 중점 추진방향 “개요”', '[참고] 영업본부 대응案 > 신성장실현 추진 (멀티모달, 플랫폼, IoT)']
-(InferenceActor pid=598) 2025-03-06 09:04:11,395 INFO Exiting retrieve() -- Elapsed: 2.04s
-(InferenceActor pid=598) 2025-03-06 09:04:11,395 INFO Exiting execute_rag() -- Elapsed: 2.04s
-(InferenceActor pid=598) 2025-03-06 09:04:11,395 INFO Entering process_to_format()
-(InferenceActor pid=598) 2025-03-06 09:04:11,395 INFO Exiting process_to_format() -- Elapsed: 0.00s
-(InferenceActor pid=598)
-(InferenceActor pid=598) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-(InferenceActor pid=598)
-(InferenceActor pid=598) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-(InferenceActor pid=598)
-(InferenceActor pid=598) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-(InferenceActor pid=598)
-(InferenceActor pid=598) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-(InferenceActor pid=598)
-(InferenceActor pid=598) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-(InferenceActor pid=598) -------------자료 검색 성공--------------
-(InferenceActor pid=598) [SOOWAN] process_to_format 진입
-(InferenceActor pid=598) [SOOWAN] 타입 : 리트리버
-(InferenceActor pid=598) [SOOWAN] TA is No, and make a retrieval is successed
-(InferenceActor pid=598) [STREAM] Starting partial generation for request_id=1741251843480-8033
-(InferenceActor pid=598) [STREAM] _stream_partial_answer => request_id=1741251843480-8033, chart=None
-2025-03-06 09:04:11,397 INFO 14.39.16.61 - - [06/Mar/2025 09:04:11] "POST /query_stream HTTP/1.1" 200 -
-(InferenceActor pid=598) 2025-03-06 09:04:11,397 INFO Entering generate_answer_stream()
-(InferenceActor pid=598) 2025-03-06 09:04:11,397 INFO Exiting generate_answer_stream() -- Elapsed: 0.00s
-(InferenceActor pid=598) 2025-03-06 09:04:11,397 INFO Entering collect_vllm_text_stream()
-(InferenceActor pid=598) 2025-03-06 09:04:11,397 INFO Exiting collect_vllm_text_stream() -- Elapsed: 0.00s
-(InferenceActor pid=598) [STREAM] Sent reference data for request_id=1741251843480-8033
-(InferenceActor pid=598) [STREAM] final_query =
-(InferenceActor pid=598) []
-(InferenceActor pid=598)
-(InferenceActor pid=598) [사용자 질문]
-(InferenceActor pid=598) 디지털 전략에 대해 알려줘
-(InferenceActor pid=598) [STREAM] SSE: calling generate_answer_stream for request_id=1741251843480-8033
-(InferenceActor pid=598) INFO 03-06 09:04:11 async_llm.py:161] Added request 48546e68-d62e-4b93-92db-5cffb87e61ae.
-(InferenceActor pid=598) INFO 03-06 09:04:13 loggers.py:72] Avg prompt throughput: 619.7 tokens/s, Avg generation throughput: 22.3 tokens/s, Running: 1 reqs, Waiting: 0 reqs GPU KV cache usage: 5.3%.
-(InferenceActor pid=598) INFO 03-06 09:04:18 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 42.9 tokens/s, Running: 1 reqs, Waiting: 0 reqs GPU KV cache usage: 5.8%.
-(InferenceActor pid=598) INFO 03-06 09:04:23 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 42.7 tokens/s, Running: 1 reqs, Waiting: 0 reqs GPU KV cache usage: 6.4%.
-(InferenceActor pid=598) INFO 03-06 09:04:28 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 42.8 tokens/s, Running: 1 reqs, Waiting: 0 reqs GPU KV cache usage: 6.7%.
-(InferenceActor pid=598) INFO 03-06 09:04:33 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 42.7 tokens/s, Running: 1 reqs, Waiting: 0 reqs GPU KV cache usage: 7.3%.
-(InferenceActor pid=598) INFO 03-06 09:04:38 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 42.6 tokens/s, Running: 1 reqs, Waiting: 0 reqs GPU KV cache usage: 7.8%.
-(InferenceActor pid=598) 2025-03-06 09:04:38,319 INFO Entering process_to_format()
-(InferenceActor pid=598) 2025-03-06 09:04:38,319 INFO Exiting process_to_format() -- Elapsed: 0.00s
-(InferenceActor pid=598) 2025-03-06 09:04:38,319 INFO Entering process_format_to_response()
-(InferenceActor pid=598) 2025-03-06 09:04:38,319 INFO Exiting process_format_to_response() -- Elapsed: 0.00s
-(InferenceActor pid=598) [SOOWAN] process_to_format 진입
-(InferenceActor pid=598) [SOOWAN] 타입 : 대답
-(InferenceActor pid=598) 2025-03-06 09:04:38,372 INFO [Summarize] Called with conversation length: 1959
-(InferenceActor pid=598) 2025-03-06 09:04:38,380 INFO [Summarize] Total tokens: 3553
-(InferenceActor pid=598) 2025-03-06 09:04:38,380 INFO [Summarize] Splitting conversation into chunks of max 2048 tokens.
-(InferenceActor pid=598) 2025-03-06 09:04:38,390 INFO [Summarize] Created 2 chunks.
-(InferenceActor pid=598) 2025-03-06 09:04:38,390 INFO [Summarize] Processing chunk 0 with 1129 characters.
-(InferenceActor pid=598) 2025-03-06 09:04:38,391 INFO [Summarize] Chunk 0 token count: 2049
-(InferenceActor pid=598) 2025-03-06 09:04:38,394 INFO [Summarize] Chunk 0 input shape: torch.Size([1, 2048])
-(InferenceActor pid=598) INFO 03-06 09:04:43 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 1.4 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:04:48 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:04:53 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:04:58 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:03 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:08 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:13 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:18 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:23 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:28 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:33 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:38 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:43 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:48 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:53 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:05:58 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:03 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:08 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:13 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:18 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:23 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:28 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:33 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592)    ... query_sort => QU=남성해운이 사용하는 디지털 시스템의 장점과 단점은 뭐야?, KE=남성해운 디지털 시스템 장점 단점, TA=no, TI=1900-01-01:2099-01-01
+(InferenceActor pid=592) [SOOWAN] TA is No, before make a retrieval
+(InferenceActor pid=592) [SOOWAN]: execute_rag : 진입
+(InferenceActor pid=592) [SOOWAN]: execute_rag : 테이블 필요없음
+(InferenceActor pid=592) [시간 범위] 전체 기간 사용
+(InferenceActor pid=592) [RETRIEVE] 검색에 사용되는 문서 수: 3511
+(InferenceActor pid=592) [SOOWAN] retrieve : 진입
+(InferenceActor pid=592) [SOOWAN] cal_sim_score : 진입 / query :  남성해운 디지털 시스템 장점 단점
+(InferenceActor pid=592) [SOOWAN] embed: 진입
+(InferenceActor pid=592) [SOOWAN] embed: 완료
+(InferenceActor pid=592) [SOOWAN] cal_sim_score : query_V 생산 완료
+(InferenceActor pid=592) [SOOWAN] cal_sim_score : query_V.shape == 1
+(InferenceActor pid=592) 2025-03-07 05:24:13,546 INFO Exiting cal_sim_score() -- Elapsed: 0.14s
+(InferenceActor pid=592) 2025-03-07 05:24:13,547 INFO Similarity score shape: (3511, 1, 1)
+(InferenceActor pid=592) 2025-03-07 05:24:13,547 INFO Entering cal_bm25_score()
+(InferenceActor pid=592) 2025-03-07 05:24:13,547 INFO Starting BM25 calculation for query: 남성해운 디지털 시스템 장점 단점
+(InferenceActor pid=592) 2025-03-07 05:24:13,547 INFO Document count: 3511
+(InferenceActor pid=592) 2025-03-07 05:24:15,439 INFO BM25 scores: min=0.7488, max=23.9867, mean=7.7221
+(InferenceActor pid=592) 2025-03-07 05:24:15,462 INFO Exiting cal_bm25_score() -- Elapsed: 1.91s
+(InferenceActor pid=592) 2025-03-07 05:24:15,462 INFO BM25 score shape: (3511,)
+(InferenceActor pid=592) 2025-03-07 05:24:15,462 INFO Entering min_max_scaling()
+(InferenceActor pid=592) 2025-03-07 05:24:15,462 INFO Exiting min_max_scaling() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:15,462 INFO Entering min_max_scaling()
+(InferenceActor pid=592) 2025-03-07 05:24:15,462 INFO Exiting min_max_scaling() -- Elapsed: 0.00s
+2025-03-07 05:24:15,498 INFO 14.39.16.61 - - [07/Mar/2025 05:24:15] "POST /query_stream HTTP/1.1" 200 -
 [DEBUG] SSE closed.
-(ServeReplica:default:inference pid=593) INFO 2025-03-06 09:06:38,357 default_inference 9xgcuvdu 4b0b3cc3-98f2-48cf-9aa9-766d4fdcdaa7 -- CALL close_sse_queue OK 3.7ms
-(InferenceActor pid=598) INFO 03-06 09:06:38 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) [STREAM] close_sse_queue => removing SSE queue for request_id=1741251843480-8033
-(InferenceActor pid=598) INFO 03-06 09:06:43 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:48 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:53 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:06:58 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:03 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:08 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:13 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:18 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:23 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:28 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-[DEBUG] /query_stream (POST) called with user_input='가능성 있는 건?', request_id='1741251843480-8033'
-[DEBUG] Built http_query={'qry_contents': '가능성 있는 건?', 'request_id': '1741251843480-8033'}
-[DEBUG] streaming request_id=1741251843480-8033
-(ServeReplica:default:inference pid=593) INFO 2025-03-06 09:07:29,756 default_inference 9xgcuvdu 3da4d3fe-7483-4ee8-9efe-3691516dcb09 -- CALL process_query_stream OK 4.9ms
-(InferenceActor pid=598) [STREAM] process_query_stream => request_id=1741251843480-8033, http_query={'qry_contents': '가능성 있는 건?', 'request_id': '1741251843480-8033'}
-(InferenceActor pid=598) [STREAM] Created SSE queue for request_id=1741251843480-8033
-(InferenceActor pid=598) [STREAM] Putting item into request_queue for request_id=1741251843480-8033
-(InferenceActor pid=598) [STREAM] Done putting item in queue => request_id=1741251843480-8033
-(InferenceActor pid=598) INFO 03-06 09:07:33 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:38 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:43 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:48 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:53 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:07:58 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:08:03 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:08:08 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-2025-03-06 09:08:10,976 INFO 14.39.16.61 - - [06/Mar/2025 09:08:10] "GET /chat HTTP/1.1" 200 -
-(InferenceActor pid=598) INFO 03-06 09:08:13 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-(InferenceActor pid=598) INFO 03-06 09:08:18 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
-[DEBUG] /query_stream (POST) called with user_input='디지털 전략', request_id='1741252090209-9432'
-[DEBUG] Built http_query={'qry_contents': '디지털 전략', 'request_id': '1741252090209-9432'}
-[DEBUG] streaming request_id=1741252090209-9432
-(ServeReplica:default:inference pid=593) INFO 2025-03-06 09:08:22,321 default_inference 9xgcuvdu 7bf130fa-530b-4323-aa47-c2b79a5b407f -- CALL process_query_stream OK 4.4ms
-(InferenceActor pid=598) [STREAM] process_query_stream => request_id=1741252090209-9432, http_query={'qry_contents': '디지털 전략', 'request_id': '1741252090209-9432'}
-(InferenceActor pid=598) [STREAM] Created SSE queue for request_id=1741252090209-9432
-(InferenceActor pid=598) [STREAM] Putting item into request_queue for request_id=1741252090209-9432
-(InferenceActor pid=598) [STREAM] Done putting item in queue => request_id=1741252090209-9432
-(InferenceActor pid=598) INFO 03-06 09:08:23 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(ServeReplica:default:inference pid=591) INFO 2025-03-07 05:24:15,514 default_inference f4dn59bh 9e38af49-1bb6-42ab-9e28-171616923c14 -- CALL close_sse_queue OK 2.2ms
+(InferenceActor pid=592) 2025-03-07 05:24:15,495 INFO Top 5 document indices: [ 878  239 2055 3004  830]
+(InferenceActor pid=592) 2025-03-07 05:24:15,495 INFO Top 5 document scores: [0.535749561508762, 0.5346501240335575, 0.5234916576944462, 0.5229647824369541, 0.5080242821775547]
+(InferenceActor pid=592) 2025-03-07 05:24:15,495 INFO Top document titles: ['우수 선화주기업 인증제도 현장평가 > 7. 차별화 서비스 제공현황', 'Ⅱ-①. 남성해운 주간 핵심사항 공유', '[신성장전략실] 디지털운영팀장 > 디지털비즈니스 통한 사무자동화 트랜드 현황', 'Huangpu terminal 2023_page15', '사전질의사항 #16']
+(InferenceActor pid=592) 2025-03-07 05:24:15,496 INFO Exiting retrieve() -- Elapsed: 2.09s
+(InferenceActor pid=592) 2025-03-07 05:24:15,496 INFO Exiting execute_rag() -- Elapsed: 2.09s
+(InferenceActor pid=592) 2025-03-07 05:24:15,496 INFO Entering process_to_format()
+(InferenceActor pid=592) 2025-03-07 05:24:15,496 INFO Exiting process_to_format() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:15,499 INFO Entering generate_answer_stream()
+(InferenceActor pid=592) 2025-03-07 05:24:15,499 INFO Exiting generate_answer_stream() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:15,499 INFO Entering collect_vllm_text_stream()
+(InferenceActor pid=592) 2025-03-07 05:24:15,499 INFO Exiting collect_vllm_text_stream() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:15,507 INFO Entering error_format()
+(InferenceActor pid=592) 2025-03-07 05:24:15,507 INFO Exiting error_format() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:15,509 INFO 배치 처리 후 상태 - Process Memory: RSS=2569.96 MB, VMS=40608.92 MB
+(InferenceActor pid=592) 2025-03-07 05:24:15,509 INFO 배치 처리 후 상태 - GPU Memory: allocated=0.00 MB, reserved=0.00 MB
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592) -------------자료 검색 성공--------------
+(InferenceActor pid=592) [SOOWAN] process_to_format 진입
+(InferenceActor pid=592) [SOOWAN] 타입 : 리트리버
+(InferenceActor pid=592) [SOOWAN] TA is No, and make a retrieval is successed
+(InferenceActor pid=592) [STREAM] Starting partial generation for request_id=1741324928054-8355
+(InferenceActor pid=592) [STREAM] _stream_partial_answer => request_id=1741324928054-8355, chart=None
+(InferenceActor pid=592) [STREAM] Sent reference data for request_id=1741324928054-8355
+(InferenceActor pid=592) [STREAM] final_query =
+(InferenceActor pid=592) [HumanMessage(content='남성해운의 디지털 전략 전반적으로 설명해줘.', additional_kwargs={}, response_metadata={}), AIMessage(content='## 남성해운의 디지털 전략 분석 보고서\n\n남성해운은 디지털 기술 도입을 통해 물류 패러다임을 변화시키고,  차별화된 경험을 제공하는 데 중점을 두고 있습니다.  \n\n**1. 비전 및 로드맵:**\n\n남성해운은 "Digitalized Logistics to Empower your Experience" 라는 비전 아래, 디지털 혁신을 위한 로드맵을 구축하고 있으며, e-Service 및 플랫폼 파트너사, 디지털 포워더사와 협업하며 구체적인 실행 계획을 세우고 있습니다.  ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**2. 비대면 영업 채널 확대:**\n\n시장 수요 증가와 디지털 전환(DT) 추세에 발맞춰, 남성해운은 비대면 영업 채널 확대에 주력하고 있습니다. 포스코플로우, 판토스NOW, 쉽다, 서프컴퍼니, 밸류링크유, 지비티에스 등 다양한 파트너사와 협력하며 월간 30TEU 이상의 Bkg 유입을 목표로 하고 있습니다. ([남성해운]  팀별 주간회의_W9_240227.pptx)\n\n* 각 파트너사와의 협력 내용 및 목표 Bkg 유입량은 다음과 같습니다.\n    * **포스코플로우:** 연근해 지역 우선순위 전략적 파트너, 월간 30TEU 이상 Bkg 유입 목표\n    * **판토스NOW:** 1월 정식 런칭, 현재 서비스 프로모션 및 마케팅 진행 중\n    * **쉽다:** 중국발 위주 월간 20~30 TEU 수입 Bkg 유입, 싱가포르/말레이시아/인도네시아 등 확대\n    * **서프컴퍼니:** 북중국향 포워더 대상 이벤트성 프로모션 검토, CY~Door 포함 남성해운 서비스 홍보 및 영업 지원\n    * **밸류링크유:** 평택발 하이퐁착 월간 10~30 TEU 냉동화물 수출 지속\n    * **지비티에스:** Bkg 유입 미미, 2024년 1월부터 자체 포워더팀 신설\n\n* **성과:** 비대면 영업 채널 확대를 통해 시장 변화에 적응하고 경쟁력 강화 노력 중\n\n**3. 디지털 기술 활용 서비스:**\n\n\n남성해운은 디지털 기술을 활용하여 \n\n* **하상운송 네트워크 기반 국내외 거점 및 운송 인프라 연결**: 화주사에게 경쟁력 있는 운임 제공\n* **해운 물류 서비스 연계**: 디지털 기술 활용\n* **아세안 지역 내륙 개발**: 복합 운송 연계 서비스 계획 추진\n* **해외 거점 터미널 확보**: 해외 운송 네트워크 확장\n* **소규모 항구 개발**: 일본, 중국, 인도 등 피더 네트워크 강화\n* **친환경 고효율 선박 확충**: 지속가능한 운영 및 친환경 이미지 구축\n\n등을 통해 차별화된 서비스를 제공하고 있습니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**4. 우수 선화주 및 국적 화주 상생 협력:**\n\n\n남성해운은 우수선화주 상생 협력을 기반으로 디지털 기술을 활용하여 국적 화주사에게 실질적인 효용을 제공하고자 합니다. 또한 네트워크 및 물류 인프라 공동 활용을 통한 시너지 효과 창출 및 운영 비용 절감으로 국적 기업의 글로벌 경쟁력 제고 및 선사/화주의 동반성장을 목표로 하고 있습니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**5.  Extended Logistics 추진:**\n\n\n남성해운은 "Beyond Shipping, Engineering the future"라는 슬로건 아래 기존의 Port to Port 서비스 강점을 바탕으로 육상 운송까지 서비스를 확대하는 Extended Logistics를 추진하고 있습니다. 이를 통해 신규 비즈니스 진입, 제3자 물동량 처리, 배후부지/Depot/운송사 자영화 및 지분 투자 등을 통해 사업 영역을 확장하고자 합니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**결론:**\n\n남성해운은 디지털 전략을 통해 물류 산업 혁신을 주도하고 있으며, 디지털 기술 도입을 적극 추진하여 다양한 파트너와의 협력, 새로운 서비스 및 사업 모델 개발, 고객 경험 향상에 힘쓰고 있습니다.\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='남성해운의 디지털 전략 전반적으로 설명해줘.', additional_kwargs={}, response_metadata={}), AIMessage(content='## 남성해운의 디지털 전략 분석 보고서\n\n남성해운은 디지털 기술 도입을 통해 물류 패러다임을 변화시키고,  차별화된 경험을 제공하는 데 중점을 두고 있습니다.  \n\n**1. 비전 및 로드맵:**\n\n남성해운은 "Digitalized Logistics to Empower your Experience" 라는 비전 아래, 디지털 혁신을 위한 로드맵을 구축하고 있으며, e-Service 및 플랫폼 파트너사, 디지털 포워더사와 협업하며 구체적인 실행 계획을 세우고 있습니다.  ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**2. 비대면 영업 채널 확대:**\n\n시장 수요 증가와 디지털 전환(DT) 추세에 발맞춰, 남성해운은 비대면 영업 채널 확대에 주력하고 있습니다. 포스코플로우, 판토스NOW, 쉽다, 서프컴퍼니, 밸류링크유, 지비티에스 등 다양한 파트너사와 협력하며 월간 30TEU 이상의 Bkg 유입을 목표로 하고 있습니다. ([남성해운]  팀별 주간회의_W9_240227.pptx)\n\n* 각 파트너사와의 협력 내용 및 목표 Bkg 유입량은 다음과 같습니다.\n    * **포스코플로우:** 연근해 지역 우선순위 전략적 파트너, 월간 30TEU 이상 Bkg 유입 목표\n    * **판토스NOW:** 1월 정식 런칭, 현재 서비스 프로모션 및 마케팅 진행 중\n    * **쉽다:** 중국발 위주 월간 20~30 TEU 수입 Bkg 유입, 싱가포르/말레이시아/인도네시아 등 확대\n    * **서프컴퍼니:** 북중국향 포워더 대상 이벤트성 프로모션 검토, CY~Door 포함 남성해운 서비스 홍보 및 영업 지원\n    * **밸류링크유:** 평택발 하이퐁착 월간 10~30 TEU 냉동화물 수출 지속\n    * **지비티에스:** Bkg 유입 미미, 2024년 1월부터 자체 포워더팀 신설\n\n* **성과:** 비대면 영업 채널 확대를 통해 시장 변화에 적응하고 경쟁력 강화 노력 중\n\n**3. 디지털 기술 활용 서비스:**\n\n\n남성해운은 디지털 기술을 활용하여 \n\n* **하상운송 네트워크 기반 국내외 거점 및 운송 인프라 연결**: 화주사에게 경쟁력 있는 운임 제공\n* **해운 물류 서비스 연계**: 디지털 기술 활용\n* **아세안 지역 내륙 개발**: 복합 운송 연계 서비스 계획 추진\n* **해외 거점 터미널 확보**: 해외 운송 네트워크 확장\n* **소규모 항구 개발**: 일본, 중국, 인도 등 피더 네트워크 강화\n* **친환경 고효율 선박 확충**: 지속가능한 운영 및 친환경 이미지 구축\n\n등을 통해 차별화된 서비스를 제공하고 있습니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**4. 우수 선화주 및 국적 화주 상생 협력:**\n\n\n남성해운은 우수선화주 상생 협력을 기반으로 디지털 기술을 활용하여 국적 화주사에게 실질적인 효용을 제공하고자 합니다. 또한 네트워크 및 물류 인프라 공동 활용을 통한 시너지 효과 창출 및 운영 비용 절감으로 국적 기업의 글로벌 경쟁력 제고 및 선사/화주의 동반성장을 목표로 하고 있습니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**5.  Extended Logistics 추진:**\n\n\n남성해운은 "Beyond Shipping, Engineering the future"라는 슬로건 아래 기존의 Port to Port 서비스 강점을 바탕으로 육상 운송까지 서비스를 확대하는 Extended Logistics를 추진하고 있습니다. 이를 통해 신규 비즈니스 진입, 제3자 물동량 처리, 배후부지/Depot/운송사 자영화 및 지분 투자 등을 통해 사업 영역을 확장하고자 합니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**결론:**\n\n남성해운은 디지털 전략을 통해 물류 산업 혁신을 주도하고 있으며, 디지털 기술 도입을 적극 추진하여 다양한 파트너와의 협력, 새로운 서비스 및 사업 모델 개발, 고객 경험 향상에 힘쓰고 있습니다.\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='그 디지털 전략의 첫 번째 핵심 사항이 뭔지 궁금해.', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운 디지털 전략의 첫 번째 핵심 사항은 **"Digitalized Logistics to Empower your Experience"라는 비전 아래, 디지털 혁신을 위한 로드맵을 구축하고 e-Service 및 플랫폼 파트너사, 디지털 포워더사와 협업하며 구체적인 실행 계획을 세우고 있다는 점입니다. ** ( [남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='그 디지털 전략의 첫 번째 핵심 사항이 뭔지 궁금해.', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운 디지털 전략의 첫 번째 핵심 사항은 **"Digitalized Logistics to Empower your Experience"라는 비전 아래, 디지털 혁신을 위한 로드맵을 구축하고 e-Service 및 플랫폼 파트너사, 디지털 포워더사와 협업하며 구체적인 실행 계획을 세우고 있다는 점입니다. ** ( [남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='그 첫 번째 사항을 좀 더 세부적으로 설명해줄래?', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운 디지털 전략의 첫 번째 핵심 사항은 **"Digitalized Logistics to Empower your Experience"** 라는 비전 아래 **디지털 혁신을 위한 구체적인 로드맵을 구축하고, 다양한 파트너와의 협업을 통해 이를 실행하는 것입니다.**\n\n다음은 이를 세부적으로 설명한 내용입니다.\n\n1. **"Digitalized Logistics to Empower your Experience"라는 비전:**  남성해운은 단순히 디지털 기술을 도입하는 것을 넘어, 디지털 기술을 통해 물류 체계 전체에 혁신을 가져와 고객에게 힘을 줍니다. 이는 고객에게 맞춤형 서비스를 제공하고, 물류 프로세스를 효율적으로 개선하며, 새로운 가치를 창출하기 위한 기본 철학입니다.\n\n2. **디지털 혁신을 위한 로드맵 구축:** 목표가 명확하고 구체적인 로드맵을 통해 단계적으로 디지털 전환을 추진합니다. 로드맵에는 단기, 중장기 목표, 구현 방안, 필요 자원 등이 포함될 것입니다.\n\n3. **e-Service 및 플랫폼 파트너사와의 협업:** 남성해운은  자체 플랫폼 외에 다양한 e-Service 및 플랫폼 파트너사들과 협력하여 서비스 범위를 확대하고 시너지 효과를 창출합니다.\n\n4. **디지털 포워더사와의 협업:** 전통적인 포워딩 업무뿐만 아니라 디지털 기술을 활용한 새로운 포워딩 서비스를 제공하는 디지털 포워더사와 협력하여 서비스 품질 향상 및 경쟁력 강화를 추구합니다.\n\n결론적으로 남성해운은 단순히 기술 도입에 그치지 않고, 명확한 비전 아래 협력 및 전략적인 실행을 통해 디지털 전환을 이끌어나가고 있습니다.\n\n\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='그 첫 번째 사항을 좀 더 세부적으로 설명해줄래?', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운 디지털 전략의 첫 번째 핵심 사항은 **"Digitalized Logistics to Empower your Experience"** 라는 비전 아래 **디지털 혁신을 위한 구체적인 로드맵을 구축하고, 다양한 파트너와의 협업을 통해 이를 실행하는 것입니다.**\n\n다음은 이를 세부적으로 설명한 내용입니다.\n\n1. **"Digitalized Logistics to Empower your Experience"라는 비전:**  남성해운은 단순히 디지털 기술을 도입하는 것을 넘어, 디지털 기술을 통해 물류 체계 전체에 혁신을 가져와 고객에게 힘을 줍니다. 이는 고객에게 맞춤형 서비스를 제공하고, 물류 프로세스를 효율적으로 개선하며, 새로운 가치를 창출하기 위한 기본 철학입니다.\n\n2. **디지털 혁신을 위한 로드맵 구축:** 목표가 명확하고 구체적인 로드맵을 통해 단계적으로 디지털 전환을 추진합니다. 로드맵에는 단기, 중장기 목표, 구현 방안, 필요 자원 등이 포함될 것입니다.\n\n3. **e-Service 및 플랫폼 파트너사와의 협업:** 남성해운은  자체 플랫폼 외에 다양한 e-Service 및 플랫폼 파트너사들과 협력하여 서비스 범위를 확대하고 시너지 효과를 창출합니다.\n\n4. **디지털 포워더사와의 협업:** 전통적인 포워딩 업무뿐만 아니라 디지털 기술을 활용한 새로운 포워딩 서비스를 제공하는 디지털 포워더사와 협력하여 서비스 품질 향상 및 경쟁력 강화를 추구합니다.\n\n결론적으로 남성해운은 단순히 기술 도입에 그치지 않고, 명확한 비전 아래 협력 및 전략적인 실행을 통해 디지털 전환을 이끌어나가고 있습니다.\n\n\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='두 번째 핵심 사항은 어떤 거야?', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운의 디지털 전략에서 네 번째 핵심 사항은 **"Extended Logistics" 추진**입니다. ( [남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n남성해운은 **"Beyond Shipping, Engineering the future"라는 슬로건 아래 기존의 Port to Port 서비스 강점을 바탕으로 육상 운송까지 서비스를 확대**하는 Extended Logistics를 추진하고 있습니다. 이를 통해 얻기 원하는 효과는 다음과 같습니다.\n\n* **신규 비즈니스 진입:**  Extended Logistics를 통해 기존 서비스 범위를 확장하고 새로운 수익 창출 기회를 모색합니다.\n* **제3자 물동량 처리**: 외부 파트너를 통해 물동량을 확보하고 운영 효율성을 높입니다.\n* **배후부지/Depot/운송사 자영화 및 지분 투자**: 물류 인프라 확보 및 운송망 강화를 통해 경쟁력 강화를 노립니다.\n\n결론적으로, 남성해운은  단순한 해운 서비스 제공을 넘어 **전반적인 물류 서비스를 통합적으로 제공하는 기업으로 도약하고자 하는 것을 두 번째 핵심 전략**으로 삼고 있습니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='두 번째 핵심 사항은 어떤 거야?', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운의 디지털 전략에서 네 번째 핵심 사항은 **"Extended Logistics" 추진**입니다. ( [남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n남성해운은 **"Beyond Shipping, Engineering the future"라는 슬로건 아래 기존의 Port to Port 서비스 강점을 바탕으로 육상 운송까지 서비스를 확대**하는 Extended Logistics를 추진하고 있습니다. 이를 통해 얻기 원하는 효과는 다음과 같습니다.\n\n* **신규 비즈니스 진입:**  Extended Logistics를 통해 기존 서비스 범위를 확장하고 새로운 수익 창출 기회를 모색합니다.\n* **제3자 물동량 처리**: 외부 파트너를 통해 물동량을 확보하고 운영 효율성을 높입니다.\n* **배후부지/Depot/운송사 자영화 및 지분 투자**: 물류 인프라 확보 및 운송망 강화를 통해 경쟁력 강화를 노���니다.\n\n결론적으로, 남성해운은  단순한 해운 서비스 제공을 넘어 **전반적인 물류 서비스를 통합적으로 제공하는 기업으로 도약하고자 하는 것을 두 번째 핵심 전략**으로 삼고 있습니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='두 번째 사항도 구체적으로 듣고 싶어.', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운의 디지털 전략에서 두 번째 핵심 사항은 **비대면 영업 채널 확대**입니다. ([남성해운]  팀별 주간회의_W9_240227.pptx)\n\n시장 수요 증가와 디지털 전환(DT) 추세에 발맞춰, 남성해운은 비대면 영업 채널을 적극 확대하고 있습니다. **포스코플로우, 판토스NOW, 쉽다, 서프컴퍼니, 밸류링크유, 지비티에스 등 다양한 파트너사와 협업**하며 월간 30TEU 이상의 Bkg 유입을 목표로 하고 있습니다.\n\n* 각 파트너사와의 협력 내용 및 목표 Bkg 유입량은 다음과 같습니다.\n    * **포스코플로우**: 연근해 지역 우선순위 전략적 파트너, 월간 30TEU 이상 Bkg 유입 목표\n    * **판토스NOW**: 1월 정식 런칭, 현재 서비스 프로모션 및 마케팅 진행 중\n    * **쉽다**: 중국발 위주 월간 20~30 TEU 수입 Bkg 유입, 싱가포르/말레이시아/인도네시아 등 확대\n    * **서프컴퍼니**: 북중국향 포워더 대상 이벤트성 프로모션 검토, CY~Door 포함 남성해운 서비스 홍보 및 영업 지원\n    * **밸류링크유**: 평택발 하이퐁착 월간 10~30 TEU 냉동화물 수출 지속\n    * **지비티에스**: Bkg 유입 미미, 2024년 1월부터 자체 포워더팀 신설\n\n* 이를 통해 남성해운은 시장 변화에 적응하고 경쟁력을 강화하기 위해 노력하고 있습니다.\n\n \n\n요약하자면, 남성해운은 디지털 기술을 활용하여 다양한 비대면 영업 채널을 구축하고 파트너사들과 협력하며, 전통적인 방식에서 벗어나 효율적이고 편리한 서비스를 제공하고자 합니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='두 번째 사항도 구체적으로 듣고 싶어.', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운의 디지털 전략에서 두 번째 핵심 사항은 **비대면 영업 채널 확대**입니다. ([남성해운]  팀별 주간회의_W9_240227.pptx)\n\n시장 수요 증가와 디지털 전환(DT) 추세에 발맞춰, 남성해운은 비대면 영업 채널을 적극 확대하고 있습니다. **포스코플로우, 판토스NOW, 쉽다, 서프컴퍼니, 밸류링크유, 지비티에스 등 다양한 파트너사와 협업**하며 월간 30TEU 이상의 Bkg 유입을 목표로 하고 있습니다.\n\n* 각 파트너사와의 협력 내용 및 목표 Bkg 유입량은 다음과 같습니다.\n    * **포스코플로우**: 연근해 지역 우선순위 전략적 파트너, 월간 30TEU 이상 Bkg 유입 목표\n    * **판토스NOW**: 1월 정식 런칭, 현재 서비스 프로모션 및 마케팅 진행 중\n    * **쉽다**: 중국발 위주 월간 20~30 TEU 수입 Bkg 유입, 싱가포르/말레이시아/인도네시아 등 확대\n    * **서프컴퍼니**: 북중국향 포워더 대상 이벤트성 프로모션 검토, CY~Door 포함 남성해운 서비스 홍보 및 영업 지원\n    * **밸류링크유**: 평택발 하이퐁착 월간 10~30 TEU 냉동화물 수출 지속\n    * **지비티에스**: Bkg 유입 미미, 2024년 1월부터 자체 포워더팀 신설\n\n* 이를 통해 남성해운은 시장 변화에 적응하고 경쟁력을 강화하기 위해 노력하고 있습니다.\n\n \n\n요약하자면, 남성해운은 디지털 기술을 활용하여 다양한 비대면 영업 채널을 구축하고 파트너사들과 협력하며, 전통적인 방식에서 벗어나 효율적이고 편리한 서비스를 제공하고자 합니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='남성해운은 디지털 전환을 위해 어떤 시스템을 쓰나요?', additional_kwargs={}, response_metadata={}), AIMessage(content='제공된 자료에는 남성해운이 디지털 전환을 위해 구체적으로 어떤 시스템을 사용하는지에 대한 정보는 없습니다. 다만, 다음과 같은 내용을 통해 추측해 볼 수 있습니다.\n\n* **e-Service 플랫폼:** 남성해운은 고객에게 직접 Door 부킹을 진행할 수 있는 e-Service를 제공할 계획입니다.([남성해운] 24년 2사분기 수정사업계획 및 핵심추진과제 진행경과 공유회_20240404.pptx) 이는 화주가 온라인으로 직접 부킹하고, 남성해운과 운송사 TMS 시스템이 연동되어 배차 일정이 자동으로 공유되는 시스템을 의미합니다.\n\n* **운송 관리 시스템 (TMS):** 남성해운은 운송사 TMS 시스템과 연동하여 배차 일정을 공유하고 관리하는 것을 목표로 하고 있습니다. 상세한 시스템 명칭이나 정보는 공개되어 있지 않습니다.\n* **CY-Door 운송연계 시스템:**  남성해운은 화주가 e-service 상에서 CY-Door 진행요청 시점부터 투더블유로 운송오더 되기까지의 과정을 자동화하기 위해 시스템을 개발하였습니다.  \n\n* **인보이싱 시스템:** 남성해운은 Door 사전결제 서비스 시스템을 구축하여 고객 편의성을 높이고자 합니다.\n\n* **데이터 분석 플랫폼:** 남성해운은 데이터 기반 의사 결정을 위해 데이터 분석 플랫폼을 사용할 가능성이 높습니다. \n\n추가적인 정보를 얻기 위해서는 남성해운의 공식 홈페이지, 홍보 자료, 또는 관련 기사를 참고하는 것이 좋습니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='남성해운은 디지털 전환을 위해 어떤 시스템을 쓰나요?', additional_kwargs={}, response_metadata={}), AIMessage(content='제공된 자료에는 남성해운이 디지털 전환을 위해 구체적으로 어떤 시스템을 사용하는지에 대한 정보는 없습니다. 다만, 다음과 같은 내용을 통해 추측해 볼 수 있습니다.\n\n* **e-Service 플랫폼:** 남성해운은 고객에게 직접 Door 부킹을 진행할 수 있는 e-Service를 제공할 계획입니다.([남성해운] 24년 2사분기 수정사업계획 및 핵심추진과제 진행경과 공유회_20240404.pptx) 이는 화주가 온라인으로 직접 부킹하고, 남성해운과 운송사 TMS 시스템이 연동되어 배차 일정이 자동으로 공유되는 시스템을 의미합니다.\n\n* **운송 관리 시스템 (TMS):** 남성해운은 운송사 TMS 시스템과 연동하여 배차 일정을 공유하고 관리하는 것을 목표로 하고 있습니다. 상세한 시스템 명칭이나 정보는 공개되어 있지 않습니다.\n* **CY-Door 운송연계 시스템:**  남성해운은 화주가 e-service 상에서 CY-Door 진행요청 시점부터 투더블유로 운송오더 되기까지의 과정을 자동화하기 위해 시스템을 개발하였습니다.  \n\n* **인보이싱 시스템:** 남성해운은 Door 사전결제 서비스 시스템을 구축하여 고객 편의성을 높이고자 합니다.\n\n* **데이터 분석 플랫폼:** 남성해운은 데이터 기반 의사 결정을 위해 데이터 분석 플랫폼을 사용할 가능성이 높습니다. \n\n추가적인 정보를 얻기 위해서는 남성해운의 공식 홈페이지, 홍보 자료, 또는 관련 기사를 참고하는 것이 좋습니다.\n', additional_kwargs={}, response_metadata={})]
+(InferenceActor pid=592)
+(InferenceActor pid=592) [사용자 질문]
+(InferenceActor pid=592) 남성해운이 사용하는 디지털 시스템의 장점과 단점은 뭐야?
+(InferenceActor pid=592) [STREAM] SSE: calling generate_answer_stream for request_id=1741324928054-8355
+(InferenceActor pid=592) === [In-Flight Batching] Waiting for first item in request_queue... ===
+(InferenceActor pid=592) [STREAM] close_sse_queue => removing SSE queue for request_id=1741324928054-8355
+[DEBUG] /query_stream (POST) called with user_input='구체적으로 어떤 기능들을 제공하나요?', request_id='1741324928054-8355'
+[DEBUG] Built http_query={'qry_contents': '구체적으로 어떤 기능들을 제공하나요?', 'request_id': '1741324928054-8355'}
+[DEBUG] streaming request_id=1741324928054-8355
+(ServeReplica:default:inference pid=591) INFO 2025-03-07 05:24:16,031 default_inference f4dn59bh 7996b7e7-47e7-4113-ab68-f3f9847b2f2a -- CALL process_query_stream OK 4.4ms
+(InferenceActor pid=592) 2025-03-07 05:24:16,081 INFO [Batch Tracking] Batch size: 1, Token counts: [0]
+(InferenceActor pid=592) 2025-03-07 05:24:16,081 INFO 배치 처리 전 상태 - Process Memory: RSS=2569.96 MB, VMS=40608.92 MB
+(InferenceActor pid=592) 2025-03-07 05:24:16,081 INFO 배치 처리 전 상태 - GPU Memory: allocated=0.00 MB, reserved=0.00 MB
+(InferenceActor pid=592) 2025-03-07 05:24:16,081 INFO Entering load_data()
+(InferenceActor pid=592) 2025-03-07 05:24:16,081 INFO Exiting load_data() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:16,082 INFO Entering query_sort()
+(InferenceActor pid=592) 2025-03-07 05:24:16,082 INFO Exiting query_sort() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:16,082 INFO Entering collect_vllm_text()
+(InferenceActor pid=592) 2025-03-07 05:24:16,082 INFO Exiting collect_vllm_text() -- Elapsed: 0.00s
+(InferenceActor pid=592) [STREAM] process_query_stream => request_id=1741324928054-8355, http_query={'qry_contents': '구체적으로 어떤 기능들을 제공하나요?', 'request_id': '1741324928054-8355'}
+(InferenceActor pid=592) [STREAM] Created SSE queue for request_id=1741324928054-8355
+(InferenceActor pid=592) [STREAM] Putting item into request_queue for request_id=1741324928054-8355
+(InferenceActor pid=592) [STREAM] Done putting item in queue => request_id=1741324928054-8355
+(InferenceActor pid=592) [In-Flight Batching] Got the first request. Attempting to fill a batch...
+(InferenceActor pid=592) [In-Flight Batching] Timeout reached => proceeding with the batch.
+(InferenceActor pid=592) [DEBUG] _process_single_query 시작: 05:24:16, 요청 내용: {'request_id': '1741324928054-8355', 'http_query': {'qry_contents': '구체적으로 어떤 기능들을 제공하나요?', 'request_id': '1741324928054-8355'}}, 현재 스레드: AsyncIO Thread: default
+(InferenceActor pid=592) [STREAM] _process_single_query: request_id=1741324928054-8355
+(InferenceActor pid=592) Using cached data
+(InferenceActor pid=592)    ... calling query_sort() ...
+(InferenceActor pid=592) ##### query_sort is starting #####
+(InferenceActor pid=592) INFO 03-07 05:24:16 async_llm.py:161] Added request a63056a2-30b8-4a3b-9645-813ebce1c77f.
+(InferenceActor pid=592) INFO 03-07 05:24:18 loggers.py:72] Avg prompt throughput: 1553.4 tokens/s, Avg generation throughput: 19.3 tokens/s, Running: 1 reqs, Waiting: 0 reqs GPU KV cache usage: 17.7%.
+(InferenceActor pid=592) INFO 03-07 05:24:23 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 41.7 tokens/s, Running: 1 reqs, Waiting: 0 reqs GPU KV cache usage: 18.1%.
+(InferenceActor pid=592) 2025-03-07 05:24:24,742 INFO Entering execute_rag()
+(InferenceActor pid=592) 2025-03-07 05:24:24,743 INFO Entering expand_time_range_if_needed()
+(InferenceActor pid=592) 2025-03-07 05:24:24,743 INFO Exiting expand_time_range_if_needed() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:24,743 INFO Entering retrieve()
+(InferenceActor pid=592) 2025-03-07 05:24:24,743 INFO Retrieval for query: '남성해운, e-Service, 기능'
+(InferenceActor pid=592) 2025-03-07 05:24:24,743 INFO Available documents: 3511
+(InferenceActor pid=592) 2025-03-07 05:24:24,743 INFO Entering cal_sim_score()
+(InferenceActor pid=592) 2025-03-07 05:24:24,743 INFO Entering embed()
+(InferenceActor pid=592) 2025-03-07 05:24:24,772 INFO Exiting embed() -- Elapsed: 0.03s
+(InferenceActor pid=592) [DEBUG query_sort] Generated answer:
+(InferenceActor pid=592) <query/>남성해운의 e-Service 플랫폼에서 구체적으로 어떤 기능들을 제공하는지 알려주세요.<query>
+(InferenceActor pid=592) <keyword/>남성해운, e-Service, 기능<keyword>
+(InferenceActor pid=592) <table/>no<table>
+(InferenceActor pid=592) <time/>all<time>
+(InferenceActor pid=592)
+(InferenceActor pid=592)
+(InferenceActor pid=592)  제공된 자료에는 남성해운의 e-Service 플랫폼에서 구체적으로 어떤 기능들을 제공하는지에 대한 상세한 정보는 없지만, 다음과 같은 기능들을 추측해 볼 수 있습니다.
+(InferenceActor pid=592)
+(InferenceActor pid=592) * **온라인 부킹:** 화주가 직접 온라인으로 화물 부킹을 진행하고, 배송 일정 및 가격을 확인할 수 있는 기능. ([남성해운] 24년 2사분기 수정사업계획 및 핵심추진과제 진행경과 공유회_20240404.pptx)
+(InferenceActor pid=592)
+(InferenceActor pid=592) * **운송 추적:** 화물의 실시간 위치와 배송 상태를 확인할 수 있는 기능.
+(InferenceActor pid=592) * **문서 관리:**  배송 관련 서류 (Bill of Lading, 징수 증명서 등)를 온라인으로 발행, 확인 및 관리할 수 있는 기능.
+(InferenceActor pid=592) * **결제:** 온라인 결제 시스템을 통한 화물 운임 및 관련 비용 결제 기능.
+(InferenceActor pid=592)
+(InferenceActor pid=592) * **고객 서비스:**  온라인 채팅 또는 메시징 시스템을 통한 고객 문의 응대 기능.
+(InferenceActor pid=592)
+(InferenceActor pid=592) 추가적인 정보는 남성해운의 공식 웹사이트나 관련 홍보 자료를 참고하시기 바랍니다.
+(InferenceActor pid=592)
+(InferenceActor pid=592)
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592) 구체화 질문: 남성해운의 e-Service 플랫폼에서 구체적으로 어떤 기능들을 제공하는지 알려주세요., 키워드 : 남성해운, e-Service, 기능, 테이블 필요 유무: no, 시간: 1900-01-01:2099-01-01
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592)    ... query_sort => QU=남성해운의 e-Service 플랫폼에서 구체적으로 어떤 기능들을 제공하는지 알려주세요., KE=남성해운, e-Service, 기능, TA=no, TI=1900-01-01:2099-01-01
+(InferenceActor pid=592) [SOOWAN] TA is No, before make a retrieval
+(InferenceActor pid=592) [SOOWAN]: execute_rag : 진입
+(InferenceActor pid=592) [SOOWAN]: execute_rag : 테이블 필요없음
+(InferenceActor pid=592) [시간 범위] 전체 기간 사용
+(InferenceActor pid=592) [RETRIEVE] 검색에 사용되는 문서 수: 3511
+(InferenceActor pid=592) [SOOWAN] retrieve : 진입
+(InferenceActor pid=592) [SOOWAN] cal_sim_score : 진입 / query :  남성해운, e-Service, 기능
+(InferenceActor pid=592) [SOOWAN] embed: 진입
+(InferenceActor pid=592) [SOOWAN] embed: 완료
+(InferenceActor pid=592) [SOOWAN] cal_sim_score : query_V 생산 완료
+(InferenceActor pid=592) [SOOWAN] cal_sim_score : query_V.shape == 1
+(InferenceActor pid=592) 2025-03-07 05:24:24,885 INFO Exiting cal_sim_score() -- Elapsed: 0.14s
+(InferenceActor pid=592) 2025-03-07 05:24:24,885 INFO Similarity score shape: (3511, 1, 1)
+(InferenceActor pid=592) 2025-03-07 05:24:24,885 INFO Entering cal_bm25_score()
+(InferenceActor pid=592) 2025-03-07 05:24:24,885 INFO Starting BM25 calculation for query: 남성해운, e-Service, 기능
+(InferenceActor pid=592) 2025-03-07 05:24:24,885 INFO Document count: 3511
+2025-03-07 05:24:26,815 INFO 14.39.16.61 - - [07/Mar/2025 05:24:26] "POST /query_stream HTTP/1.1" 200 -
+[DEBUG] SSE closed.
+(ServeReplica:default:inference pid=591) INFO 2025-03-07 05:24:26,830 default_inference f4dn59bh 14d0f156-5f2c-44ae-bb6d-db5995a3add4 -- CALL close_sse_queue OK 2.5ms
+(InferenceActor pid=592) 2025-03-07 05:24:26,754 INFO BM25 scores: min=2.1850, max=33.7698, mean=13.9131
+(InferenceActor pid=592) 2025-03-07 05:24:26,778 INFO Exiting cal_bm25_score() -- Elapsed: 1.89s
+(InferenceActor pid=592) 2025-03-07 05:24:26,778 INFO BM25 score shape: (3511,)
+(InferenceActor pid=592) 2025-03-07 05:24:26,778 INFO Entering min_max_scaling()
+(InferenceActor pid=592) 2025-03-07 05:24:26,778 INFO Exiting min_max_scaling() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:26,779 INFO Entering min_max_scaling()
+(InferenceActor pid=592) 2025-03-07 05:24:26,779 INFO Exiting min_max_scaling() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:26,812 INFO Top 5 document indices: [3004 1528 2489 2433 2153]
+(InferenceActor pid=592) 2025-03-07 05:24:26,812 INFO Top 5 document scores: [0.5913603499500378, 0.5825072124569043, 0.5786206319896802, 0.5770232871143445, 0.5605052605239972]
+(InferenceActor pid=592) 2025-03-07 05:24:26,812 INFO Top document titles: ['Huangpu terminal 2023_page15', '[신성장전략실] 디지털운영팀장 > 운영 영역 수행의 건.', '20230731155208_GNE 계약서_page4', '20230731155302_GNE 계약서_page2', '20230731155024_2013 SNE Mainbody_page2']
+(InferenceActor pid=592) 2025-03-07 05:24:26,812 INFO Exiting retrieve() -- Elapsed: 2.07s
+(InferenceActor pid=592) 2025-03-07 05:24:26,812 INFO Exiting execute_rag() -- Elapsed: 2.07s
+(InferenceActor pid=592) 2025-03-07 05:24:26,812 INFO Entering process_to_format()
+(InferenceActor pid=592) 2025-03-07 05:24:26,812 INFO Exiting process_to_format() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:26,815 INFO Entering generate_answer_stream()
+(InferenceActor pid=592) 2025-03-07 05:24:26,815 INFO Exiting generate_answer_stream() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:26,815 INFO Entering collect_vllm_text_stream()
+(InferenceActor pid=592) 2025-03-07 05:24:26,815 INFO Exiting collect_vllm_text_stream() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:26,824 INFO Entering error_format()
+(InferenceActor pid=592) 2025-03-07 05:24:26,824 INFO Exiting error_format() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:26,825 INFO 배치 처리 후 상태 - Process Memory: RSS=2570.24 MB, VMS=40609.17 MB
+(InferenceActor pid=592) 2025-03-07 05:24:26,825 INFO 배치 처리 후 상태 - GPU Memory: allocated=0.00 MB, reserved=0.00 MB
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592)
+(InferenceActor pid=592) -------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+(InferenceActor pid=592) -------------자료 검색 성공--------------
+(InferenceActor pid=592) [SOOWAN] process_to_format 진입
+(InferenceActor pid=592) [SOOWAN] 타입 : 리트리버
+(InferenceActor pid=592) [SOOWAN] TA is No, and make a retrieval is successed
+(InferenceActor pid=592) [STREAM] Starting partial generation for request_id=1741324928054-8355
+(InferenceActor pid=592) [STREAM] _stream_partial_answer => request_id=1741324928054-8355, chart=None
+(InferenceActor pid=592) [STREAM] Sent reference data for request_id=1741324928054-8355
+(InferenceActor pid=592) [STREAM] final_query =
+(InferenceActor pid=592) [HumanMessage(content='남성해운의 디지털 전략 전반적으로 설명해줘.', additional_kwargs={}, response_metadata={}), AIMessage(content='## 남성해운의 디지털 전략 분석 보고서\n\n남성해운은 디지털 기술 도입을 통해 물류 패러다임을 변화시키고,  차별화된 경험을 제공하는 데 중점을 두고 있습니다.  \n\n**1. 비전 및 로드맵:**\n\n남성해운은 "Digitalized Logistics to Empower your Experience" 라는 비전 아래, 디지털 혁신을 위한 로드맵을 구축하고 있으며, e-Service 및 플랫폼 파트너사, 디지털 포워더사와 협업하며 구체적인 실행 계획을 세우고 있습니다.  ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**2. 비대면 영업 채널 확대:**\n\n시장 수요 증가와 디지털 전환(DT) 추세에 발맞춰, 남성해운은 비대면 영업 채널 확대에 주력하고 있습니다. 포스코플로우, 판토스NOW, 쉽다, 서프컴퍼니, 밸류링크유, 지비티에스 등 다양한 파트너사와 협력하며 월간 30TEU 이상의 Bkg 유입을 목표로 하고 있습니다. ([남성해운]  팀별 주간회의_W9_240227.pptx)\n\n* 각 파트너사와의 협력 내용 및 목표 Bkg 유입량은 다음과 같습니다.\n    * **포스코플로우:** 연근해 지역 우선순위 전략적 파트너, 월간 30TEU 이상 Bkg 유입 목표\n    * **판토스NOW:** 1월 정식 런칭, 현재 서비스 프로모션 및 마케팅 진행 중\n    * **쉽다:** 중국발 위주 월간 20~30 TEU 수입 Bkg 유입, 싱가포르/말레이시아/인도네시아 등 확대\n    * **서프컴퍼니:** 북중국향 포워더 대상 이벤트성 프로모션 검토, CY~Door 포함 남성해운 서비스 홍보 및 영업 지원\n    * **밸류링크유:** 평택발 하이퐁착 월간 10~30 TEU 냉동화물 수출 지속\n    * **지비티에스:** Bkg 유입 미미, 2024년 1월부터 자체 포워더팀 신설\n\n* **성과:** 비대면 영업 채널 확대를 통해 시장 변화에 적응하고 경쟁력 강화 노력 중\n\n**3. 디지털 기술 활용 서비스:**\n\n\n남성해운은 디지털 기술을 활용하여 \n\n* **하상운송 네트워크 기반 국내외 거점 및 운송 인프라 연결**: 화주사에게 경쟁력 있는 운임 제공\n* **해운 물류 서비스 연계**: 디지털 기술 활용\n* **아세안 지역 내륙 개발**: 복합 운송 연계 서비스 계획 추진\n* **해외 거점 터미널 확보**: 해외 운송 네트워크 확장\n* **소규모 항구 개발**: 일본, 중국, 인도 등 피더 네트워크 강화\n* **친환경 고효율 선박 확충**: 지속가능한 운영 및 친환경 이미지 구축\n\n등을 통해 차별화된 서비스를 제공하고 있습니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**4. 우수 선화주 및 국적 화주 상생 협력:**\n\n\n남성해운은 우수선화주 상생 협력을 기반으로 디지털 기술을 활용하여 국적 화주사에게 실질적인 효용을 제공하고자 합니다. 또한 네트워크 및 물류 인프라 공동 활용을 통한 시너지 효과 창출 및 운영 비용 절감으로 국적 기업의 글로벌 경쟁력 제고 및 선사/화주의 동반성장을 목표로 하고 있습니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**5.  Extended Logistics 추진:**\n\n\n남성해운은 "Beyond Shipping, Engineering the future"라는 슬로건 아래 기존의 Port to Port 서비스 강점을 바탕으로 육상 운송까지 서비스를 확대하는 Extended Logistics를 추진하고 있습니다. 이를 통해 신규 비즈니스 진입, 제3자 물동량 처리, 배후부지/Depot/운송사 자영화 및 지분 투자 등을 통해 사업 영역을 확장하고자 합니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**결론:**\n\n남성해운은 디지털 전략을 통해 물류 산업 혁신을 주도하고 있으며, 디지털 기술 도입을 적극 추진하여 다양한 파트너와의 협력, 새로운 서비스 및 사업 모델 개발, 고객 경험 향상에 힘쓰고 있습니다.\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='남성해운의 디지털 전략 전반적으로 설명해줘.', additional_kwargs={}, response_metadata={}), AIMessage(content='## 남성해운의 디지털 전략 분석 보고서\n\n남성해운은 디지털 기술 도입을 통해 물류 패러다임을 변화시키고,  차별화된 경험을 제공하는 데 중점을 두고 있습니다.  \n\n**1. 비전 및 로드맵:**\n\n남성해운은 "Digitalized Logistics to Empower your Experience" 라는 비전 아래, 디지털 혁신을 위한 로드맵을 구축하고 있으며, e-Service 및 플랫폼 파트너사, 디지털 포워더사와 협업하며 구체적인 실행 계획을 세우고 있습니다.  ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**2. 비대면 영업 채널 확대:**\n\n시장 수요 증가와 디지털 전환(DT) 추세에 발맞춰, 남성해운은 비대면 영업 채널 확대에 주력하고 있습니다. 포스코플로우, 판토스NOW, 쉽다, 서프컴퍼니, 밸류링크유, 지비티에스 등 다양한 파트너사와 협력하며 월간 30TEU 이상의 Bkg 유입을 목표로 하고 있습니다. ([남성해운]  팀별 주간회의_W9_240227.pptx)\n\n* 각 파트너사와의 협력 내용 및 목표 Bkg 유입량은 다음과 같습니다.\n    * **포스코플로우:** 연근해 지역 우선순위 전략적 파트너, 월간 30TEU 이상 Bkg 유입 목표\n    * **판토스NOW:** 1월 정식 런칭, 현재 서비스 프로모션 및 마케팅 진행 중\n    * **쉽다:** 중국발 위주 월간 20~30 TEU 수입 Bkg 유입, 싱가포르/말레이시아/인도네시아 등 확대\n    * **서프컴퍼니:** 북중국향 포워더 대상 이벤트성 프로모션 검토, CY~Door 포함 남성해운 서비스 홍보 및 영업 지원\n    * **밸류링크유:** 평택발 하이퐁착 월간 10~30 TEU 냉동화물 수출 지속\n    * **지비티에스:** Bkg 유입 미미, 2024년 1월부터 자체 포워더팀 신설\n\n* **성과:** 비대면 영업 채널 확대를 통해 시장 변화에 적응하고 경쟁력 강화 노력 중\n\n**3. 디지털 기술 활용 서비스:**\n\n\n남성해운은 디지털 기술을 활용하여 \n\n* **하상운송 네트워크 기반 국내외 거점 및 운송 인프라 연결**: 화주사에게 경쟁력 있는 운임 제공\n* **해운 물류 서비스 연계**: 디지털 기술 활용\n* **아세안 지역 내륙 개발**: 복합 운송 연계 서비스 계획 추진\n* **해외 거점 터미널 확보**: 해외 운송 네트워크 확장\n* **소규모 항구 개발**: 일본, 중국, 인도 등 피더 네트워크 강화\n* **친환경 고효율 선박 확충**: 지속가능한 운영 및 친환경 이미지 구축\n\n등을 통해 차별화된 서비스를 제공하고 있습니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**4. 우수 선화주 및 국적 화주 상생 협력:**\n\n\n남성해운은 우수선화주 상생 협력을 기반으로 디지털 기술을 활용하여 국적 화주사에게 실질적인 효용을 제공하고자 합니다. 또한 네트워크 및 물류 인프라 공동 활용을 통한 시너지 효과 창출 및 운영 비용 절감으로 국적 기업의 글로벌 경쟁력 제고 및 선사/화주의 동반성장을 목표로 하고 있습니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**5.  Extended Logistics 추진:**\n\n\n남성해운은 "Beyond Shipping, Engineering the future"라는 슬로건 아래 기존의 Port to Port 서비스 강점을 바탕으로 육상 운송까지 서비스를 확대하는 Extended Logistics를 추진하고 있습니다. 이를 통해 신규 비즈니스 진입, 제3자 물동량 처리, 배후부지/Depot/운송사 자영화 및 지분 투자 등을 통해 사업 영역을 확장하고자 합니다. ([남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n**결론:**\n\n남성해운은 디지털 전략을 통해 물류 산업 혁신을 주도하고 있으며, 디지털 기술 도입을 적극 추진하여 다양한 파트너와의 협력, 새로운 서비스 및 사업 모델 개발, 고객 경험 향상에 힘쓰고 있습니다.\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='그 디지털 전략의 첫 번째 핵심 사항이 뭔지 궁금해.', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운 디지털 전략의 첫 번째 핵심 사항은 **"Digitalized Logistics to Empower your Experience"라는 비전 아래, 디지털 혁신을 위한 로드맵을 구축하고 e-Service 및 플랫폼 파트너사, 디지털 포워더사와 협업하며 구체적인 실행 계획을 세우고 있다는 점입니다. ** ( [남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='그 디지털 전략의 첫 번째 핵심 사항이 뭔지 궁금해.', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운 디지털 전략의 첫 번째 핵심 사항은 **"Digitalized Logistics to Empower your Experience"라는 비전 아래, 디지털 혁신을 위한 로드맵을 구축하고 e-Service 및 플랫폼 파트너사, 디지털 포워더사와 협업하며 구체적인 실행 계획을 세우고 있다는 점입니다. ** ( [남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='그 첫 번째 사항을 좀 더 세부적으로 설명해줄래?', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운 디지털 전략의 첫 번째 핵심 사항은 **"Digitalized Logistics to Empower your Experience"** 라는 비전 아래 **디지털 혁신을 위한 구체적인 로드맵을 구축하고, 다양한 파트너와의 협업을 통해 이를 실행하는 것입니다.**\n\n다음은 이를 세부적으로 설명한 내용입니다.\n\n1. **"Digitalized Logistics to Empower your Experience"라는 비전:**  남성해운은 단순히 디지털 기술을 도입하는 것을 넘어, 디지털 기술을 통해 물류 체계 전체에 혁신을 가져와 고객에게 힘을 줍니다. 이는 고객에게 맞춤형 서비스를 제공하고, 물류 프로세스를 효율적으로 개선하며, 새로운 가치를 창출하기 위한 기본 철학입니다.\n\n2. **디지털 혁신을 위한 로드맵 구축:** 목표가 명확하고 구체적인 로드맵을 통해 단계적으로 디지털 전환을 추진합니다. 로드맵에는 단기, 중장기 목표, 구현 방안, 필요 자원 등이 포함될 것입니다.\n\n3. **e-Service 및 플랫폼 파트너사와의 협업:** 남성해운은  자체 플랫폼 외에 다양한 e-Service 및 플랫폼 파트너사들과 협력하여 서비스 범위를 확대하고 시너지 효과를 창출합니다.\n\n4. **디지털 포워더사와의 협업:** 전통적인 포워딩 업무뿐만 아니라 디지털 기술을 활용한 새로운 포워딩 서비스를 제공하는 디지털 포워더사와 협력하여 서비스 품질 향상 및 경쟁력 강화를 추구합니다.\n\n결론적으로 남성해운은 단순히 기술 도입에 그치지 않고, 명확한 비전 아래 협력 및 전략적인 실행을 통해 디지털 전환을 이끌어나가고 있습니다.\n\n\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='그 첫 번째 사항을 좀 더 세부적으로 설명해줄래?', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운 디지털 전략의 첫 번째 핵심 사항은 **"Digitalized Logistics to Empower your Experience"** 라는 비전 아래 **디지털 혁신을 위한 구체적인 로드맵을 구축하고, 다양한 파트너와의 협업을 통해 이를 실행하는 것입니다.**\n\n다음은 이를 세부적으로 설명한 내용입니다.\n\n1. **"Digitalized Logistics to Empower your Experience"라는 비전:**  남성해운은 단순히 디지털 기술을 도입하는 것을 넘어, 디지털 기술을 통해 물류 체계 전체에 혁신을 가져와 고객에게 힘을 줍니다. 이는 고객에게 맞춤형 서비스를 제공하고, 물류 프로세스를 효율적으로 개선하며, 새로운 가치를 창출하기 위한 기본 철학입니다.\n\n2. **디지털 혁신을 위한 로드맵 구축:** 목표가 명확하고 구체적인 로드맵을 통해 단계적으로 디지털 전환을 추진합니다. 로드맵에는 단기, 중장기 목표, 구현 방안, 필요 자원 등이 포함될 것입니다.\n\n3. **e-Service 및 플랫폼 파트너사와의 협업:** 남성해운은  자체 플랫폼 외에 다양한 e-Service 및 플랫폼 파트너사들과 협력하여 서비스 범위를 확대하고 시너지 효과를 창출합니다.\n\n4. **디지털 포워더사와의 협업:** 전통적인 포워딩 업무뿐만 아니라 디지털 기술을 활용한 새로운 포워딩 서비스를 제공하는 디지털 포워더사와 협력하여 서비스 품질 향상 및 경쟁력 강화를 추구합니다.\n\n결론적으로 남성해운은 단순히 기술 도입에 그치지 않고, 명확한 비전 아래 협력 및 전략적인 실행을 통해 디지털 전환을 이끌어나가고 있습니다.\n\n\n\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='두 번째 핵심 사항은 어떤 거야?', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운의 디지털 전략에서 네 번째 핵심 사항은 **"Extended Logistics" 추진**입니다. ( [남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n남성해운은 **"Beyond Shipping, Engineering the future"라는 슬로건 아래 기존의 Port to Port 서비스 강점을 바탕으로 육상 운송까지 서비스를 확대**하는 Extended Logistics를 추진하고 있습니다. 이를 통해 얻기 원하는 효과는 다음과 같습니다.\n\n* **신규 비즈니스 진입:**  Extended Logistics를 통해 기존 서비스 범위를 확장하고 새로운 수익 창출 기회를 모색합니다.\n* **제3자 물동량 처리**: 외부 파트너를 통해 물동량을 확보하고 운영 효율성을 높입니다.\n* **배후부지/Depot/운송사 자영화 및 지분 투자**: 물류 인프라 확보 및 운송망 강화를 통해 경쟁력 강화를 노립니다.\n\n결론적으로, 남성해운은  단순한 해운 서비스 제공을 넘어 **전반적인 물류 서비스를 통합적으로 제공하는 기업으로 도약하고자 하는 것을 두 번째 핵심 전략**으로 삼고 있습니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='두 번째 핵심 사항은 어떤 거야?', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운의 디지털 전략에서 네 번째 핵심 사항은 **"Extended Logistics" 추진**입니다. ( [남성해운] 우수선화주기업 인증제도 현장평가 참조자료_20231103.pptx)\n\n남성해운은 **"Beyond Shipping, Engineering the future"라는 슬로건 아래 기존의 Port to Port 서비스 강점을 바탕으로 육상 운송까지 서비스를 확대**하는 Extended Logistics를 추진하고 있습니다. 이를 통해 얻기 원하는 효과는 다음과 같습니다.\n\n* **신규 비즈니스 진입:**  Extended Logistics를 통해 기존 서비스 범위를 확장하고 새로운 수익 창출 기회를 모색합니다.\n* **제3자 물동량 처리**: 외부 파트너를 통해 물동량을 확보하고 운영 효율성을 높입니다.\n* **배후부지/Depot/운송사 자영화 및 지분 투자**: 물류 인프라 확보 및 운송망 강화를 통해 경쟁력 강화를 노���니다.\n\n결론적으로, 남성해운은  단순한 해운 서비스 제공을 넘어 **전반적인 물류 서비스를 통합적으로 제공하는 기업으로 도약하고자 하는 것을 두 번째 핵심 전략**으로 삼고 있습니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='두 번째 사항도 구체적으로 듣고 싶어.', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운의 디지털 전략에서 두 번째 핵심 사항은 **비대면 영업 채널 확대**입니다. ([남성해운]  팀별 주간회의_W9_240227.pptx)\n\n시장 수요 증가와 디지털 전환(DT) 추세에 발맞춰, 남성해운은 비대면 영업 채널을 적극 확대하고 있습니다. **포스코플로우, 판토스NOW, 쉽다, 서프컴퍼니, 밸류링크유, 지비티에스 등 다양한 파트너사와 협업**하며 월간 30TEU 이상의 Bkg 유입을 목표로 하고 있습니다.\n\n* 각 파트너사와의 협력 내용 및 목표 Bkg 유입량은 다음과 같습니다.\n    * **포스코플로우**: 연근해 지역 우선순위 전략적 파트너, 월간 30TEU 이상 Bkg 유입 목표\n    * **판토스NOW**: 1월 정식 런칭, 현재 서비스 프로모션 및 마케팅 진행 중\n    * **쉽다**: 중국발 위주 월간 20~30 TEU 수입 Bkg 유입, 싱가포르/말레이시아/인도네시아 등 확대\n    * **서프컴퍼니**: 북중국향 포워더 대상 이벤트성 프로모션 검토, CY~Door 포함 남성해운 서비스 홍보 및 영업 지원\n    * **밸류링크유**: 평택발 하이퐁착 월간 10~30 TEU 냉동화물 수출 지속\n    * **지비티에스**: Bkg 유입 미미, 2024년 1월부터 자체 포워더팀 신설\n\n* 이를 통해 남성해운은 시장 변화에 적응하고 경쟁력을 강화하기 위해 노력하고 있습니다.\n\n \n\n요약하자면, 남성해운은 디지털 기술을 활용하여 다양한 비대면 영업 채널을 구축하고 파트너사들과 협력하며, 전통적인 방식에서 벗어나 효율적이고 편리한 서비스를 제공하고자 합니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='두 번째 사항도 구체적으로 듣고 싶어.', additional_kwargs={}, response_metadata={}), AIMessage(content='남성해운의 디지털 전략에서 두 번째 핵심 사항은 **비대면 영업 채널 확대**입니다. ([남성해운]  팀별 주간회의_W9_240227.pptx)\n\n시장 수요 증가와 디지털 전환(DT) 추세에 발맞춰, 남성해운은 비대면 영업 채널을 적극 확대하고 있습니다. **포스코플로우, 판토스NOW, 쉽다, 서프컴퍼니, 밸류링크유, 지비티에스 등 다양한 파트너사와 협업**하며 월간 30TEU 이상의 Bkg 유입을 목표로 하고 있습니다.\n\n* 각 파트너사와의 협력 내용 및 목표 Bkg 유입량은 다음과 같습니다.\n    * **포스코플로우**: 연근해 지역 우선순위 전략적 파트너, 월간 30TEU 이상 Bkg 유입 목표\n    * **판토스NOW**: 1월 정식 런칭, 현재 서비스 프로모션 및 마케팅 진행 중\n    * **쉽다**: 중국발 위주 월간 20~30 TEU 수입 Bkg 유입, 싱가포르/말레이시아/인도네시아 등 확대\n    * **서프컴퍼니**: 북중국향 포워더 대상 이벤트성 프로모션 검토, CY~Door 포함 남성해운 서비스 홍보 및 영업 지원\n    * **밸류링크유**: 평택발 하이퐁착 월간 10~30 TEU 냉동화물 수출 지속\n    * **지비티에스**: Bkg 유입 미미, 2024년 1월부터 자체 포워더팀 신설\n\n* 이를 통해 남성해운은 시장 변화에 적응하고 경쟁력을 강화하기 위해 노력하고 있습니다.\n\n \n\n요약하자면, 남성해운은 디지털 기술을 활용하여 다양한 비대면 영업 채널을 구축하고 파트너사들과 협력하며, 전통적인 방식에서 벗어나 효율적이고 편리한 서비스를 제공하고자 합니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='남성해운은 디지털 전환을 위해 어떤 시스템을 쓰나요?', additional_kwargs={}, response_metadata={}), AIMessage(content='제공된 자료에는 남성해운이 디지털 전환을 위해 구체적으로 어떤 시스템을 사용하는지에 대한 정보는 없습니다. 다만, 다음과 같은 내용을 통해 추측해 볼 수 있습니다.\n\n* **e-Service 플랫폼:** 남성해운은 고객에게 직접 Door 부킹을 진행할 수 있는 e-Service를 제공할 계획입니다.([남성해운] 24년 2사분기 수정사업계획 및 핵심추진과제 진행경과 공유회_20240404.pptx) 이는 화주가 온라인으로 직접 부킹하고, 남성해운과 운송사 TMS 시스템이 연동되어 배차 일정이 자동으로 공유되는 시스템을 의미합니다.\n\n* **운송 관리 시스템 (TMS):** 남성해운은 운송사 TMS 시스템과 연동하여 배차 일정을 공유하고 관리하는 것을 목표로 하고 있습니다. 상세한 시스템 명칭이나 정보는 공개되어 있지 않습니다.\n* **CY-Door 운송연계 시스템:**  남성해운은 화주가 e-service 상에서 CY-Door 진행요청 시점부터 투더블유로 운송오더 되기까지의 과정을 자동화하기 위해 시스템을 개발하였습니다.  \n\n* **인보이싱 시스템:** 남성해운은 Door 사전결제 서비스 시스템을 구축하여 고객 편의성을 높이고자 합니다.\n\n* **데이터 분석 플랫폼:** 남성해운은 데이터 기반 의사 결정을 위해 데이터 분석 플랫폼을 사용할 가능성이 높습니다. \n\n추가적인 정보를 얻기 위해서는 남성해운의 공식 홈페이지, 홍보 자료, 또는 관련 기사를 참고하는 것이 좋습니다.\n', additional_kwargs={}, response_metadata={}), HumanMessage(content='남성해운은 디지털 전환을 위해 어떤 시스템을 쓰나요?', additional_kwargs={}, response_metadata={}), AIMessage(content='제공된 자료에는 남성해운이 디지털 전환을 위해 구체적으로 어떤 시스템을 사용하는지에 대한 정보는 없습니다. 다만, 다음과 같은 내용을 통해 추측해 볼 수 있습니다.\n\n* **e-Service 플랫폼:** 남성해운은 고객에게 직접 Door 부킹을 진행할 수 있는 e-Service를 제공할 계획입니다.([남성해운] 24년 2사분기 수정사업계획 및 핵심추진과제 진행경과 공유회_20240404.pptx) 이는 화주가 온라인으로 직접 부킹하고, 남성해운과 운송사 TMS 시스템이 연동되어 배차 일정이 자동으로 공유되는 시스템을 의미합니다.\n\n* **운송 관리 시스템 (TMS):** 남성해운은 운송사 TMS 시스템과 연동하여 배차 일정을 공유하고 관리하는 것을 목표로 하고 있습니다. 상세한 시스템 명칭이나 정보는 공개되어 있지 않습니다.\n* **CY-Door 운송연계 시스템:**  남성해운은 화주가 e-service 상에서 CY-Door 진행요청 시점부터 투더블유로 운송오더 되기까지의 과정을 자동화하기 위해 시스템을 개발하였습니다.  \n\n* **인보이싱 시스템:** 남성해운은 Door 사전결제 서비스 시스템을 구축하여 고객 편의성을 높이고자 합니다.\n\n* **데이터 분석 플랫폼:** 남성해운은 데이터 기반 의사 결정을 위해 데이터 분석 플랫폼을 사용할 가능성이 높습니다. \n\n추가적인 정보를 얻기 위해서는 남성해운의 공식 홈페이지, 홍보 자료, 또는 관련 기사를 참고하는 것이 좋습니다.\n', additional_kwargs={}, response_metadata={})]
+(InferenceActor pid=592)
+(InferenceActor pid=592) [사용자 질문]
+(InferenceActor pid=592) 남성해운의 e-Service 플랫폼에서 구체적으로 어떤 기능들을 제공하는지 알려주세요.
+(InferenceActor pid=592) [STREAM] SSE: calling generate_answer_stream for request_id=1741324928054-8355
+(InferenceActor pid=592) === [In-Flight Batching] Waiting for first item in request_queue... ===
+(InferenceActor pid=592) [STREAM] close_sse_queue => removing SSE queue for request_id=1741324928054-8355
+[DEBUG] /query_stream (POST) called with user_input='디지털 플랫폼 파트너사도 있나요? 있다면 어디인가요?', request_id='1741324928054-8355'
+[DEBUG] Built http_query={'qry_contents': '디지털 플랫폼 파트너사도 있나요? 있다면 어디인가요?', 'request_id': '1741324928054-8355'}
+[DEBUG] streaming request_id=1741324928054-8355
+(ServeReplica:default:inference pid=591) INFO 2025-03-07 05:24:27,341 default_inference f4dn59bh 99521909-de8b-474f-87ad-a3082dc9b3b7 -- CALL process_query_stream OK 4.5ms
+(InferenceActor pid=592) [STREAM] process_query_stream => request_id=1741324928054-8355, http_query={'qry_contents': '디지털 플랫폼 파트너사도 있나요? 있다면 어디인가요?', 'request_id': '1741324928054-8355'}
+(InferenceActor pid=592) [STREAM] Created SSE queue for request_id=1741324928054-8355
+(InferenceActor pid=592) [STREAM] Putting item into request_queue for request_id=1741324928054-8355
+(InferenceActor pid=592) [STREAM] Done putting item in queue => request_id=1741324928054-8355
+(InferenceActor pid=592) [In-Flight Batching] Got the first request. Attempting to fill a batch...
+(InferenceActor pid=592) 2025-03-07 05:24:27,390 INFO [Batch Tracking] Batch size: 1, Token counts: [0]
+(InferenceActor pid=592) 2025-03-07 05:24:27,391 INFO 배치 처리 전 상태 - Process Memory: RSS=2570.24 MB, VMS=40609.17 MB
+(InferenceActor pid=592) 2025-03-07 05:24:27,391 INFO 배치 처리 전 상태 - GPU Memory: allocated=0.00 MB, reserved=0.00 MB
+(InferenceActor pid=592) 2025-03-07 05:24:27,391 INFO Entering load_data()
+(InferenceActor pid=592) 2025-03-07 05:24:27,391 INFO Exiting load_data() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:27,391 INFO Entering query_sort()
+(InferenceActor pid=592) 2025-03-07 05:24:27,391 INFO Exiting query_sort() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:27,391 INFO Entering collect_vllm_text()
+(InferenceActor pid=592) 2025-03-07 05:24:27,391 INFO Exiting collect_vllm_text() -- Elapsed: 0.00s
+(InferenceActor pid=592) [In-Flight Batching] Timeout reached => proceeding with the batch.
+(InferenceActor pid=592) [DEBUG] _process_single_query 시작: 05:24:27, 요청 내용: {'request_id': '1741324928054-8355', 'http_query': {'qry_contents': '디지털 플랫폼 파트너사도 있나요? 있다면 어디인가요?', 'request_id': '1741324928054-8355'}}, 현재 스레드: AsyncIO Thread: default
+(InferenceActor pid=592) [STREAM] _process_single_query: request_id=1741324928054-8355
+(InferenceActor pid=592) Using cached data
+(InferenceActor pid=592)    ... calling query_sort() ...
+(InferenceActor pid=592) ##### query_sort is starting #####
+(InferenceActor pid=592) INFO 03-07 05:24:27 async_llm.py:161] Added request dadbb725-06c4-40aa-ae72-ec915e0ddd18.
+(InferenceActor pid=592) INFO 03-07 05:24:28 loggers.py:72] Avg prompt throughput: 1556.9 tokens/s, Avg generation throughput: 19.5 tokens/s, Running: 1 reqs, Waiting: 0 reqs GPU KV cache usage: 17.6%.
+(InferenceActor pid=592) 2025-03-07 05:24:29,297 INFO Entering error_format()
+(InferenceActor pid=592) 2025-03-07 05:24:29,298 INFO Exiting error_format() -- Elapsed: 0.00s
+(InferenceActor pid=592) 2025-03-07 05:24:29,298 INFO 배치 처리 후 상태 - Process Memory: RSS=2570.24 MB, VMS=40609.17 MB
+(InferenceActor pid=592) 2025-03-07 05:24:29,298 INFO 배치 처리 후 상태 - GPU Memory: allocated=0.00 MB, reserved=0.00 MB
+(InferenceActor pid=592) [DEBUG query_sort] Generated answer:
+(InferenceActor pid=592) <query/>남성해운 디지털 전략 파트너 중 디지털 플랫폼 파트너는 없다. </query/>
+(InferenceActor pid=592) <keyword/>디지털 플랫폼 파트너, 남성해운 </keyword>
+(InferenceActor pid=592) <table/>no<table>
+(InferenceActor pid=592) <time/>2025년 3월 7일</time>
+(InferenceActor pid=592) [ERROR query_sort] query_pattern not found in answer:
+(InferenceActor pid=592) <query/>남성해운 디지털 전략 파트너 중 디지털 플랫폼 파트너는 없다. </query/>
+(InferenceActor pid=592) <keyword/>디지털 플랫폼 파트너, 남성해운 </keyword>
+(InferenceActor pid=592) <table/>no<table>
+(InferenceActor pid=592) <time/>2025년 3월 7일</time>
+(InferenceActor pid=592) [ERROR] 처리 중 오류 발생: Missing <query> tag in generated answer.
+(InferenceActor pid=592) === [In-Flight Batching] Waiting for first item in request_queue... ===
+(InferenceActor pid=592) INFO 03-07 05:24:34 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 7.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:24:39 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:24:44 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:24:49 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:24:54 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:24:59 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:04 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:09 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:14 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:19 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:24 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:29 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:34 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:39 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:44 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:49 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:54 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:25:59 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:26:04 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:26:09 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:26:14 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:26:19 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+(InferenceActor pid=592) INFO 03-07 05:26:24 loggers.py:72] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs GPU KV cache usage: 0.0%.
+[DEBUG] SSE closed.
+2025-03-07 05:26:27,442 INFO 14.39.16.61 - - [07/Mar/2025 05:26:27] "POST /query_stream HTTP/1.1" 200 -
 
----
+```
 
 -----------------
 
@@ -3527,9 +3548,10 @@ Base-Knowledge:
  - Langchain을 활용하여 reqeust_id별로 대화를 저장하고 활용할 수 있습니다.
  - 에러 발생 시 로깅을 통해 문제를 추적할 수 있도록 설계되었습니다.
 
-My-Requirements:
+Answer-Condition:
  1. 추후 소스 코드 개선, 구조 변경, 에러 로그 추가 등 다양한 요구사항을 반영할 수 있는 확장성을 고려합니다.
  2. 전체 코드는 한국어로 주석 및 설명이 포함되어, 이해와 유지보수가 용이하도록 작성됩니다.
- 3. 문제1. summarizer이 제대로 작동하지 아니함.
- 4. 문제2. 1~2회의 질문 수행 이후에 모델이 동작하지 않음.
- 5. 위 두 문제를 상세히 분석하여 원인을 규명하고, 이에 대한 해결책을 제시할 것.
+
+My-Requirements:
+ 1. 마지막 로그에서 보다시피, 에러로 인해서 스트리밍이 멈춤에도 불구하고 SSE가 즉각적으로 닫히지 않아서 이를 해결하지 못하고 있습니다. 이를 해결하세요.
+ 2. 마지막 front로 전송할 대답을 만드는 추론 과정에서 이전 대화 + RAG 검색 자료 + 사용자 구체화 질문이 같이 들어갑니다. 이때에 토큰 수를 각각과 총합을 계산하는 코드를 삽입하시오.

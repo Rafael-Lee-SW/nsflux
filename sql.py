@@ -21,23 +21,28 @@ def generate_sql(query, model, tokenizer, config):
     final_sql_query, title, explain, outputs_2 = second_llm(model, tokenizer, relevant_metadata, sql_query, query, retrival_metadata, parsed_columns, config)
     print(f'SecondLLM\n제목:{title}\n설명:{explain}\nSQL:{final_sql_query}')
     print(config.beep)
-    columns, results = execute_sql_query(final_sql_query, config)   # SQL 쿼리 실행 (데이터 조회)
-    print(f'Result\n컬럼:{columns}\n결과:{results}')
-    print(config.beep)
+    
+        # SQL 실행
+    columns, results = execute_sql_query(final_sql_query, config)
+    if columns is None and results is None:
+        # DB 에러 발생 등
+        print("[SQL Debug] DB 처리 중 오류가 발생했거나 SQL이 잘못되어 결과 없음.")
+        return None
+
+    # 결과 처리
+    if not results:
+        print("[SQL Debug] SQL 실행 결과가 비어 있습니다. (0개 행)")
+        # None을 반환하여 상위에서 체크하게끔.
+        return None
 
     # result -> json
     table_json = create_table_json(columns, results)
     chart_json = create_chart_json(columns, results)
     
-    # 결과 출력
-    if results:
-        print("조회된 컬럼:\n", columns)
-        for row in results:
-            print(row)
-        return final_sql_query, title, explain, table_json, chart_json
-    else:
-        print("조회 결과가 없습니다.")
-        return None
+    print("[SQL Debug] 조회된 컬럼:", columns)
+    print("[SQL Debug] 조회된 결과(Row) 예시:", results[:3], "...")
+    return final_sql_query, title, explain, table_json, chart_json
+
     
 def first_llm(model, tokenizer, column_usage, user_query, config):
     PROMPT =\
