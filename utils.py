@@ -34,7 +34,6 @@ import logging
 
 logging.basicConfig(level=logging.DEBUG)
 
-
 # -------------------------------------------------
 # Function: find_weight_directory
 # -------------------------------------------------
@@ -219,27 +218,27 @@ def load_model(config):
         
         # engine_args.enable_memory_defrag = True # v1 새로운 기능
         
-        # ★★ 추가: 슬라이딩 윈도우 비활성화 옵션 적용 ★★
-        if vllm_conf.get("disable_sliding_window", False):
-            # cascade attention에서는 슬라이딩 윈도우가 (-1, -1)이어야 함
-            engine_args.sliding_window = (-1, -1)
-            print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
+        # # ★★ 추가: 슬라이딩 윈도우 비활성화 옵션 적용 ★★
+        # if vllm_conf.get("disable_sliding_window", False):
+        #     # cascade attention에서는 슬라이딩 윈도우가 (-1, -1)이어야 함
+        #     engine_args.sliding_window = (-1, -1)
+        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
         
         # print("Final EngineArgs:", engine_args)
         print("EngineArgs setting be finished")
         
-                # ── 여기서 unified_attention 호출 추적을 위한 monkey-patch ──
-        try:
-            if hasattr(torch.ops.vllm, "unified_attention_with_output"):
-                orig_unified_attention = torch.ops.vllm.unified_attention_with_output
-                def tracking_unified_attention(*args, **kwargs):
-                    logging.info("Called unified_attention_with_output with args: %s, kwargs: %s", args, kwargs)
-                    return orig_unified_attention(*args, **kwargs)
-                torch.ops.vllm.unified_attention_with_output = tracking_unified_attention
-                logging.info("Monkey-patched unified_attention_with_output for tracking.")
-        except Exception as e:
-            logging.warning("Failed to monkey-patch unified_attention_with_output: %s", e)
-        # ── 끝 ──
+        #         # ── 여기서 unified_attention 호출 추적을 위한 monkey-patch ──
+        # try:
+        #     if hasattr(torch.ops.vllm, "unified_attention_with_output"):
+        #         orig_unified_attention = torch.ops.vllm.unified_attention_with_output
+        #         def tracking_unified_attention(*args, **kwargs):
+        #             logging.info("Called unified_attention_with_output with args: %s, kwargs: %s", args, kwargs)
+        #             return orig_unified_attention(*args, **kwargs)
+        #         torch.ops.vllm.unified_attention_with_output = tracking_unified_attention
+        #         logging.info("Monkey-patched unified_attention_with_output for tracking.")
+        # except Exception as e:
+        #     logging.warning("Failed to monkey-patch unified_attention_with_output: %s", e)
+        # # ── 끝 ──
 
         try:
             # --- v1 구동 해결책: 현재 스레드가 메인 스레드가 아니면 signal 함수를 임시 패치 ---
@@ -792,3 +791,4 @@ def diagnose_and_fix_dataset(data_path, output_path=None):
     except Exception as e:
         print(f"데이터셋 진단 중 오류: {str(e)}")
         return False
+    

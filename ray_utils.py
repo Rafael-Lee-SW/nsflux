@@ -23,7 +23,8 @@ from utils import (
     process_to_format,
     error_format,
 )
-from summarizer import Summarizer
+# from summarizer import summarize_conversation
+from summarizer import summarize_conversation
 from debug_tracking import log_batch_info, log_system_info
 
 # 랭체인 도입
@@ -64,11 +65,6 @@ class InferenceActor:
         # key: request_id, value: ConversationBufferMemory()
         # ---------------------------
         self.memory_map = {}
-        
-        # Instantiate the summarizer inside the actor
-        # (Using Gemma2-2b-it here; adjust model name or parameters as needed)
-        self.summarizer = Summarizer(model_name="google/gemma-2-2b-it", max_position_embeddings=8192)
-
 
         # In-flight batching까지 추가 적용
         asyncio.create_task(self._in_flight_batch_processor())
@@ -337,18 +333,19 @@ class InferenceActor:
                         new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
                         updated_conversation = prev_summary + "\n" + new_entry
                         # Summarized CPU 사용
-                        import concurrent.futures
+                        # import concurrent.futures
 
                         # Create a dedicated pool with more workers (e.g., 4)
-                        summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+                        # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
 
                         # Later, when calling the summarization function:
-                        summarized = await loop.run_in_executor(summary_pool, self.summarizer.summarize, updated_conversation)
-                        # After obtaining 'summarized' in _process_single_query:
-                        if not summarized:
-                            print("[ERROR] Summarization returned an empty string.")
-                        else:
-                            print(f"[CHECK] Summarized conversation: {summarized}")
+                        summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        # # After obtaining 'summarized' in _process_single_query:
+                        # if not summarized:
+                        #     print("[ERROR] Summarization returned an empty string.")
+                        # else:
+                        #     print(f"[CHECK] Summarized conversation: {summarized}")
+                        
                         memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
                         # >>> CHANGED -----------------------------------------------------
                         future.set_result(outputs)
@@ -403,14 +400,15 @@ class InferenceActor:
                         prev_summary = memory.load_memory_variables({}).get("summary", "")
                         new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
                         updated_conversation = prev_summary + "\n" + new_entry
-                        # Summarized CPU 사용
-                        import concurrent.futures
+                        # # Summarized CPU 사용
+                        # import concurrent.futures
 
-                        # Create a dedicated pool with more workers (e.g., 4)
-                        summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+                        # # Create a dedicated pool with more workers (e.g., 4)
+                        # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
 
                         # Later, when calling the summarization function:
-                        summarized = await loop.run_in_executor(summary_pool, self.summarizer.summarize, updated_conversation)
+                        summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        
                         memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
                         # --------------------------------------------------------------------
                         future.set_result(outputs)
@@ -541,19 +539,18 @@ class InferenceActor:
             new_entry = f"User: {user_input}\nAssistant: {final_text}\nUsed Chunks: {chunk_ids_used}\n"
             updated_conversation = prev_summary + "\n" + new_entry
             # Inside _process_single_query, after getting the summarized text:
-            # Summarized CPU 사용
-            import concurrent.futures
+            # # Summarized CPU 사용
+            # import concurrent.futures
 
-            # Create a dedicated pool with more workers (e.g., 4)
-            summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+            # # Create a dedicated pool with more workers (e.g., 4)
+            # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
 
-            # Later, when calling the summarization function:
-            summarized = await loop.run_in_executor(summary_pool, self.summarizer.summarize, updated_conversation)
-
-            if not summarized:
-                print("[ERROR] Summarization returned an empty string.")
-            else:
-                print("[CHECK] Summarized conversation:", summarized)
+            # # Later, when calling the summarization function:
+            summarized = await loop.run_in_executor(None, summarize_conversation, updated_conversation)
+            # if not summarized:
+            #     print("[ERROR] Summarization returned an empty string.")
+            # else:
+            #     print("[CHECK] Summarized conversation:", summarized)
             
             memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used, "summary": summarized})
             # >>> CHANGED: -------------------------------------------------------
