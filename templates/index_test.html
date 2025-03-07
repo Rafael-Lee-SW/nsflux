@@ -11,7 +11,6 @@
     <!-- Google Fonts (선택 사항) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <!-- 필요한 Google Fonts만 불러오십시오. -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   </head>
   <body>
@@ -33,20 +32,20 @@
 • same100 : 100개 (같은 질문)
 • circulate5x20 : 5개 질문 x 20회
 • mixed100 : 100개 다양한 질문
-">
+• chatting : 100개 다양한 질문">
           테스트 세트:
         </label>
-        <!-- onchange="updateContinuousCountMax()"를 추가하여, 셋이 바뀔 때마다 호출 -->
         <select id="testSetSelect" onchange="updateContinuousCountMax()">
           <option value="set_3_ask">3개짜리 (set_3_ask)</option>
           <option value="set_5_ask">5개짜리 (set_5_ask)</option>
           <option value="set_10_ask">10개짜리 (set_10_ask)</option>
-          <option value="set_15_ask">15개짜리 (set_15_ask)</option>
-          <option value="set_20_ask_1" selected>20개짜리 1 (set_20_ask_1)</option>
+          <option value="set_15_ask" selected>15개짜리 (set_15_ask)</option>
+          <option value="set_20_ask_1">20개짜리 1 (set_20_ask_1)</option>
           <option value="sset_20_ask_2">20개짜리 2 (sset_20_ask_2)</option>
           <option value="same100">동일질문 100개 (same100)</option>
           <option value="circulate5x20">5문항 × 20회 (circulate5x20)</option>
           <option value="mixed100">100개 혼합(mixed100)</option>
+          <option value="chatting">관련 있는 질문 100개</option>
         </select>
       </div>
       
@@ -57,6 +56,7 @@
         <div class="tab" onclick="switchTab('tab3')">스트리밍 (Streaming)</div>
         <div class="tab" onclick="switchTab('tab4')">동시 스트리밍 (Simultaneous Streaming)</div>
         <div class="tab" onclick="switchTab('tab5')">연속 테스트 (Continuous Test)</div>
+        <div class="tab" onclick="switchTab('tab6')">채팅 테스트 (Chat Test)</div>
       </div>
       
       <!-- (1) Non-Streaming Query -->
@@ -85,7 +85,7 @@
               <h5>Concurrent Queries Test</h5>
             </div>
           </div>
-          <p>선택한 테스트 세트의 모든 쿼리를 동시에 전송하고 결과를 표시합니다.</p>
+          <p>선택한 테스트 셋의 모든 쿼리를 동시에 전송하고 결과를 표시합니다.</p>
           <div id="progressIndicator" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
           <button class="btn btn-primary btn-lg" onclick="testQueries()">테스트 시작 (Start Test)</button>
           <div class="output" id="testResults"></div>
@@ -135,7 +135,7 @@
         </div>
       </div>
 
-      <!-- (5) Continuous Sync Test -->
+      <!-- (5) Continuous Query Test -->
       <div id="tab5" class="tab-content">
         <div class="card">
           <div class="card-header">
@@ -146,14 +146,12 @@
           </div>
           <p>
             선택한 테스트 셋에 따라 연속적으로 쿼리를 실행하고 평균 응답 시간을 계산합니다.
+            (스트리밍 모드에서는 각 요청의 스트리밍 결과를 별도 컨테이너에 실시간으로 보여주며, 상단에 요약 테이블도 표시됩니다.)
           </p>
           <div id="continuousProgress" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
-          
           <div class="input-group">
             <label for="continuousCount" style="white-space: nowrap;">쿼리 개수 설정:</label>
-            <!-- 초기 max="100" 대신, 자바스크립트로 동적으로 갱신 -->
             <input type="number" id="continuousCount" min="1" max="100" value="10" style="width:6rem;" />      
-            
             <button class="btn btn-primary" onclick="continuousTest('nonstream')">
               일반 쿼리 연속 테스트 (Non-Streaming Test)
             </button>
@@ -161,8 +159,36 @@
               스트리밍 연속 테스트 (Streaming Test)
             </button>
           </div>
-          
+          <!-- This container will first show individual streaming panels then a summary table -->
           <div class="output markdown-content" id="continuousTestResults"></div>
+        </div>
+      </div>
+      
+      <!-- (6) Chat System Test (Shared Request ID) -->
+      <div id="tab6" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>연속 채팅 테스트</h2>
+              <h5>Continuous Chat Test (Shared request_id)</h5>
+            </div>
+          </div>
+          <p>
+            선택한 테스트 셋의 모든 쿼리를 하나의 공유된 request_id로 연속 실행합니다.
+            (스트리밍 모드에서는 각 요청의 스트리밍 결과를 별도 컨테이너에 실시간으로 보여주며, 상단에 요약 테이블도 표시됩니다.)
+          </p>
+          <div id="chatTestProgress" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
+          <div class="input-group">
+            <label for="chatTestCount" style="white-space: nowrap;">쿼리 개수 설정:</label>
+            <input type="number" id="chatTestCount" min="1" max="100" value="10" style="width:6rem;" />
+            <button class="btn btn-primary" onclick="continuousChatTest('nonstream', 'chat')">
+              일반 채팅 테스트 (Non-Streaming)
+            </button>
+            <button class="btn btn-primary" onclick="continuousChatTest('stream', 'chat')">
+              스트리밍 채팅 테스트 (Streaming)
+            </button>
+          </div>
+          <div class="output markdown-content" id="chatTestResults"></div>
         </div>
       </div>
     </div>
@@ -178,84 +204,55 @@
     <!-- 공통 스크립트 (HTML 내부) -->
     <script>
       /************************************************************
-       *  공통 유틸 함수들
+       * 공통 유틸 함수들
        ************************************************************/
-      // 시간 포맷: "HH:MM:SS.ms"
       function formatTime(d) {
         if (!d) return '';
         const ms = d.getMilliseconds().toString().padStart(3, '0');
         return d.toLocaleTimeString() + '.' + ms;
       }
 
-      // 다크 모드 토글
       function toggleDarkMode() {
         document.body.classList.toggle('dark');
         localStorage.setItem('darkMode', document.body.classList.contains('dark'));
       }
-
-      // 저장된 다크 모드 상태 확인
       if (localStorage.getItem('darkMode') === 'true') {
         document.body.classList.add('dark');
       }
 
-      // 탭 전환
       function switchTab(tabId) {
-        // 모든 탭 콘텐츠 숨기기
-        document.querySelectorAll('.tab-content').forEach(content => {
-          content.classList.remove('active');
-        });
-        
-        // 모든 탭 비활성화
-        document.querySelectorAll('.tab').forEach(tab => {
-          tab.classList.remove('active');
-        });
-        
-        // 선택된 탭/콘텐츠 활성화
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
         document.getElementById(tabId).classList.add('active');
         document.querySelector(`.tab[onclick="switchTab('${tabId}')"]`).classList.add('active');
       }
 
-      // 숨김/토글
       function toggleHiddenDiv(divId) {
         const div = document.getElementById(divId);
         if (!div) return;
         div.style.display = (div.style.display === "none" || div.style.display === "") ? "block" : "none";
       }
 
-      // 참조 데이터 토글
       function toggleReferences() {
         const refDiv = document.getElementById("referenceData");
-        if (refDiv.style.display === "none" || refDiv.style.display === "") {
-          refDiv.style.display = "block";
-        } else {
-          refDiv.style.display = "none";
-        }
+        refDiv.style.display = (refDiv.style.display === "none" || refDiv.style.display === "") ? "block" : "none";
       }
 
-      // 간단한 마크다운 렌더링 (볼드, 이탤릭, 코드 등)
       function renderMarkdown(text) {
         if (!text) return '';
-        // **bold**
         text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        // _italic_
         text = text.replace(/\_(.*?)\_/g, '<em>$1</em>');
-        // `code`
         text = text.replace(/\`(.*?)\`/g, '<code>$1</code>');
-        // ```code block```
         text = text.replace(/\`\`\`([\s\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>');
-        // 줄바꿈
         text = text.replace(/\n/g, '<br>');
-        // 리스트 (단순 - 사용)
         text = text.replace(/^\s*\-\s+(.*?)$/gm, '<li>$1</li>');
         text = text.replace(/(<li>.*?<\/li>)/gs, '<ul>$1</ul>');
-        // 헤더(#, ##, ###)
         text = text.replace(/^#\s+(.*?)$/gm, '<h1>$1</h1>');
         text = text.replace(/^##\s+(.*?)$/gm, '<h2>$1</h2>');
         text = text.replace(/^###\s+(.*?)$/gm, '<h3>$1</h3>');
         return text;
       }
 
-      // JSON 응답을 출력용 HTML로 변환
       function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
         let formattedOutput = `
           <strong>전송 시간 (Send Time):</strong> ${sendTime} <br>
@@ -277,14 +274,12 @@
             let retrievalHTML = "";
             data.data_list.forEach((item, idx) => {
               if (item.rsp_type === "A") {
-                // 답변 타입(A) → 마크다운으로 랜더링
                 if (item.answer) {
                   answerHTML += `<div class="markdown-content">${renderMarkdown(item.answer)}</div>`;
                 } else {
                   answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
                 }
               } else if (item.rsp_type === "R") {
-                // 참조 데이터(R)
                 const hiddenId = `retrieval_${uniquePrefix}_${idx}`;
                 retrievalHTML += `
                   <div>
@@ -295,7 +290,6 @@
                   </div>
                 `;
               } else {
-                // 기타
                 answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
               }
             });
@@ -313,7 +307,6 @@
         return formattedOutput;
       }
 
-      // 진행 상황 표시
       function updateProgressIndicator(elementId, current, total, successCount = 0, failCount = 0) {
         const elem = document.getElementById(elementId);
         if (elem) {
@@ -323,22 +316,16 @@
       }
 
       /************************************************************
-       *  (A) 동적으로 연속 테스트 개수의 max를 갱신하는 함수
+       * (A) 동적으로 연속 테스트 개수의 max를 갱신하는 함수
        ************************************************************/
       function updateContinuousCountMax() {
-        const queries = buildTestQueries(); // 현재 선택된 테스트셋의 쿼리들
+        const queries = buildTestQueries();
         const length = queries.length;
-
-        // 'continuousCount' input 엘리먼트
         const input = document.getElementById('continuousCount');
-
-        // input의 max를 갱신
         input.max = length;
-
-        // 만약 현재 value가 새 max보다 크다면, clamp(최댓값으로 조정)
         const currentValue = parseInt(input.value, 10) || 1;
         if (currentValue > length) {
-          input.value = length; // length 이하로 조정
+          input.value = length;
         }
       }
 
@@ -351,13 +338,10 @@
           alert('질문을 입력해주세요. (Please enter a query.)');
           return;
         }
-        
         document.getElementById('output').innerHTML = '<div class="progress-indicator">요청 처리 중... (Processing request...)</div>';
-        
         const sendTime = new Date();
         const sendTimeStr = formatTime(sendTime);
         const startTimestamp = Date.now();
-
         fetch('/query', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -373,8 +357,7 @@
               });
             }
             return response.json().then((data) => {
-              document.getElementById('output').innerHTML =
-                formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
+              document.getElementById('output').innerHTML = formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
             });
           })
           .catch((error) => {
@@ -382,8 +365,7 @@
             const receiveTimeStr = formatTime(receiveTime);
             const elapsed = Date.now() - startTimestamp;
             console.error('Error:', error);
-            document.getElementById('output').innerHTML =
-              formatJsonOutput({ error: error.message }, sendTimeStr, receiveTimeStr, elapsed);
+            document.getElementById('output').innerHTML = formatJsonOutput({ error: error.message }, sendTimeStr, receiveTimeStr, elapsed);
           });
       }
 
@@ -397,16 +379,12 @@
         let arrivalCounter = 0;
         let successCount = 0;
         let failCount = 0;
-
         updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
-
         const results = [];
-
         queries.forEach((query) => {
           const sendTime = new Date();
           const sendTimeStr = formatTime(sendTime);
           const startTimestamp = Date.now();
-
           fetch('/query', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -416,7 +394,6 @@
               const receiveTime = new Date();
               const receiveTimeStr = formatTime(receiveTime);
               const elapsed = Date.now() - startTimestamp;
-
               if (!response.ok) {
                 failCount++;
                 return response.text().then((errorData) => {
@@ -518,25 +495,25 @@
             </table>
           </div>
         `;
-
         let detailsHTML = '<div class="test-details"><h3>개별 테스트 상세 (Individual Test Details)</h3>';
         results.forEach((result) => {
           const safeResultOutput = result.success
-            ? formatJsonOutput(
-                result.data || {},
-                result.sendTime,
-                result.receiveTime,
-                result.elapsed,
-                result.id
-              )
+            ? formatJsonOutput(result.data || {}, result.sendTime, result.receiveTime, result.elapsed, result.id)
             : `<pre style="color:var(--danger);">오류 (Error): ${result.error || '알 수 없는 오류 (Unknown error)'}</pre>`;
-
+          let extraInfo = "";
+          if (result.result) {
+            extraInfo += `<p><strong>답변:</strong><br><pre>${result.result}</pre></p>`;
+          }
+          if (result.firstChunkDelta) {
+            extraInfo += `<p><strong>스트리밍 시작 시간:</strong> ${result.firstChunkDelta} ms</p>`;
+          }
           detailsHTML += `
             <div class="test-item">
               <h4>${result.id} - ${result.text}</h4>
               <p><strong>도착 순서 (Arrival Order):</strong> ${result.arrival}</p>
               <p><strong>상태 (Status):</strong> ${result.success ? '성공 (Success)' : '실패 (Fail)'}</p>
               ${safeResultOutput}
+              ${extraInfo}
             </div>
           `;
         });
@@ -553,19 +530,16 @@
       let streamingInProgress = false;
       let answerAccumulated = "";
       let sseBuffer = "";
-
       async function startStreamPOST() {
         if (streamingInProgress) {
           alert("스트리밍이 이미 진행 중입니다. (Streaming is already in progress.)");
           return;
         }
-        
         const userQuery = document.getElementById('streamInput').value.trim();
         if (!userQuery) {
           alert('스트리밍 쿼리를 입력해주세요. (Please type a streaming query.)');
           return;
         }
-        
         streamingInProgress = true;
         answerAccumulated = "";
         sseBuffer = "";
@@ -575,12 +549,9 @@
         document.getElementById('streamTiming').innerHTML = "";
         document.getElementById('referenceData').innerHTML = "";
         document.getElementById('referenceData').style.display = "none";
-        
         document.getElementById('streamOutput').textContent = "스트리밍 응답을 기다리는 중... (Waiting for streaming response...)";
-      
         const querySentTime = new Date();
         postStreamStartTime = performance.now();
-      
         try {
           const response = await fetch('/query_stream', {
             method: 'POST',
@@ -591,12 +562,9 @@
             const errTxt = await response.text();
             throw new Error('응답 오류 (Response not OK): ' + response.status + " " + errTxt);
           }
-          
           document.getElementById('streamOutput').textContent = "";
-          
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
-      
           while (true) {
             const { done, value } = await reader.read();
             if (done) {
@@ -617,7 +585,6 @@
           streamingInProgress = false;
         }
       }
-
       function processPostSseChunk(chunk) {
         sseBuffer += chunk;
         let lines = sseBuffer.split("\n");
@@ -652,13 +619,11 @@
                 answerAccumulated += jsonData.answer;
               }
             } catch (e) {
-              // JSON이 아닐 경우, 텍스트로 누적
               answerAccumulated += sseData;
             }
           }
         }
       }
-
       function updatePostStreamTiming(querySentTime) {
         let msg = "";
         if (querySentTime) {
@@ -683,6 +648,25 @@
       /************************************************************
        * (4) Simultaneous Streaming Test (POST-based)
        ************************************************************/
+      async function testSimulStreamPOST() {
+        const queries = buildTestQueries();
+        const simulPartialsContainer = document.getElementById("simul-partials");
+        const simulResultsContainer = document.getElementById("simul-results");
+        simulPartialsContainer.innerHTML = '<div class="progress-indicator">동시 스트리밍 테스트 준비 중...</div>';
+        simulResultsContainer.innerHTML = "";
+        const promises = queries.map((q, index) => {
+          const containerId = "simul-stream-" + index;
+          const div = document.createElement("div");
+          div.id = containerId;
+          div.className = "card";
+          div.style.marginBottom = "1rem";
+          simulPartialsContainer.appendChild(div);
+          return startSimulStreamPOST(q, containerId);
+        });
+        let results = await Promise.all(promises);
+        let summaryTable = buildSimulSummaryTable(results);
+        simulResultsContainer.innerHTML = summaryTable;
+      }
       async function startSimulStreamPOST(queryObj, containerId) {
         const container = document.getElementById(containerId);
         container.innerHTML = `
@@ -692,7 +676,6 @@
           <button class="btn btn-secondary btn-sm" onclick="toggleReferencesInContainer('${containerId}')">참조 데이터 보기 (Toggle References)</button>
           <div class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
         `;
-
         let answerAccumulated = "";
         let sseBuffer = "";
         let chunkCount = 0;
@@ -701,7 +684,6 @@
         let endTime = null;
         let success = true;
         let errorMessage = "";
-
         try {
           const response = await fetch('/query_stream', {
             method: 'POST',
@@ -712,24 +694,11 @@
             success = false;
             errorMessage = `응답 오류: ${response.status}`;
             container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">${errorMessage}</span>`;
-            return {
-              id: queryObj.id,
-              query: queryObj.text,
-              sendTime: streamStartTime,
-              firstChunkTime,
-              endTime,
-              duration: 0,
-              success,
-              error: errorMessage,
-              chunkCount
-            };
+            return { id: queryObj.id, query: queryObj.text, sendTime: streamStartTime, firstChunkTime, endTime, duration: 0, success, error: errorMessage, chunkCount };
           }
-          
           container.querySelector(".stream-output").textContent = "스트리밍 응답 대기 중...";
-          
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
-
           while (true) {
             const { done, value } = await reader.read();
             if (done) {
@@ -740,7 +709,6 @@
             if (chunkCount === 0) {
               container.querySelector(".stream-output").textContent = "";
             }
-            
             const chunk = decoder.decode(value, { stream: true });
             sseBuffer += chunk;
             let lines = sseBuffer.split("\n");
@@ -763,7 +731,7 @@
                     sendTime: streamStartTime,
                     firstChunkTime,
                     endTime,
-                    duration: endTime - streamStartTime,
+                    duration: (endTime - streamStartTime).toFixed(1),
                     success,
                     error: errorMessage,
                     chunkCount
@@ -800,7 +768,6 @@
           errorMessage = err.message;
           container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">오류: ${err.message}</span>`;
         }
-
         endTime = endTime || performance.now();
         updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
         return {
@@ -809,13 +776,12 @@
           sendTime: streamStartTime,
           firstChunkTime,
           endTime,
-          duration: endTime - streamStartTime,
+          duration: (endTime - streamStartTime).toFixed(1),
           success,
           error: errorMessage,
           chunkCount
         };
       }
-
       function updateContainerTiming(container, start, first, end, chunkCount) {
         const infoBox = container.querySelector(".stream-info-box");
         let infoMsg = "";
@@ -835,7 +801,6 @@
         infoMsg += `<strong>청크 수(Chunk Count):</strong> ${chunkCount}`;
         infoBox.innerHTML = infoMsg;
       }
-
       function toggleReferencesInContainer(containerId) {
         const container = document.getElementById(containerId);
         const refDiv = container.querySelector(".reference-output");
@@ -846,123 +811,82 @@
         }
       }
 
-      async function testSimulStreamPOST() {
-        const queries = buildTestQueries();
-        const simulPartialsContainer = document.getElementById("simul-partials");
-        const simulResultsContainer = document.getElementById("simul-results");
-        simulPartialsContainer.innerHTML = '<div class="progress-indicator">동시 스트리밍 테스트 준비 중...</div>'; 
-        simulResultsContainer.innerHTML = "";
-
-        const promises = queries.map((q, index) => {
-          const containerId = "simul-stream-" + index;
-          const div = document.createElement("div");
-          div.id = containerId;
-          div.className = "card";
-          div.style.marginBottom = "1rem";
-          simulPartialsContainer.appendChild(div);
-          return startSimulStreamPOST(q, containerId);
-        });
-
-        let results = await Promise.all(promises);
-        let summaryTable = buildSimulSummaryTable(results);
-        simulResultsContainer.innerHTML = summaryTable;
-      }
-
-      function buildSimulSummaryTable(results) {
-        let successCount = 0;
-        let failCount = 0;
-        results.forEach(r => {
-          if (r.success) successCount++;
-          else failCount++;
-        });
-
-        let html = `<div class="test-summary">
-                      <h3>동시 스트리밍 결과</h3>
-                      <p>총: ${results.length}, 성공: ${successCount}, 실패: ${failCount}</p>
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>ID</th>
-                            <th>쿼리</th>
-                            <th>전송 시간(ms)</th>
-                            <th>첫 응답(ms)</th>
-                            <th>종료(ms)</th>
-                            <th>소요(ms)</th>
-                            <th>청크 수</th>
-                            <th>상태</th>
-                            <th>오류</th>
-                          </tr>
-                        </thead>
-                        <tbody>`;
-
-        results.forEach(r => {
-          const statusText = r.success ? "성공" : "실패";
-          const statusClass = r.success ? "badge-success" : "badge-danger";
-          const errorText = r.error || "";
-          const firstTimeStr = r.firstChunkTime ? r.firstChunkTime.toFixed(1) : "n/a";
-          const endTimeStr = r.endTime ? r.endTime.toFixed(1) : "n/a";
-          const durationStr = r.duration ? r.duration.toFixed(1) : "n/a";
-          html += `<tr>
-                     <td>${r.id}</td>
-                     <td>${r.query}</td>
-                     <td>${r.sendTime.toFixed(1)}</td>
-                     <td>${firstTimeStr}</td>
-                     <td>${endTimeStr}</td>
-                     <td>${durationStr}</td>
-                     <td>${r.chunkCount}</td>
-                     <td><span class="badge ${statusClass}">${statusText}</span></td>
-                     <td style="color:var(--danger);">${errorText}</td>
-                   </tr>`;
-        });
-
-        html += `</tbody></table></div>`;
-        return html;
-      }
-
       /************************************************************
-       * (5) 연속 쿼리 테스트
+       * (5) Continuous Query Test
+       * For streaming mode, run queries concurrently with individual containers.
        ************************************************************/
       async function continuousTest(mode) {
         let queries = buildTestQueries();
-      
         const totalAvailable = queries.length; 
         const userInputCount = parseInt(document.getElementById('continuousCount').value, 10) || 1;
         const limit = Math.min(userInputCount, totalAvailable);
-      
         const truncated = queries.slice(0, limit);
-      
-        const results = [];
-        const total = truncated.length;
-        document.getElementById('continuousTestResults').innerHTML = 
-          `<div class="progress-indicator">${mode === 'nonstream' ? '일반' : '스트리밍'} 테스트 실행 중...</div>`;
-        
-        updateProgressIndicator('continuousProgress', 0, total);
-        
-        for (let i = 0; i < total; i++) {
-          if (mode === 'nonstream') {
+        if (mode === 'nonstream') {
+          // Sequential non-streaming test (unchanged)
+          const results = [];
+          const total = truncated.length;
+          document.getElementById('continuousTestResults').innerHTML = `<div class="progress-indicator">일반 테스트 실행 중...</div>`;
+          updateProgressIndicator('continuousProgress', 0, total);
+          for (let i = 0; i < total; i++) {
             const r = await runNonStreamingQuery(truncated[i]);
             results.push(r);
-          } else {
-            const r = await runStreamingQuery(truncated[i]);
-            results.push(r);
+            updateProgressIndicator('continuousProgress', i + 1, total);
           }
-          updateProgressIndicator('continuousProgress', i + 1, total);
+          let sum = 0;
+          results.forEach(r => sum += Number(r.duration));
+          const avg = (sum / results.length).toFixed(2);
+          let html = `<h3>연속 일반 테스트 결과 (${total}개)</h3>`;
+          html += `<p>평균 소요 시간: <strong>${avg} ms</strong></p>`;
+          html += "<ul>";
+          results.forEach((r) => {
+            html += `<li><strong>${r.id}</strong> [${r.query}] - 시작: ${r.startTime}, 종료: ${r.endTime}, 소요: ${r.duration} ms</li>`;
+          });
+          html += "</ul>";
+          document.getElementById('continuousTestResults').innerHTML = html;
+        }else {
+          // (중요) 스트리밍 모드를 "연속적으로" 실행하되,
+          // "쿼리 1개 끝날 때마다" 개별 카드 + 요약 테이블을 즉시 업데이트
+          const parent = document.getElementById('continuousTestResults');
+          parent.innerHTML = ''; // 기존 내용 초기화
+        
+          const total = truncated.length;
+        
+          // 1) 누적 요약 테이블을 계속 갱신하기 위한 컨테이너 생성
+          const summaryContainer = document.createElement('div');
+          summaryContainer.id = "continuous-summary";
+          parent.appendChild(summaryContainer);
+
+          // 2) 부분결과(개별 카드)들을 표시할 컨테이너
+          const partialsContainer = document.createElement('div');
+          partialsContainer.id = "continuous-partials";
+          parent.appendChild(partialsContainer);
+        
+        
+          const results = [];
+        
+          // (중요) for 루프 + await = "연속" 스트리밍 실행
+          for (let i = 0; i < total; i++) {
+            const queryObj = truncated[i];
+        
+            // 각 쿼리에 대응되는 카드 DIV
+            const containerId = `continuous-stream-${i}`;
+            const cardDiv = document.createElement('div');
+            cardDiv.id = containerId;
+            cardDiv.className = "card";
+            cardDiv.style.marginBottom = "1rem";
+            partialsContainer.appendChild(cardDiv);
+        
+            // runStreamingQueryWithUI() 함수를 사용하여 스트리밍 쿼리를 연속적으로 실행
+            const result = await runStreamingQueryWithUI(queryObj, cardDiv);
+            results.push(result);
+        
+            // ★ 쿼리 한 건 끝날 때마다 요약 테이블을 즉시 업데이트
+            summaryContainer.innerHTML = buildSimulSummaryTable(results);
+          }
+          
+          // (선택) 모든 쿼리가 끝난 뒤에도 한 번 더 갱신 가능
+          summaryContainer.innerHTML = buildSimulSummaryTable(results);
         }
-      
-        let sum = 0;
-        results.forEach(r => sum += r.duration);
-        const avg = (sum / results.length).toFixed(2);
-      
-        let html = `<h3>연속 ${mode === 'nonstream' ? '일반' : '스트리밍'} 테스트 결과 (${total}개)</h3>`;
-        html += `<p>평균 소요 시간: <strong>${avg} ms</strong></p>`;
-        html += "<ul>";
-        results.forEach((r) => {
-          html += `<li><strong>${r.id}</strong> [${r.query}] - 시작: ${r.startTime}, 종료: ${r.endTime}, 소요: ${r.duration} ms</li>`;
-        });
-        html += "</ul>";
-        document.getElementById('continuousTestResults').innerHTML = html;
-      }
-      
       async function runNonStreamingQuery(qObj) {
         const sendTime = new Date();
         const startTs = Date.now();
@@ -983,58 +907,499 @@
           query: qObj.text,
           startTime: formatTime(sendTime),
           endTime: formatTime(endTime),
-          duration: duration
+          duration: duration.toString()
         };
       }
+    }
+    /* [수정 후: runStreamingQueryWithUI 함수 - SSE 청크 단위로 처리] */
+    function runStreamingQueryWithUI(qObj, container) {
+      return new Promise(async (resolve, reject) => {
+        const sendTime = new Date();
+        const startTs = performance.now();
 
-      function runStreamingQuery(qObj) {
-        return new Promise((resolve, reject) => {
-          const sendTime = new Date();
-          const startTs = Date.now();
-          let accumulatedText = "";
-          
-          fetch('/query_stream', {
+        // UI 초기화
+        container.innerHTML = `
+          <h4>${qObj.id} - ${qObj.text}</h4>
+          <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem;"></div>
+          <div class="stream-info-box"></div>
+          <button class="btn btn-secondary btn-sm" onclick="toggleHiddenDiv('ref-${qObj.id}')">
+            참조 데이터 보기 (Toggle References)
+          </button>
+          <div id="ref-${qObj.id}" class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
+        `;
+
+        const outputDiv = container.querySelector(".stream-output");
+        const infoBox = container.querySelector(".stream-info-box");
+        const refDiv = container.querySelector(".reference-output");
+
+        let sseBuffer = "";
+        let answerAccumulated = "";
+        let firstChunkTime = null;
+        let success = true;
+        let errorMessage = "";
+        let chunkCount = 0;
+
+        try {
+          const response = await fetch('/query_stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ input: qObj.text })
-          })
-            .then(response => {
-              const reader = response.body.getReader();
-              const decoder = new TextDecoder();
-              
-              function processStream({ done, value }) {
-                if (done) {
-                  const endTime = new Date();
-                  const duration = Date.now() - startTs;
-                  resolve({
-                    id: qObj.id,
-                    query: qObj.text,
-                    startTime: formatTime(sendTime),
-                    endTime: formatTime(endTime),
-                    duration: duration,
-                    result: accumulatedText
-                  });
-                  return;
+          });
+
+          if (!response.ok) {
+            success = false;
+            errorMessage = `응답 오류: ${response.status}`;
+            outputDiv.innerHTML = `<span style="color:red;">${errorMessage}</span>`;
+            return resolve(makeResultObj(false));
+          }
+
+          // 스트리밍 읽기
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              // 끝
+              const endTime = performance.now();
+              return resolve(makeResultObj(true, endTime));
+            }
+
+            chunkCount++;
+            if (!firstChunkTime) {
+              firstChunkTime = performance.now();
+            }
+
+            // 청크 누적
+            sseBuffer += decoder.decode(value, { stream: true });
+            // \n 기준 분리
+            const lines = sseBuffer.split('\n');
+            // 마지막 라인은 아직 덜 잘린 청크일 수 있으므로 버퍼에 남김
+            sseBuffer = lines.pop();
+
+            for (let line of lines) {
+              line = line.trim();
+              if (!line) continue;
+
+              if (line.startsWith('data:')) {
+                const sseData = line.slice(5).trim();  // 'data:' 뒷부분
+                // 스트리밍 종료 신호
+                if (sseData === "[[STREAM_DONE]]") {
+                  const endTime = performance.now();
+                  return resolve(makeResultObj(true, endTime));
                 }
-                accumulatedText += decoder.decode(value, { stream: true });
-                reader.read().then(processStream).catch(reject);
+                // JSON 파싱 시도
+                try {
+                  const json = JSON.parse(sseData);
+                  if (json.type === 'reference') {
+                    // 참조 데이터
+                    let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
+                    if (Array.isArray(json.data_list)) {
+                      json.data_list.forEach((ref, idx) => {
+                        refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                      });
+                    } else {
+                      refHTML += `<li>${JSON.stringify(json.data_list)}</li>`;
+                    }
+                    refHTML += `</ul>`;
+                    refDiv.innerHTML = refHTML;
+                  } else if (json.type === 'answer') {
+                    // 답변 누적
+                    answerAccumulated += json.answer;
+                    outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                  }
+                } catch (e) {
+                  // 그냥 텍스트로 처리
+                  answerAccumulated += sseData;
+                  outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                }
               }
-              return reader.read().then(processStream);
-            })
-            .catch(err => {
-              reject(err);
+            }
+
+            // 실시간 정보 갱신
+            infoBox.innerHTML = buildInfoBoxText();
+          }
+        } catch (err) {
+          success = false;
+          errorMessage = err.message;
+          outputDiv.innerHTML = `<span style="color:red;">오류: ${err.message}</span>`;
+          return resolve(makeResultObj(false));
+        }
+
+        // 내부 편의 함수
+        function makeResultObj(successful, endTime) {
+          const endTs = endTime ? endTime : performance.now();
+          const duration = (endTs - startTs).toFixed(1);
+          const firstChunkDelta = firstChunkTime ? (firstChunkTime - startTs).toFixed(1) : null;
+          return {
+            id: qObj.id,
+            query: qObj.text,
+            sendTime: startTs,
+            endTime: formatTime(new Date()),
+            duration,
+            result: answerAccumulated,
+            firstChunkDelta,
+            firstChunkTime: firstChunkDelta,
+            success: successful,
+            error: errorMessage,
+            chunkCount
+          };
+        }
+
+        function buildInfoBoxText() {
+          let html = "";
+          if (firstChunkTime) {
+            html += `<strong>첫 응답 도착(TTFT):</strong> ${(firstChunkTime - startTs).toFixed(1)} ms<br>`;
+          } else {
+            html += `<strong>첫 응답 도착:</strong> 대기 중...<br>`;
+          }
+          html += `<strong>청크 수:</strong> ${chunkCount}`;
+          return html;
+        }
+      });
+    }
+
+      /************************************************************
+       * (6) Continuous Chat Test - All queries share the same request_id.
+       * For streaming mode, similar to (5) but using chat-specific streaming functions.
+       ************************************************************/
+      async function continuousChatTest(mode, target = 'default') {
+        let queries = buildTestQueries();
+        const totalAvailable = queries.length;
+        const countInput = target === 'chat' ? document.getElementById('chatTestCount') : document.getElementById('continuousCount');
+        const userInputCount = parseInt(countInput.value, 10) || 1;
+        const limit = Math.min(userInputCount, totalAvailable);
+        const truncated = queries.slice(0, limit);
+
+        const sharedRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000); // 이번 테스트에 사용될 랜덤 Requrest_id
+        console.log("현재 사용된 sharedRequestId : ", sharedRequestId);
+
+        if (mode === 'nonstream') {
+          const results = [];
+          const total = truncated.length;
+          document.getElementById('chatTestResults').innerHTML = `<div class="progress-indicator">일반 채팅 테스트 실행 중...</div>`;
+          updateProgressIndicator('chatTestProgress', 0, total);
+          for (let i = 0; i < total; i++) {
+            const r = await runChatNonStreamingQuery(truncated[i], sharedRequestId);
+            results.push(r);
+            updateProgressIndicator('chatTestProgress', i + 1, total);
+          }
+          let sum = 0;
+          results.forEach(r => sum += Number(r.duration));
+          const avg = (sum / results.length).toFixed(2);
+          let html = `<h3>연속 채팅 테스트 결과 (${total}개)</h3>`;
+          html += `<p>평균 소요 시간: <strong>${avg} ms</strong></p>`;
+          html += "<ul>";
+          results.forEach((r) => {
+            html += `<li><strong>${r.id}</strong> [${r.query}] - 시작: ${r.startTime}, 종료: ${r.endTime}, 소요: ${r.duration} ms</li>`;
+          });
+          html += "</ul>";
+          document.getElementById('chatTestResults').innerHTML = html;
+        } else {
+          // (중요) 채팅 모드도 "연속" 스트리밍 실행 중
+          // 각 쿼리가 끝날 때마다 결과 + 요약 테이블 실시간 업데이트
+          console.log('[DEBUG] Starting streaming chat test...');
+          const parent = document.getElementById('chatTestResults');
+          parent.innerHTML = ''; // 기존 내용 초기화
+        
+          const total = truncated.length;
+        
+          // 1) 누적 요약 테이블을 계속 갱신하기 위한 컨테이너 생성
+          const summaryContainer = document.createElement('div');
+          summaryContainer.id = "chat-summary";
+          parent.appendChild(summaryContainer);
+
+          // 2) 개별 카드 표시할 컨테이너
+          const partialsContainer = document.createElement('div');
+          partialsContainer.id = "chat-panels";
+          parent.appendChild(partialsContainer);
+        
+        
+          const results = [];
+        
+          // "연속" 스트리밍 실행
+          for (let i = 0; i < total; i++) {
+            const queryObj = truncated[i];
+            console.log(`[DEBUG] [chatTest] Starting iteration i=${i}, query=${queryObj.text}`);
+
+            const containerId = `chat-stream-${i}`;
+            const cardDiv = document.createElement('div');
+            cardDiv.id = containerId;
+            cardDiv.className = "card";
+            cardDiv.style.marginBottom = "1rem";
+            partialsContainer.appendChild(cardDiv);
+        
+            try {
+              // 스트리밍 함수 호출 전후로 로그
+              console.log(`[DEBUG] [chatTest] About to call runChatStreamingQueryWithUI() =>`, queryObj);
+              const result = await runChatStreamingQueryWithUI(queryObj, cardDiv, sharedRequestId);
+              console.log(`[DEBUG] [chatTest] Finished iteration i=${i}, got result=`, result);
+
+              results.push(result);
+              summaryContainer.innerHTML = buildSimulSummaryTable(results);
+            } catch (err) {
+              console.error(`[ERROR] iteration i=${i} failed =>`, err);
+            }
+
+          }
+
+          console.log('[DEBUG] All chat streaming queries completed. Final results=', results);
+          // (선택) 모든 쿼리가 끝난 뒤 한번 더 갱신 가능
+          summaryContainer.innerHTML = buildSimulSummaryTable(results);
+        }
+      }
+      async function runChatNonStreamingQuery(qObj, requestId) {
+        const sendTime = new Date();
+        const startTs = Date.now();
+        try {
+          const resp = await fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qry_contents: qObj.text, request_id: requestId })
+          });
+          await resp.json();
+        } catch (e) {
+          console.error("Chat non-streaming error:", e);
+        }
+        const endTime = new Date();
+        const duration = Date.now() - startTs;
+        return {
+          id: qObj.id,
+          query: qObj.text,
+          startTime: formatTime(sendTime),
+          endTime: formatTime(endTime),
+          duration: duration.toString()
+        };
+      }
+      
+
+      /* [수정 후: runChatStreamingQueryWithUI 함수 - SSE 청크 단위로 처리] */
+      function runChatStreamingQueryWithUI(qObj, container, req_id) {
+        return new Promise(async (resolve, reject) => {
+          console.log('[DEBUG] runChatStreamingQueryWithUI() start =>', qObj);
+
+          const sendTime = new Date();
+          const startTs = performance.now();
+
+          container.innerHTML = `
+            <h4>${qObj.id} - ${qObj.text}</h4>
+            <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem;"></div>
+            <div class="stream-info-box"></div>
+            <button class="btn btn-secondary btn-sm" onclick="toggleHiddenDiv('ref-chat-${qObj.id}')">
+              참조 데이터 보기 (Toggle References)
+            </button>
+            <div id="ref-chat-${qObj.id}" class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
+          `;
+
+          const outputDiv = container.querySelector(".stream-output");
+          const infoBox = container.querySelector(".stream-info-box");
+          const refDiv = container.querySelector(".reference-output");
+
+          let sseBuffer = "";
+          let answerAccumulated = "";
+          let firstChunkTime = null;
+          let success = true;
+          let errorMessage = "";
+          let chunkCount = 0;
+
+          try {
+            console.log('[DEBUG] runChatStreamingQueryWithUI() => sending fetch /query_stream');
+            const response = await fetch('/query_stream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              // (중요) request_id 공유 시, 여기서 동일한 request_id를 넣어줄 수도 있음
+              body: JSON.stringify({
+                input: qObj.text,
+                request_id: req_id
+              })
             });
+
+            if (!response.ok) {
+              success = false;
+              errorMessage = `응답 오류: ${response.status}`;
+              outputDiv.innerHTML = `<span style="color:red;">${errorMessage}</span>`;
+              return resolve(makeResultObj(false));
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                console.log('[DEBUG] SSE read loop done => finishing runChatStreamingQueryWithUI()');
+                const endTime = performance.now();
+                return resolve(makeResultObj(true, endTime));
+              }
+
+              chunkCount++;
+              if (!firstChunkTime) {
+                firstChunkTime = performance.now();
+              }
+
+              // 청크 누적
+              sseBuffer += decoder.decode(value, { stream: true });
+              const lines = sseBuffer.split('\n');
+              sseBuffer = lines.pop();
+
+              for (let line of lines) {
+                line = line.trim();
+                if (!line) continue;
+
+                if (line.startsWith('data:')) {
+                  const sseData = line.slice(5).trim();
+                  if (sseData === "[[STREAM_DONE]]") {
+                    const endTime = performance.now();
+                    return resolve(makeResultObj(true, endTime));
+                  }
+                  try {
+                    const json = JSON.parse(sseData);
+                    if (json.type === 'reference') {
+                      let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
+                      if (Array.isArray(json.data_list)) {
+                        json.data_list.forEach((ref, idx) => {
+                          refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                        });
+                      } else {
+                        refHTML += `<li>${JSON.stringify(json.data_list)}</li>`;
+                      }
+                      refHTML += `</ul>`;
+                      refDiv.innerHTML = refHTML;
+                    } else if (json.type === 'answer') {
+                      answerAccumulated += json.answer;
+                      outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                    }
+                  } catch (err) {
+                    answerAccumulated += sseData;
+                    outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                  }
+                }
+              }
+              // 실시간 정보 갱신
+              infoBox.innerHTML = buildInfoBoxText();
+            }
+          } catch (err) {
+            console.error('[ERROR] runChatStreamingQueryWithUI =>', err);
+            success = false;
+            errorMessage = err.message;
+            outputDiv.innerHTML = `<span style="color:red;">오류: ${err.message}</span>`;
+            return resolve(makeResultObj(false));
+          }
+
+          function makeResultObj(successful, endTime) {
+            const endTs = endTime ? endTime : performance.now();
+            const duration = (endTs - startTs).toFixed(1);
+            const firstChunkDelta = firstChunkTime ? (firstChunkTime - startTs).toFixed(1) : null;
+            return {
+              id: qObj.id,
+              query: qObj.text,
+              sendTime: formatTime(sendTime),
+              firstChunkTime: firstChunkDelta,
+              endTime: formatTime(new Date()),
+              duration,
+              result: answerAccumulated,
+              firstChunkDelta,
+              success: successful,
+              error: errorMessage,
+              chunkCount
+            };
+          }
+
+          function buildInfoBoxText() {
+            let html = "";
+            if (firstChunkTime) {
+              html += `<strong>첫 응답 도착(TTFT):</strong> ${(firstChunkTime - startTs).toFixed(1)} ms<br>`;
+            } else {
+              html += `<strong>첫 응답 도착:</strong> 대기 중...<br>`;
+            }
+            html += `<strong>청크 수:</strong> ${chunkCount}`;
+            return html;
+          }
         });
       }
+      
+      // 전역 적으로 요약 테이블 작성에 도움을 주는 함수
+      function buildSimulSummaryTable(results) {
+        let successCount = 0;
+        let failCount = 0;
+        results.forEach(r => {
+          if (r.success) successCount++;
+          else failCount++;
+        });
+    
+        let html = `
+          <div class="test-summary">
+            <h3>결과 요약</h3>
+            <p>총: ${results.length}, 성공: ${successCount}, 실패: ${failCount}</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>쿼리</th>
+                  <th>전송 시간</th>
+                  <th>첫 응답(TTFT)</th>
+                  <th>종료 시간</th>
+                  <th>소요(ms)</th>
+                  <th>청크 수</th>
+                  <th>상태</th>
+                  <th>오류</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+    
+        results.forEach(r => {
+          const statusText = r.success ? "성공" : "실패";
+          const statusClass = r.success ? "badge-success" : "badge-danger";
+          const errorText = r.error || "";
+    
+          // 만약 sendTime, endTime이 "오전 11:36:58.637" 같은 문자열이면 그대로 표시
+          // number면 toFixed(1) 등 해도 됨
+          const sendTimeCell = (typeof r.sendTime === 'number')
+            ? r.sendTime.toFixed(1)
+            : (r.sendTime || '');
+    
+          const firstTimeStr = (typeof r.firstChunkTime === 'number')
+            ? r.firstChunkTime.toFixed(1)
+            : (r.firstChunkTime || '');
+    
+          const endTimeStr = (typeof r.endTime === 'number')
+            ? r.endTime.toFixed(1)
+            : (r.endTime || '');
+    
+          // duration은 string/number일 수 있음
+          const durationStr = (typeof r.duration === 'number')
+            ? r.duration.toFixed(1)
+            : (r.duration || '');
+    
+          html += `
+            <tr>
+              <td>${r.id || ''}</td>
+              <td>${r.query || ''}</td>
+              <td>${sendTimeCell}</td>
+              <td>${firstTimeStr}</td>
+              <td>${endTimeStr}</td>
+              <td>${durationStr}</td>
+              <td>${r.chunkCount || 0}</td>
+              <td><span class="badge ${statusClass}">${statusText}</span></td>
+              <td style="color:var(--danger);">${errorText}</td>
+            </tr>
+          `;
+        });
+    
+        html += `
+              </tbody>
+            </table>
+          </div>
+        `;
+        return html;
+      }
 
-      // 페이지 로드시 초기로 한번 호출하여, 기본 값 세팅 
-      // (set_20_ask_1 옵션이 기본 selected이므로 길이는 20)
       window.addEventListener('DOMContentLoaded', () => {
         updateContinuousCountMax();
       });
     </script>
 
-    <!-- (중요) 분리된 Test-Set JS 로드 -->
     <script src="/static/test_set.js"></script>
   </body>
 </html>

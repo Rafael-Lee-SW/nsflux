@@ -32,24 +32,42 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
     config = kwargs.get("config")
 
     if TA == "yes":  # Table 이 필요하면
-        print("[SOOWAN]: execute_rag : 테이블 필요")
-        # SQL
-        final_sql_query, title, explain, table_json, chart_json = generate_sql(
-            QU, model, tokenizer, config
-        )
+        print("[SOOWAN]: execute_rag : 테이블 필요 (TA == yes). SQL 생성 시작합니다.")
+        try:
+            result = generate_sql(QU, model, tokenizer, config)
+        except Exception as e:
+            # 1) generate_sql() 자체가 도중에 예외를 던지는 경우
+            print("[ERROR] generate_sql() 도중 예외 발생:", e)
+            # 멈추지 않고, 에러 형식으로 데이터를 만들어 반환
+            docs = "테이블 조회 시도 중 예외가 발생했습니다. " \
+                "해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다."
+            docs_list = []
+            return docs, docs_list
 
-        # docs : 다음 LLM Input 으로 만들것 (String)
-        PROMPT = f"""\ 
-다음은 SQL 추출에 사용된 쿼리문이야 : {final_sql_query}. \
-추가 설명 : {explain}. \
-실제 SQL 추출된 데이터 : {str(table_json)}. \
-"""
-        # docs_list : 사용자들에게 보여줄 정보 (List)
+        # 2) 함수가 정상 실행됐지만 결과가 None인 경우(= SQL 쿼리 결과가 없거나 오류)
+        if result is None:
+            print("[WARNING] generate_sql()에서 None을 반환했습니다. " 
+                "SQL 수행 결과가 없거나 에러가 발생한 것일 수 있습니다.")
+            docs = "테이블 조회 결과가 비어 있습니다. " \
+                "조회할 데이터가 없거나 SQL 오류가 발생했습니다."
+            docs_list = []
+            return docs, docs_list
+
+        # 정상적인 경우(튜플 언패킹)
+        final_sql_query, title, explain, table_json, chart_json = result
+
+        # docs : LLM 입력용 (string)
+        PROMPT = (
+            f"다음은 SQL 추출에 사용된 쿼리문: {final_sql_query}\n\n"
+            f"추가 설명: {explain}\n\n"
+            f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
+        )
+        # docs_list : 사용자에게 보여줄 정보(List)
         docs_list = [
             {"title": title, "data": table_json},
             {"title": "시각화 차트", "data": chart_json},
         ]
-
+        print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
         return PROMPT, docs_list
 
     else:
