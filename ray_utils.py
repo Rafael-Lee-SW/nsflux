@@ -29,6 +29,41 @@ from debug_tracking import log_batch_info, log_system_info
 
 # 랭체인 도입
 from langchain.memory import ConversationBufferMemory
+from langchain.schema import HumanMessage, AIMessage
+
+# =============================================================================
+# Custom Conversation Memory to store extra metadata (e.g., chunk_ids)
+# =============================================================================
+class CustomConversationBufferMemory(ConversationBufferMemory):
+    """A custom memory that saves extra metadata (e.g. chunk_ids) along with the messages."""
+    def save_context(self, inputs: dict, outputs: dict) -> None:
+        # Create the human message using the input text.
+        human_msg = HumanMessage(content=inputs.get("input", ""))
+        # Create the AI message including extra metadata.
+        ai_msg = AIMessage(
+            content=outputs.get("output", ""),
+            additional_kwargs={"chunk_ids": outputs.get("chunk_ids", [])}
+        )
+        # Append the messages to the internal chat memory.
+        self.chat_memory.messages.append(human_msg)
+        self.chat_memory.messages.append(ai_msg)
+        
+    def load_memory_variables(self, inputs: dict) -> dict:
+        # Return the raw list of messages so that our serializer can access additional_kwargs.
+        return {"history": self.chat_memory.messages}
+
+# Serialization function for messages
+def serialize_message(msg):
+    if isinstance(msg, HumanMessage):
+        return {"role": "human", "content": msg.content}
+    elif isinstance(msg, AIMessage):
+        refs = msg.additional_kwargs.get("chunk_ids", [])
+        print("직렬화 과정 체크, ref 잘 들어있는지 : ", refs)
+        return {"role": "ai", "content": msg.content, "references": refs}
+    else:
+        return {"role": "unknown", "content": msg.content if hasattr(msg, "content") else str(msg)}
+# =============================================================================
+# =============================================================================
 
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
@@ -70,16 +105,15 @@ class InferenceActor:
         asyncio.create_task(self._in_flight_batch_processor())
 
 
-    def get_memory_for_session(self, request_id: str) -> ConversationBufferMemory:
+    def get_memory_for_session(self, request_id: str) -> CustomConversationBufferMemory:
         """
         세션별 Memory를 안전하게 가져오는 헬퍼 메서드.
         만약 memory_map에 request_id가 없으면 새로 생성해 저장 후 반환.
         """
         if request_id not in self.memory_map:
-            print(f"[DEBUG] Creating new ConversationBufferMemory for session={request_id}")
-            self.memory_map[request_id] = ConversationBufferMemory(return_messages=True)
+            print(f"[DEBUG] Creating new CustomConversationBufferMemory for session={request_id}")
+            self.memory_map[request_id] = CustomConversationBufferMemory(return_messages=True)
         return self.memory_map[request_id]
-
 
     # --------------------------------------------------------
     # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
@@ -241,10 +275,7 @@ class InferenceActor:
                 print("[SYNC] _process_single_query started...")
                 
             # 2) Memory 객체 가져오기 (없으면 새로 생성)
-            if request_id not in self.memory_map:
-                self.memory_map[request_id] = ConversationBufferMemory(return_messages=True)
-            
-            memory = self.memory_map[request_id]
+            memory = self.get_memory_for_session(request_id)
 
             # 3) 유저가 현재 입력한 쿼리 가져오기
             user_input = http_query.get("qry_contents", "")
@@ -348,30 +379,31 @@ class InferenceActor:
                         final_data = [retrieval, answer]
                         outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
                         
-                        # >>> CHANGED: Record used chunk IDs and summarize the conversation
-                        
+                        # >>> Record used chunk IDs
                         chunk_ids_used = []
                         for doc in docs_list:
                             if "chunk_id" in doc:
                                 chunk_ids_used.append(doc["chunk_id"])
-                        loop = asyncio.get_event_loop()
-                        prev_summary = memory.load_memory_variables({}).get("summary", "")
-                        new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
-                        updated_conversation = prev_summary + "\n" + new_entry
-                        # Summarized CPU 사용
-                        # import concurrent.futures
+                                
+                        # >>> CHANGED: summarize the conversation
+                        # loop = asyncio.get_event_loop()
+                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
+                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
+                        # updated_conversation = prev_summary + "\n" + new_entry
+                        # # Summarized CPU 사용
+                        # # import concurrent.futures
 
-                        # Create a dedicated pool with more workers (e.g., 4)
-                        # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+                        # # Create a dedicated pool with more workers (e.g., 4)
+                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
 
-                        # Later, when calling the summarization function:
-                        summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
-                        # # After obtaining 'summarized' in _process_single_query:
-                        # if not summarized:
-                        #     print("[ERROR] Summarization returned an empty string.")
-                        # else:
-                        #     print(f"[CHECK] Summarized conversation: {summarized}")
-                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
+                        # # Later, when calling the summarization function:
+                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        # # # After obtaining 'summarized' in _process_single_query:
+                        # # if not summarized:
+                        # #     print("[ERROR] Summarization returned an empty string.")
+                        # # else:
+                        # #     print(f"[CHECK] Summarized conversation: {summarized}")
+                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
                         # >>> CHANGED -----------------------------------------------------
                         
                         future.set_result(outputs)
@@ -423,20 +455,22 @@ class InferenceActor:
                         for doc in docs_list:
                             if "chunk_id" in doc:
                                 chunk_ids_used.append(doc["chunk_id"])
-                        loop = asyncio.get_event_loop()
-                        prev_summary = memory.load_memory_variables({}).get("summary", "")
-                        new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
-                        updated_conversation = prev_summary + "\n" + new_entry
-                        # # Summarized CPU 사용
-                        # import concurrent.futures
+                                
                         
-                        # # Create a dedicated pool with more workers (e.g., 4)
-                        # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+                        # loop = asyncio.get_event_loop()
+                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
+                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
+                        # updated_conversation = prev_summary + "\n" + new_entry
+                        # # # Summarized CPU 사용
+                        # # import concurrent.futures
                         
-                        # Later, when calling the summarization function:
-                        summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        # # # Create a dedicated pool with more workers (e.g., 4)
+                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
                         
-                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used, "summary": summarized})
+                        # # Later, when calling the summarization function:
+                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        
+                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
                         # --------------------------------------------------------------------
                         
                         future.set_result(outputs)
@@ -600,13 +634,12 @@ class InferenceActor:
                 # print(f"[STREAM] Sending token: {answer_json}")
                 await self.queue_manager.put_token.remote(request_id, answer_json)
             final_text = partial_accumulator
-            # 이제 memory에 저장 (이미 request_id를 알고 있다고 가정) # 랭체인
-            try:
-                memory.save_context({"input": user_input}, {"output": final_text})
-            except Exception as e:
-                msg = f"[STREAM] memory.save_context failed: {str(e)}"
-                print(msg)
-
+            # # 이제 memory에 저장 (이미 request_id를 알고 있다고 가정) # 랭체인
+            # try:
+            #     memory.save_context({"input": user_input}, {"output": final_text})
+            # except Exception as e:
+            #     msg = f"[STREAM] memory.save_context failed: {str(e)}"
+            #     print(msg)
                 
             if chart is not None:
                 ans = process_to_format([final_text, chart], type="Answer")
@@ -614,31 +647,17 @@ class InferenceActor:
             else:
                 ans = process_to_format([final_text], type="Answer")
                 final_res = process_format_to_response(retrieval, ans)
+                
             # >>> CHANGED: Update conversation summary in streaming branch as well
             chunk_ids_used = []
+            print("retrieval의 형식 : ", retrieval)
             for doc in retrieval:
                 if isinstance(doc, dict) and "chunk_id" in doc:
                     chunk_ids_used.append(doc["chunk_id"])
-            loop = asyncio.get_event_loop() # CHANGED
-            prev_summary = memory.load_memory_variables({}).get("summary", "")
-            new_entry = f"User: {user_input}\nAssistant: {final_text}\nUsed Chunks: {chunk_ids_used}\n"
-            updated_conversation = prev_summary + "\n" + new_entry
-            # Inside _process_single_query, after getting the summarized text:
-            # # Summarized CPU 사용
-            # import concurrent.futures
-
-            # # Create a dedicated pool with more workers (e.g., 4)
-            # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-
-            # # Later, when calling the summarization function:
-            summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
-            # if not summarized:
-            #     print("[ERROR] Summarization returned an empty string.")
-            # else:
-            #     print("[CHECK] Summarized conversation:", summarized)
-            
-            memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used, "summary": summarized})
+            memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used})
+            print("메시지 저장 직후 chunk_id 확인 : ", memory)
             # >>> CHANGED: -------------------------------------------------------
+            
             future.set_result(final_res)
             await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
             print(
@@ -727,15 +746,31 @@ class InferenceActor:
             del self.active_sse_queues[request_id]
         else:
             print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
+    
 
+    async def get_conversation_history(self, request_id: str) -> dict:
+        """
+        Returns the conversation history for the given request_id.
+        The messages are serialized into a JSON-friendly format.
+        """
+        if request_id in self.memory_map:
+            memory = self.memory_map[request_id]
+            print("memory - 변환 전 : ", memory)
+            history = memory.load_memory_variables({})  # 예: {"history": [HumanMessage, AIMessage, ...]}
+            print("history - 변환 전 : ", history)
+            if "history" in history and isinstance(history["history"], list):
+                history["history"] = [serialize_message(msg) for msg in history["history"]]
+                print("history - 변환 후 : ", history["history"])
+            return history
+        else:
+            return {"history": f"No conversation history found for request_id: {request_id}"}
 
-# Too using about two actor
 
 
 # Ray Serve를 통한 배포
 @serve.deployment(
     name="inference",
-    max_ongoing_requests=50,
+    max_ongoing_requests=100,
     )
 class InferenceService:
     def __init__(self, config):
@@ -759,6 +794,11 @@ class InferenceService:
     async def close_sse_queue(self, req_id: str) -> str:
         await self.actor.close_sse_queue.remote(req_id)
         return "closed"
+    
+    # 새로 추가: request_id에 따른 대화 기록을 조회하는 메서드
+    async def get_history(self, request_id: str):
+        result = await self.actor.get_conversation_history.remote(request_id)
+        return result
 
 
 # Ray의 요청을 비동기적으로 관리하기 위해 도입하는 큐-매니저
