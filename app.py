@@ -272,7 +272,7 @@ def query_stream_to_clt():
 
     return Response(error_format("수신양호", 200), content_type="application/json")
 
-# 새로 추가: request_id로 대화 기록을 조회하는 API 엔드포인트
+# 새로 추가1: request_id로 대화 기록을 조회하는 API 엔드포인트
 @app.route("/history", methods=["GET"])
 def conversation_history():
     request_id = request.args.get("request_id", "")
@@ -288,6 +288,39 @@ def conversation_history():
     except Exception as e:
         error_resp = error_format(f"대화 기록 조회 중 오류 발생: {str(e)}", 500)
         return Response(error_resp, content_type=content_type)
+
+# 새로 추가2: request_id로 해당 답변의 참고자료를 볼 수 있는 API
+@app.route("/reference", methods=["GET"])
+def get_reference():
+    request_id = request.args.get("request_id", "")
+    msg_index = request.args.get("msg_index", "")
+    if not request_id or msg_index == "":
+        error_resp = error_format("request_id와 msg_index 파라미터가 필요합니다.", 400)
+        return Response(error_resp, content_type=content_type)
+    try:
+        msg_index = int(msg_index)
+        # Retrieve conversation history
+        response = inference_handle.get_history.remote(request_id)
+        obj_ref = response._to_object_ref_sync()
+        history_data = ray.get(obj_ref)
+        if not isinstance(history_data.get("history"), list):
+            return jsonify({"references": []})
+        if msg_index < 0 or msg_index >= len(history_data["history"]):
+            return jsonify({"error": "유효하지 않은 메시지 인덱스입니다."}), 400
+        message = history_data["history"][msg_index]
+        if message.get("role") != "ai":
+            return jsonify({"error": "선택한 메시지는 AI 응답이 아닙니다."}), 400
+        # Get chunk_ids from the message (if any)
+        chunk_ids = message.get("references", [])
+        # Now, call the new method on the actor to get the actual reference data
+        ref_response = inference_handle.get_reference_data.remote(chunk_ids)
+        ref_obj_ref = ref_response._to_object_ref_sync()
+        reference_data = ray.get(ref_obj_ref)
+        return jsonify({"references": reference_data})
+    except Exception as e:
+        error_resp = error_format(f"참조 조회 중 오류 발생: {str(e)}", 500)
+        return Response(error_resp, content_type=content_type)
+
 
 # Flask app 실행
 if __name__ == "__main__":

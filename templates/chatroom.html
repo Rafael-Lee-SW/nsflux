@@ -244,8 +244,8 @@
       chatBox.innerHTML = "";
       const room = chatRooms.find(r => r.requestId === requestId);
       if (room) {
-        room.messages.forEach(msg => {
-          appendMessageToChatBox(msg.sender, msg.text);
+        room.messages.forEach((msg, index) => {
+          appendMessageToChatBox(msg.sender, msg.text, index);
         });
       }
 
@@ -264,7 +264,7 @@
     /************************************************************************
      * Chat Message Display Helpers
      ************************************************************************/
-    function appendMessageToChatBox(sender, message) {
+    function appendMessageToChatBox(sender, message, msgIndex = null) {
       const chatBox = document.getElementById("chatBox");
       const msgDiv = document.createElement("div");
       msgDiv.classList.add("message-line");
@@ -285,6 +285,12 @@
           <line x1="3" y1="9" x2="21" y2="9"></line>
           <line x1="9" y1="21" x2="9" y2="9"></line>
         </svg>`;
+        // 만약 msgIndex가 제공되면 클릭 이벤트 부여
+        if (msgIndex !== null) {
+          msgDiv.style.cursor = "pointer";
+          msgDiv.title = "이 답변의 참조 보기";
+          msgDiv.onclick = () => loadReferenceForMessage(msgIndex);
+        }
       } else {
         messageClass = "message-system";
         senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -328,60 +334,62 @@
       
       isProcessing = true;
       document.getElementById("sendButton").disabled = true;
-
+    
       // Display user message
       appendMessageToChatBox("사용자", message);
       storeMessageInRoom(currentRequestId, "사용자", message);
       messageInput.value = "";
       messageInput.style.height = 'auto';
-
+    
       // Reset reference list for this request
       clearReferenceData();
-
+    
+      // Capture the chat room id at the time of sending the query
+      const originalRequestId = currentRequestId;
+    
       // Prepare payload
       const payload = { input: message };
-      if (currentRequestId) {
-        payload.request_id = currentRequestId;
+      if (originalRequestId) {
+        payload.request_id = originalRequestId;
       }
-
+    
       try {
         const response = await fetch('/query_stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-
+    
         if (!response.ok) {
           throw new Error("Response error: " + response.status);
         }
-
+    
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
-
+    
         let sseBuffer = "";
         let partialAnswer = "";
-
+    
         startAIStreamingMessage();  // Show AI is responding
-
+    
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
-
+    
           const chunk = decoder.decode(value, { stream: true });
           sseBuffer += chunk;
-
+    
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop(); // Last line might be incomplete
-
+    
           for (let line of lines) {
             line = line.trim();
             if (!line) continue;
-
-            // SSE format is usually "data: ..."
+    
             if (line.startsWith("data:")) {
               const jsonStr = line.slice(5).trim();
               if (jsonStr === "[[STREAM_DONE]]") {
-                finalizeAIMessage(partialAnswer);
+                finalizeAIMessage(partialAnswer, originalRequestId);
                 isProcessing = false;
                 document.getElementById("sendButton").disabled = false;
                 return;
@@ -393,26 +401,22 @@
                   updateAIStreamingMessage(partialAnswer);
                 }
                 else if (sseData.type === "reference") {
-                  // Collect reference data
                   addReferenceData(sseData);
                 }
                 else {
-                  // Other types
                   console.log("Other SSE data:", sseData);
                 }
               } catch (err) {
-                // JSON parsing failed -> treat as plain text
                 partialAnswer += jsonStr;
                 updateAIStreamingMessage(partialAnswer);
               }
             }
           }
         }
-        // End of while loop (done=true)
         if (sseBuffer.trim()) {
           // Process any remaining sseBuffer if needed
         }
-        finalizeAIMessage(partialAnswer);
+        finalizeAIMessage(partialAnswer, originalRequestId);
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
       } catch (err) {
@@ -421,7 +425,7 @@
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
       }
-    }
+    }    
 
     /************************************************************************
      * AI Streaming Display (Temporary Message)
@@ -459,20 +463,19 @@
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
-    function finalizeAIMessage(finalText) {
-      // Store final AI message in chatRooms
-      storeMessageInRoom(currentRequestId, "AI", finalText);
-      tempAiMsgDiv = null;
-
-      // Update chat room list with the first message
-      renderChatRoomList();
-
+    function finalizeAIMessage(finalText, queryRequestId) {
+      // Store final AI message in the original chat room
+      storeMessageInRoom(queryRequestId, "AI", finalText);
+      // Optionally, if the currently active chat room is the same, update the UI
+      if (currentRequestId === queryRequestId) {
+        renderChatRoomList();
+      }
       // Show reference button if references exist
       if (referenceList.length > 0) {
         document.getElementById("toggleRefBtn").style.display = "block";
       }
     }
-
+    
     /************************************************************************
      * Reference Data Related Functions
      ************************************************************************/
@@ -522,6 +525,43 @@
         `;
         container.appendChild(div);
       });
+    }
+
+    function loadReferenceForMessage(msgIndex) {
+      const url = `/reference?request_id=${currentRequestId}&msg_index=${msgIndex}`;
+      fetch(url)
+        .then(response => response.json())
+        .then(data => {
+          if (data.error) {
+            alert(data.error);
+            return;
+          }
+          displayReferenceData(data.references);
+        })
+        .catch(err => {
+          console.error("참조 데이터 로딩 오류:", err);
+          alert("참조 데이터를 불러오는 중 오류 발생");
+        });
+    }
+    
+    function displayReferenceData(refs) {
+      const container = document.getElementById("referenceContainer");
+      container.innerHTML = ""; // 초기화
+      if (refs.length === 0) {
+        container.innerHTML = "<p>참조 데이터가 없습니다.</p>";
+      } else {
+        refs.forEach((ref, idx) => {
+          const div = document.createElement("div");
+          div.className = "reference-item";
+          div.innerHTML = `
+            <h4>Reference #${idx + 1}</h4>
+            <pre>${JSON.stringify(ref, null, 2)}</pre>
+          `;
+          container.appendChild(div);
+        });
+      }
+      // 참조 영역을 보이도록 토글
+      container.style.display = "block";
     }
   </script>
 </body>
