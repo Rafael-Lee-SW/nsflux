@@ -276,18 +276,21 @@ def query_stream_to_clt():
 @app.route("/history", methods=["GET"])
 def conversation_history():
     request_id = request.args.get("request_id", "")
+    last_index = request.args.get("last_index")
     if not request_id:
         error_resp = error_format("request_id 파라미터가 필요합니다.", 400)
         return Response(error_resp, content_type=content_type)
     try:
-        # get_history 호출 후 DeploymentResponse에서 ObjectRef 추출
-        response = inference_handle.get_history.remote(request_id)
+        # last_index 파라미터가 전달되면 정수 변환, 없으면 None
+        last_index = int(last_index) if last_index is not None else None
+        response = inference_handle.get_history.remote(request_id, last_index=last_index)
         obj_ref = response._to_object_ref_sync()
         history_data = ray.get(obj_ref)
         return jsonify(history_data)
     except Exception as e:
         error_resp = error_format(f"대화 기록 조회 중 오류 발생: {str(e)}", 500)
         return Response(error_resp, content_type=content_type)
+
 
 # 새로 추가2: request_id로 해당 답변의 참고자료를 볼 수 있는 API
 @app.route("/reference", methods=["GET"])
