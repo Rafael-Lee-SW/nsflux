@@ -792,9 +792,6 @@ class InferenceActor:
                 print(f"[ERROR] Looking up chunk_id {cid}: {e}")
         return result
 
-
-
-
 # Ray Serve를 통한 배포
 @serve.deployment(
     name="inference",
@@ -824,8 +821,12 @@ class InferenceService:
         return "closed"
     
     # 새로 추가: request_id에 따른 대화 기록을 조회하는 메서드
-    async def get_history(self, request_id: str):
+    async def get_history(self, request_id: str, last_index: int = None):
         result = await self.actor.get_conversation_history.remote(request_id)
+        # result["history"]는 이미 직렬화된 메시지 리스트임
+        if last_index is not None and isinstance(result.get("history"), list):
+            # 마지막 인덱스 이후의 메시지만 반환
+            result["history"] = result["history"][last_index + 1:]
         return result
     # 새로 추가: chunk_id를 통해 자료를 가져오는 메서드
     async def get_reference_data(self, chunk_ids: list):

@@ -7,7 +7,6 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
   <link rel="stylesheet" href="/static/chat_styles.css">
 </head>
-
 <body>
   <!-- Sidebar -->
   <div class="sidebar" id="sidebar">
@@ -48,7 +47,10 @@
     <div id="referenceContainer" class="reference-container"></div>
 
     <!-- Chat Box -->
-    <div class="chat-box" id="chatBox"></div>
+    <div class="chat-box" id="chatBox">
+      <!-- When there are no messages, show a welcome prompt -->
+      <div id="welcomePrompt" class="welcome-prompt">대화를 시작하려면 메시지를 입력하세요.</div>
+    </div>
 
     <!-- Input Container -->
     <div class="input-container">
@@ -74,65 +76,41 @@
     /************************************************************************
      * Global Variables and Data Structures
      ************************************************************************/
-    let currentRequestId = null;      // Current active chat room requestId
-    let chatRooms = [];              // [{ requestId, messages: [{sender, text}] }]
-    let referenceList = [];          // References collected from the current query
-    let isProcessing = false;        // Flag to prevent multiple simultaneous requests
+    let currentRequestId = null;      // 현재 활성 채팅방의 requestId
+    let chatRooms = [];              // [{ requestId, messages: [{role, content, references?}] }]
+    let referenceList = [];          // 현재 쿼리로부터 수집된 참조 데이터
+    let isProcessing = false;        // 동시 요청 방지 플래그
 
     /************************************************************************
      * Markdown Parser
      ************************************************************************/
     function parseMarkdown(text) {
       if (!text) return '';
-      
-      // Handle code blocks with language
       text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(match, language, code) {
         return `<pre><code class="language-${language}">${escapeHtml(code.trim())}</code></pre>`;
       });
-      
-      // Handle inline code
       text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-      
-      // Handle bold text
       text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      
-      // Handle italic text
       text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-      
-      // Handle links
       text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
-      
-      // Handle headers
       text = text.replace(/^### (.*$)/gm, '<h3>$1</h3>');
       text = text.replace(/^## (.*$)/gm, '<h2>$1</h2>');
       text = text.replace(/^# (.*$)/gm, '<h1>$1</h1>');
-      
-      // Handle lists
       text = text.replace(/^\s*\* (.*$)/gm, '<li>$1</li>');
       text = text.replace(/^\s*\d+\. (.*$)/gm, '<li>$1</li>');
       text = text.replace(/<li>(.*)<\/li>/g, function(match) {
         return '<ul>' + match + '</ul>';
       });
-      
-      // Handle blockquotes
       text = text.replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>');
-      
-      // Handle paragraphs and line breaks
       text = text.replace(/\n\s*\n/g, '</p><p>');
       text = text.replace(/\n/g, '<br>');
-      
-      // Wrap with paragraph if not already wrapped
       if (!text.startsWith('<')) {
         text = '<p>' + text + '</p>';
       }
-      
-      // Fix nested tags
       text = text.replace(/<\/p><p><ul>/g, '<ul>');
       text = text.replace(/<\/ul><\/p>/g, '</ul>');
-      
       return text;
     }
-
     function escapeHtml(unsafe) {
       return unsafe
         .replace(/&/g, "&amp;")
@@ -143,14 +121,15 @@
     }
 
     /************************************************************************
-     * Page Load and Initialization
-     ************************************************************************/
+    * Page Load and Initialization
+    ************************************************************************/
     window.addEventListener('load', () => {
       createNewChatRoom();
       setupTextareaAutoResize();
       setupMobileMenu();
     });
 
+    // 텍스트 영역 자동 크기 조절
     function setupTextareaAutoResize() {
       const textarea = document.getElementById('userMessage');
       textarea.addEventListener('input', function() {
@@ -159,24 +138,77 @@
       });
     }
 
+    // 모바일 메뉴(사이드바) 설정
     function setupMobileMenu() {
       const menuToggle = document.getElementById('menuToggle');
       const sidebar = document.getElementById('sidebar');
-      
+
       menuToggle.addEventListener('click', () => {
         sidebar.classList.toggle('open');
       });
-      
-      // Close sidebar when clicking outside
+
+      // 사이드바 외부 클릭 시 사이드바 닫기
       document.addEventListener('click', (e) => {
-        if (sidebar.classList.contains('open') && 
-            !sidebar.contains(e.target) && 
+        if (sidebar.classList.contains('open') &&
+            !sidebar.contains(e.target) &&
             e.target !== menuToggle) {
           sidebar.classList.remove('open');
         }
       });
     }
 
+    /************************************************************************
+     * History Loading and Chat Room Rendering
+     ************************************************************************/
+    async function loadHistory(requestId) {
+      try {
+        const response = await fetch(`/history?request_id=${requestId}`);
+        if (response.ok) {
+          const historyData = await response.json();
+          // historyData.history is expected to be an array of serialized messages.
+          const roomIndex = chatRooms.findIndex(r => r.requestId === requestId);
+          if (roomIndex !== -1) {
+            chatRooms[roomIndex].messages = historyData.history;
+          } else {
+            chatRooms.push({ requestId: requestId, messages: historyData.history });
+          }
+        } else {
+          console.error("History load error:", response.status);
+        }
+      } catch (error) {
+        console.error("Error loading history:", error);
+      }
+    }
+
+    function renderChatBox(requestId) {
+      const chatBox = document.getElementById("chatBox");
+      chatBox.innerHTML = "";
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (room && room.messages && room.messages.length > 0) {
+        room.messages.forEach((msg, index) => {
+          // For human messages, role is "human"; for AI, role is "ai"
+          let sender = msg.role === "human" ? "사용자" : "AI";
+          appendMessageToChatBox(sender, msg.content, index);
+        });
+      } else {
+        chatBox.innerHTML = `<div id="welcomePrompt" class="welcome-prompt">대화를 시작하려면 메시지를 입력하세요.</div>`;
+      }
+    }
+
+    function setActiveChatRoom(requestId) {
+      currentRequestId = requestId;
+      document.getElementById("chatRoomId").innerText = `Chat Room: ${requestId}`;
+      // Load conversation history from backend
+      loadHistory(requestId).then(() => {
+        renderChatBox(requestId);
+        renderChatRoomList();
+      });
+      clearReferenceData();
+      if (window.innerWidth <= 768) {
+        document.getElementById('sidebar').classList.remove('open');
+      }
+    }
+    
     function handleKeyDown(event) {
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
@@ -196,7 +228,6 @@
 
     function createNewChatFromSidebar() {
       createNewChatRoom();
-      // Close sidebar on mobile after creating a new chat
       if (window.innerWidth <= 768) {
         document.getElementById('sidebar').classList.remove('open');
       }
@@ -205,60 +236,29 @@
     function renderChatRoomList() {
       const ul = document.getElementById("chatRoomList");
       ul.innerHTML = "";
-      
       chatRooms.forEach((room) => {
         const li = document.createElement("li");
         const btn = document.createElement("button");
-        
-        // Set a default name or based on the first user message
         let chatName = "New Chat";
-        const firstUserMsg = room.messages.find(msg => msg.sender === "사용자");
-        if (firstUserMsg) {
-          chatName = firstUserMsg.text.substring(0, 20) + (firstUserMsg.text.length > 20 ? "..." : "");
+        if (room.messages && room.messages.length > 0) {
+          const firstUserMsg = room.messages.find(msg => msg.role === "human");
+          if (firstUserMsg) {
+            chatName = firstUserMsg.content.substring(0, 20) + (firstUserMsg.content.length > 20 ? "..." : "");
+          }
         }
-        
         btn.innerHTML = `
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
           </svg>
           ${chatName}
         `;
-        
-        // Add active class if this room is the currently selected one
         if (room.requestId === currentRequestId) {
           btn.classList.add("active");
         }
-        
         btn.onclick = () => setActiveChatRoom(room.requestId);
         li.appendChild(btn);
         ul.appendChild(li);
       });
-    }
-
-    function setActiveChatRoom(requestId) {
-      currentRequestId = requestId;
-      document.getElementById("chatRoomId").innerText = `Chat Room: ${requestId}`;
-
-      // Redraw chat box
-      const chatBox = document.getElementById("chatBox");
-      chatBox.innerHTML = "";
-      const room = chatRooms.find(r => r.requestId === requestId);
-      if (room) {
-        room.messages.forEach((msg, index) => {
-          appendMessageToChatBox(msg.sender, msg.text, index);
-        });
-      }
-
-      // Reset reference area
-      clearReferenceData();
-      
-      // Close sidebar on mobile after selecting a chat
-      if (window.innerWidth <= 768) {
-        document.getElementById('sidebar').classList.remove('open');
-      }
-      
-      // Update chat room list to reflect the active chat
-      renderChatRoomList();
     }
 
     /************************************************************************
@@ -268,10 +268,8 @@
       const chatBox = document.getElementById("chatBox");
       const msgDiv = document.createElement("div");
       msgDiv.classList.add("message-line");
-      
       let messageClass = "";
       let senderIcon = "";
-      
       if (sender === "사용자") {
         messageClass = "message-user";
         senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -285,11 +283,17 @@
           <line x1="3" y1="9" x2="21" y2="9"></line>
           <line x1="9" y1="21" x2="9" y2="9"></line>
         </svg>`;
-        // 만약 msgIndex가 제공되면 클릭 이벤트 부여
         if (msgIndex !== null) {
           msgDiv.style.cursor = "pointer";
           msgDiv.title = "이 답변의 참조 보기";
-          msgDiv.onclick = () => loadReferenceForMessage(msgIndex);
+          msgDiv.onclick = () => {
+            // Remove 'selected' from other AI messages
+            document.querySelectorAll(".message-ai.selected").forEach(el => {
+              el.classList.remove("selected");
+            });
+            msgDiv.classList.add("selected");
+            loadReferenceForMessage(msgIndex);
+          };
         }
       } else {
         messageClass = "message-system";
@@ -299,10 +303,7 @@
           <line x1="12" y1="16" x2="12.01" y2="16"></line>
         </svg>`;
       }
-      
-      // Parse markdown for AI messages
       const messageContent = sender === "AI" ? parseMarkdown(message) : escapeHtml(message);
-      
       msgDiv.classList.add(messageClass);
       msgDiv.innerHTML = `
         <div class="message-header">
@@ -311,17 +312,8 @@
         </div>
         <div class="message-content">${messageContent}</div>
       `;
-      
       chatBox.appendChild(msgDiv);
       chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    // Store message in chatRooms
-    function storeMessageInRoom(requestId, sender, text) {
-      const room = chatRooms.find(r => r.requestId === requestId);
-      if (room) {
-        room.messages.push({ sender, text });
-      }
     }
 
     /************************************************************************
@@ -334,58 +326,45 @@
       
       isProcessing = true;
       document.getElementById("sendButton").disabled = true;
-    
-      // Display user message
+      
+      // Display user message and update local chatRooms
       appendMessageToChatBox("사용자", message);
       storeMessageInRoom(currentRequestId, "사용자", message);
       messageInput.value = "";
       messageInput.style.height = 'auto';
-    
-      // Reset reference list for this request
       clearReferenceData();
-    
-      // Capture the chat room id at the time of sending the query
+      
+      // Capture the chat room id at the time of sending
       const originalRequestId = currentRequestId;
-    
-      // Prepare payload
       const payload = { input: message };
       if (originalRequestId) {
         payload.request_id = originalRequestId;
       }
-    
+      
       try {
         const response = await fetch('/query_stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-    
         if (!response.ok) {
           throw new Error("Response error: " + response.status);
         }
-    
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
-    
         let sseBuffer = "";
         let partialAnswer = "";
-    
-        startAIStreamingMessage();  // Show AI is responding
-    
+        startAIStreamingMessage();
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
-    
           const chunk = decoder.decode(value, { stream: true });
           sseBuffer += chunk;
-    
           const lines = sseBuffer.split("\n");
-          sseBuffer = lines.pop(); // Last line might be incomplete
-    
+          sseBuffer = lines.pop();
           for (let line of lines) {
             line = line.trim();
             if (!line) continue;
-    
             if (line.startsWith("data:")) {
               const jsonStr = line.slice(5).trim();
               if (jsonStr === "[[STREAM_DONE]]") {
@@ -413,9 +392,7 @@
             }
           }
         }
-        if (sseBuffer.trim()) {
-          // Process any remaining sseBuffer if needed
-        }
+        if (sseBuffer.trim()) { }
         finalizeAIMessage(partialAnswer, originalRequestId);
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
@@ -425,18 +402,23 @@
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
       }
-    }    
+    }
+    
+    function storeMessageInRoom(requestId, sender, text) {
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (room) {
+        room.messages.push({ role: sender === "사용자" ? "human" : "ai", content: text });
+      }
+    }
 
     /************************************************************************
      * AI Streaming Display (Temporary Message)
      ************************************************************************/
     let tempAiMsgDiv = null;
-
     function startAIStreamingMessage() {
       const chatBox = document.getElementById("chatBox");
       tempAiMsgDiv = document.createElement("div");
       tempAiMsgDiv.classList.add("message-line", "message-ai");
-      
       tempAiMsgDiv.innerHTML = `
         <div class="message-header">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -448,11 +430,9 @@
         </div>
         <div class="message-content" id="aiTempText"></div>
       `;
-      
       chatBox.appendChild(tempAiMsgDiv);
       chatBox.scrollTop = chatBox.scrollHeight;
     }
-
     function updateAIStreamingMessage(text) {
       if (!tempAiMsgDiv) return;
       const contentDiv = tempAiMsgDiv.querySelector("#aiTempText");
@@ -463,14 +443,13 @@
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
+    // 답변이 도착하면 다시 랜더링 되는 부분
     function finalizeAIMessage(finalText, queryRequestId) {
-      // Store final AI message in the original chat room
       storeMessageInRoom(queryRequestId, "AI", finalText);
-      // Optionally, if the currently active chat room is the same, update the UI
       if (currentRequestId === queryRequestId) {
         renderChatRoomList();
+        renderChatBox(queryRequestId);
       }
-      // Show reference button if references exist
       if (referenceList.length > 0) {
         document.getElementById("toggleRefBtn").style.display = "block";
       }
@@ -480,42 +459,31 @@
      * Reference Data Related Functions
      ************************************************************************/
     function addReferenceData(refData) {
-      // Simply push to array
       referenceList.push(refData);
-      // Log to console for debugging
       console.log("Reference data received:", refData);
     }
-
     function clearReferenceData() {
       referenceList = [];
       document.getElementById("toggleRefBtn").style.display = "none";
       document.getElementById("referenceContainer").style.display = "none";
       document.getElementById("referenceContainer").innerHTML = "";
     }
-
-    // Toggle button click handler to show/hide reference info
     function toggleReferences() {
       const container = document.getElementById("referenceContainer");
       if (container.style.display === "none" || container.style.display === "") {
-        // Show
         container.style.display = "block";
-        // Render if not already rendered
         if (!container.innerHTML.trim()) {
           renderReferenceData();
         }
         document.getElementById("toggleRefBtn").textContent = "Hide References";
       } else {
-        // Hide
         container.style.display = "none";
         document.getElementById("toggleRefBtn").textContent = "Show References";
       }
     }
-
-    // Render reference data to screen
     function renderReferenceData() {
       const container = document.getElementById("referenceContainer");
-      container.innerHTML = ""; // Reset
-
+      container.innerHTML = "";
       referenceList.forEach((refObj, idx) => {
         const div = document.createElement("div");
         div.className = "reference-item";
@@ -526,7 +494,6 @@
         container.appendChild(div);
       });
     }
-
     function loadReferenceForMessage(msgIndex) {
       const url = `/reference?request_id=${currentRequestId}&msg_index=${msgIndex}`;
       fetch(url)
@@ -543,10 +510,9 @@
           alert("참조 데이터를 불러오는 중 오류 발생");
         });
     }
-    
     function displayReferenceData(refs) {
       const container = document.getElementById("referenceContainer");
-      container.innerHTML = ""; // 초기화
+      container.innerHTML = "";
       if (refs.length === 0) {
         container.innerHTML = "<p>참조 데이터가 없습니다.</p>";
       } else {
@@ -560,7 +526,6 @@
           container.appendChild(div);
         });
       }
-      // 참조 영역을 보이도록 토글
       container.style.display = "block";
     }
   </script>
