@@ -334,9 +334,11 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
                 "file_name": data["file_names"][index],
                 "title": data["titles"][index],
                 "contents": data["texts_vis"][index],
+                "chunk_id": data["chunk_ids"][index],
             })
-            print("\n" + beep)
         print("-------------자료 검색 성공--------------")
+        print("-------", documents_list, "-------")
+        print("---------------------------------------")
         return documents, documents_list
         
         # Continue with document assembly...
