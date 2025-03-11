@@ -750,7 +750,7 @@ class InferenceActor:
         else:
             print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
     
-
+    # 대화 기록 가져오기
     async def get_conversation_history(self, request_id: str) -> dict:
         """
         Returns the conversation history for the given request_id.
@@ -766,7 +766,32 @@ class InferenceActor:
                 print("history - 변환 후 : ", history["history"])
             return history
         else:
-            return {"history": f"No conversation history found for request_id: {request_id}"}
+            return {"history": []}
+    # 해당 답변의 출처 가져오기
+    async def get_reference_data(self, chunk_ids: list) -> list:
+        """
+        Given a list of chunk_ids, search self.data for matching records
+        and return a list of dictionaries containing the reference info.
+        """
+        # Ensure self.data is up-to-date (if needed, reload here)
+        result = []
+        data = self.data  # data is a dict with keys: "chunk_ids", "file_names", "titles", "times", "texts_vis", etc.
+        for cid in chunk_ids:
+            try:
+                # Assuming chunk_ids are unique
+                if cid in data["chunk_ids"]:
+                    idx = data["chunk_ids"].index(cid)
+                    record = {
+                        "file_name": data["file_names"][idx],
+                        "title": data["titles"][idx],
+                        "text": data["texts_vis"][idx],
+                        "date": str(data["times"][idx])
+                    }
+                    result.append(record)
+            except Exception as e:
+                print(f"[ERROR] Looking up chunk_id {cid}: {e}")
+        return result
+
 
 
 
@@ -801,6 +826,10 @@ class InferenceService:
     # 새로 추가: request_id에 따른 대화 기록을 조회하는 메서드
     async def get_history(self, request_id: str):
         result = await self.actor.get_conversation_history.remote(request_id)
+        return result
+    # 새로 추가: chunk_id를 통해 자료를 가져오는 메서드
+    async def get_reference_data(self, chunk_ids: list):
+        result = await self.actor.get_reference_data.remote(chunk_ids)
         return result
 
 
