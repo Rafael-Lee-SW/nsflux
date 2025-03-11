@@ -380,11 +380,13 @@ class InferenceActor:
                         outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
                         
                         # >>> Record used chunk IDs
+                        # 변경 후: retrieval 결과에서 추출
                         chunk_ids_used = []
-                        for doc in docs_list:
+                        print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
+                        for doc in retrieval.get("rsp_data", []):
                             if "chunk_id" in doc:
                                 chunk_ids_used.append(doc["chunk_id"])
-                                
+                                                        
                         # >>> CHANGED: summarize the conversation
                         # loop = asyncio.get_event_loop()
                         # prev_summary = memory.load_memory_variables({}).get("summary", "")
@@ -450,9 +452,10 @@ class InferenceActor:
                         final_data = [retrieval, answer]
                         outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
                         
-                        # >>> CHANGED: Record used chunk IDs and update conversation summary
+                        # >>> CHANGED: Record used chunk ID
                         chunk_ids_used = []
-                        for doc in docs_list:
+                        print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
+                        for doc in retrieval.get("rsp_data", []):
                             if "chunk_id" in doc:
                                 chunk_ids_used.append(doc["chunk_id"])
                                 
@@ -650,9 +653,9 @@ class InferenceActor:
                 
             # >>> CHANGED: Update conversation summary in streaming branch as well
             chunk_ids_used = []
-            print("retrieval의 형식 : ", retrieval)
-            for doc in retrieval:
-                if isinstance(doc, dict) and "chunk_id" in doc:
+            print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
+            for doc in retrieval.get("rsp_data", []):
+                if "chunk_id" in doc:
                     chunk_ids_used.append(doc["chunk_id"])
             memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used})
             print("메시지 저장 직후 chunk_id 확인 : ", memory)
