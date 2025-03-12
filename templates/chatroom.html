@@ -327,19 +327,24 @@
       isProcessing = true;
       document.getElementById("sendButton").disabled = true;
       
-      // Display user message and update local chatRooms
+      // 사용자 메시지 표시 및 로컬 대화 저장 (page_id를 현재 채팅방 id로 사용)
       appendMessageToChatBox("사용자", message);
       storeMessageInRoom(currentRequestId, "사용자", message);
       messageInput.value = "";
       messageInput.style.height = 'auto';
       clearReferenceData();
       
-      // Capture the chat room id at the time of sending
-      const originalRequestId = currentRequestId;
-      const payload = { input: message };
-      if (originalRequestId) {
-        payload.request_id = originalRequestId;
-      }
+      // payload 구성: qry_id는 개별 메시지 id(예: 타임스탬프+랜덤 값), user_id는 임의로 지정(테스트 시 "user123" 등), page_id는 현재 채팅방 id(currentRequestId)
+      const payload = {
+        qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
+        user_id: "user123",  // 실제 사용자 id로 대체 가능
+        page_id: currentRequestId,
+        auth_class: "admin", // 내부 통일값
+        qry_contents: message,
+        qry_time: new Date().toISOString()
+      };
+      
+      console.log("Sending payload:", payload);
       
       try {
         const response = await fetch('/query_stream', {
@@ -368,7 +373,7 @@
             if (line.startsWith("data:")) {
               const jsonStr = line.slice(5).trim();
               if (jsonStr === "[[STREAM_DONE]]") {
-                finalizeAIMessage(partialAnswer, originalRequestId);
+                finalizeAIMessage(partialAnswer, currentRequestId);
                 isProcessing = false;
                 document.getElementById("sendButton").disabled = false;
                 return;
@@ -392,8 +397,7 @@
             }
           }
         }
-        if (sseBuffer.trim()) { }
-        finalizeAIMessage(partialAnswer, originalRequestId);
+        finalizeAIMessage(partialAnswer, currentRequestId);
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
       } catch (err) {

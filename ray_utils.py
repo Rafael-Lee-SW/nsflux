@@ -35,21 +35,32 @@ from langchain.schema import HumanMessage, AIMessage
 # Custom Conversation Memory to store extra metadata (e.g., chunk_ids)
 # =============================================================================
 class CustomConversationBufferMemory(ConversationBufferMemory):
-    """A custom memory that saves extra metadata (e.g. chunk_ids) along with the messages."""
+    """대화 저장 시 추가 메타데이터를 함께 기록"""
     def save_context(self, inputs: dict, outputs: dict) -> None:
-        # Create the human message using the input text.
-        human_msg = HumanMessage(content=inputs.get("input", ""))
-        # Create the AI message including extra metadata.
+        # human 메시지에 추가 메타데이터 포함
+        human_msg = HumanMessage(
+            content=inputs.get("qry_contents", ""),
+            additional_kwargs={
+                "qry_id": inputs.get("qry_id"),
+                "user_id": inputs.get("user_id"),
+                "auth_class": inputs.get("auth_class"),
+                "qry_time": inputs.get("qry_time")
+            }
+        )
         ai_msg = AIMessage(
             content=outputs.get("output", ""),
-            additional_kwargs={"chunk_ids": outputs.get("chunk_ids", [])}
+            additional_kwargs={
+                "chunk_ids": outputs.get("chunk_ids", []),
+                "qry_id": inputs.get("qry_id"),
+                "user_id": inputs.get("user_id"),
+                "auth_class": inputs.get("auth_class"),
+                "qry_time": inputs.get("qry_time")
+            }
         )
-        # Append the messages to the internal chat memory.
         self.chat_memory.messages.append(human_msg)
         self.chat_memory.messages.append(ai_msg)
         
     def load_memory_variables(self, inputs: dict) -> dict:
-        # Return the raw list of messages so that our serializer can access additional_kwargs.
         return {"history": self.chat_memory.messages}
 
 # Serialization function for messages
@@ -679,35 +690,36 @@ class InferenceActor:
     # ----------------------
     async def process_query_stream(self, http_query: dict) -> str:
         """
-        Called from /query_stream route.
-        Create request_id, SSE queue, push to the micro-batch, return request_id.
+        /query_stream 호출 시 page_id(채팅방 id)를 기반으로 SSE queue 생성하고,
+        대화 저장에 활용할 수 있도록 합니다.
         """
-        # 사용자로부터 Request_id를 받거나 그렇지 않은 경우, 이를 랜덤으로 생성
-        request_id = http_query.get("request_id")
-        if not request_id:
-            request_id = str(uuid.uuid4())
-        await self.queue_manager.create_queue.remote(request_id)
-        print(f"[STREAM] process_query_stream => request_id={request_id}, http_query={http_query}")
-
+        # page_id를 채팅방 id로 사용 (없으면 생성)
+        chat_id = http_query.get("page_id")
+        if not chat_id:
+            chat_id = str(uuid.uuid4())
+        http_query["page_id"] = chat_id  # 강제 할당
+        await self.queue_manager.create_queue.remote(chat_id)
+        print(f"[STREAM] process_query_stream => chat_id={chat_id}, http_query={http_query}")
 
         loop = asyncio.get_event_loop()
         final_future = loop.create_future()
 
         sse_queue = asyncio.Queue()
-        self.active_sse_queues[request_id] = sse_queue
-        print(f"[STREAM] Created SSE queue for request_id={request_id}")
+        self.active_sse_queues[chat_id] = sse_queue
+        print(f"[STREAM] Created SSE queue for chat_id={chat_id}")
 
-        # We'll push a special item (dict) onto the micro-batch queue
+        # 기존과 동일하게 micro-batch queue에 푸시 (http_query에 새 필드들이 포함됨)
         queued_item = {
-            "request_id": request_id,
+            "request_id": chat_id,   # 내부적으로 page_id를 request_id처럼 사용
             "http_query": http_query,
         }
 
-        print(f"[STREAM] Putting item into request_queue for request_id={request_id}")
+        print(f"[STREAM] Putting item into request_queue for chat_id={chat_id}")
         await self.request_queue.put((queued_item, final_future, sse_queue))
-        print(f"[STREAM] Done putting item in queue => request_id={request_id}")
+        print(f"[STREAM] Done putting item in queue => chat_id={chat_id}")
 
-        return request_id
+        return chat_id
+
 
     # ----------------------
     # 2) SSE token popping
