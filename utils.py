@@ -593,10 +593,11 @@ def process_format_to_response(formats, qry_id, continue_="C"):
 
 
 @time_tracker
-def error_format(message, status):
+def error_format(message, status, qry_id=""):
     ans_format = {
         "status_code": status,
         "result": message,
+        "qry_id": qry_id,  # 추가: qry_id 포함
         "detail": "",
         "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
     }

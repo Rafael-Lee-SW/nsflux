@@ -17,8 +17,8 @@ os.environ["VLLM_USE_V1"] = "1"
 os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
-# GPU 단독 사용(박상제 연구원님이랑 분기점)
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
+# GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU)
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -105,7 +105,6 @@ app.register_blueprint(data_control_bp, url_prefix="/data")
 @app.route("/query", methods=["POST"])
 async def query():
     try:
-        
         # Log when the query is received
         receive_time = datetime.now().isoformat()
         print(f"[APP] Received /query request at {receive_time}")
@@ -128,54 +127,98 @@ async def query():
 
 # --------------------- Streaming part ----------------------------
 
-# Streaming Endpoint (POST 방식 SSE) → 동기식 뷰 함수로 변경
+# # Streaming Endpoint (POST 방식 SSE) → 동기식 뷰 함수로 변경
+# @app.route("/query_stream", methods=["POST"])
+# def query_stream():
+#     """
+#     POST 방식 SSE 스트리밍 엔드포인트.
+#     클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
+#     """
+#     body = request.json or {}
+#     user_input = body.get("input", "")
+#     # request_id 파트 추가
+#     client_request_id = body.get("request_id")
+#     print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', request_id='{client_request_id}'")
+    
+#     http_query = {"qry_contents": user_input}
+#     # request_id 파트 추가
+#     if client_request_id:
+#         http_query["request_id"] = client_request_id
+#     print(f"[DEBUG] Built http_query={http_query}")
+
+#     response = inference_handle.process_query_stream.remote(http_query)
+#     obj_ref = response._to_object_ref_sync()
+#     request_id = ray.get(obj_ref)
+    
+#     print(f"[DEBUG] streaming request_id={request_id}")
+    
+#     def sse_generator():
+#         try:
+#             while True:
+#                 # Retrieve token from SSEQueueManager
+#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
+#                 if token is None or token == "[[STREAM_DONE]]":
+#                     break
+#                 yield f"data: {token}\n\n"
+#         except Exception as e:
+#             error_token = json.dumps({"type": "error", "message": str(e)})
+#             yield f"data: {error_token}\n\n"
+#         finally:
+#             # Cleanup: close the SSE queue after streaming is done
+#             try:
+#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+#                 ray.get(obj_ref)
+#             except Exception as ex:
+#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+#             print("[DEBUG] SSE closed.")
+
+#     return Response(sse_generator(), mimetype="text/event-stream")
+
+# --------------------- Streaming part TEST for API format matching ----------------------------
+
 @app.route("/query_stream", methods=["POST"])
 def query_stream():
     """
     POST 방식 SSE 스트리밍 엔드포인트.
-    클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
+    클라이언트가 아래 필드들을 포함한 JSON을 보내면:
+      - qry_id, user_id, page_id, auth_class, qry_contents, qry_time
+    auth_class는 내부적으로 'admin'으로 통일합니다.
     """
     body = request.json or {}
-    user_input = body.get("input", "")
-    # request_id 파트 추가
-    client_request_id = body.get("request_id")
-    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', request_id='{client_request_id}'")
-    
-    http_query = {"qry_contents": user_input}
-    # request_id 파트 추가
-    if client_request_id:
-        http_query["request_id"] = client_request_id
-    print(f"[DEBUG] Built http_query={http_query}")
+    # 새로운 필드 추출
+    qry_id = body.get("qry_id")
+    user_id = body.get("user_id")
+    page_id = body.get("page_id")
+    auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
+    qry_contents = body.get("qry_contents", "")
+    qry_time = body.get("qry_time")  # 클라이언트 측 타임스탬프
 
-    # Obtain request_id from Ray
-    # request_id = ray.get(inference_actor.process_query_stream.remote(http_query)) # 단일
-    # ----------------------------------------------------------------------------- 다중
+    print(f"[DEBUG] /query_stream called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{qry_contents}', qry_time='{qry_time}'")
+    
+    # 새로운 http_query 생성 – 내부 로직에서는 page_id를 채팅방 id로 사용
+    http_query = {
+        "qry_id": qry_id,
+        "user_id": user_id,
+        "page_id": page_id if page_id else str(uuid.uuid4()),
+        "auth_class": auth_class,
+        "qry_contents": qry_contents,
+        "qry_time": qry_time
+    }
+    
+    # 기존 request_id 대신 page_id를 SSE queue key로 사용
+    print(f"[DEBUG] Built http_query: {http_query}")
+    
+    # Ray Serve를 통한 streaming 호출 (변경 없음, 내부 인자는 수정된 http_query)
     response = inference_handle.process_query_stream.remote(http_query)
     obj_ref = response._to_object_ref_sync()
-    request_id = ray.get(obj_ref)
-    # ----------------------------------------------------------------------------- 다중
-    print(f"[DEBUG] streaming request_id={request_id}")
-
-    # def sse_generator():
-    #     print("[DEBUG] sse_generator started: begin pulling partial tokens in a loop")
-    #     while True:
-    #         partial_text = ray.get(inference_actor.pop_sse_token.remote(request_id)) # 단일
-    #         if partial_text is None:
-    #             print("[DEBUG] partial_text is None => no more data => break SSE loop")
-    #             break
-    #         if partial_text == "[[STREAM_DONE]]":
-    #             print("[DEBUG] got [[STREAM_DONE]], ending SSE loop")
-    #             break
-    #         yield f"data: {partial_text}\n\n"
-    #     # close_sse_queue 호출
-    #     ray.get(inference_actor.close_sse_queue.remote(request_id)) # 단일
-    #     print("[DEBUG] SSE closed.")
+    chat_id = ray.get(obj_ref)  # chat_id는 page_id
+    print(f"[DEBUG] streaming chat_id={chat_id}")
     
     def sse_generator():
         try:
             while True:
-                # Retrieve token from SSEQueueManager
-                token = ray.get(sse_manager.get_token.remote(request_id, 120))
+                # SSEQueueManager에서 토큰을 가져옴 (chat_id 사용)
+                token = ray.get(sse_manager.get_token.remote(chat_id, 120))
                 if token is None or token == "[[STREAM_DONE]]":
                     break
                 yield f"data: {token}\n\n"
@@ -183,16 +226,14 @@ def query_stream():
             error_token = json.dumps({"type": "error", "message": str(e)})
             yield f"data: {error_token}\n\n"
         finally:
-            # Cleanup: close the SSE queue after streaming is done
             try:
-                obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+                obj_ref = inference_handle.close_sse_queue.remote(chat_id)._to_object_ref_sync()
                 ray.get(obj_ref)
             except Exception as ex:
-                print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+                print(f"[DEBUG] Error closing SSE queue for {chat_id}: {str(ex)}")
             print("[DEBUG] SSE closed.")
 
     return Response(sse_generator(), mimetype="text/event-stream")
-
 
 # --------------------- CLT Streaming part ----------------------------
 
@@ -204,16 +245,32 @@ def query_stream_to_clt():
     """
     # POST 요청 params
     body = request.json or {}
+    
+    # CLT 통신과 맞는 규격
+    qry_id = body.get("qry_id", "")
+    user_id = body.get("user_id", "")
+    page_id = body.get("page_id", "")
+    auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
     user_input = body.get("qry_contents", "")
-    query_id = body.get("qry_id", "")
+    qry_time = body.get("qry_time", "")
+    
     response_url = config.response_url
 
-    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', ID={query_id}, url={response_url}")
-    http_query = {"qry_contents": user_input}
+    print(f"[DEBUG] /query_stream_to_clt called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
+    # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
+    http_query = {
+        "qry_id": qry_id,
+        "user_id": user_id,
+        "page_id": page_id if page_id else str(uuid.uuid4()),
+        "auth_class": auth_class,
+        "qry_contents": user_input,
+        "qry_time": qry_time,
+        "response_url": response_url
+    }
     print(f"[DEBUG] Built http_query={http_query}")
 
     # Obtain request_id from Ray
-    response = inference_handle.process_query_stream.remote(http_query, query_id=query_id, response_url=response_url)
+    response = inference_handle.process_query_stream.remote(http_query)
     obj_ref = response._to_object_ref_sync()
     request_id = ray.get(obj_ref)
 
@@ -236,7 +293,7 @@ def query_stream_to_clt():
                 # If 1 second has passed, send the accumulated tokens
                 if current_time - last_sent_time >= 1:
                     # Send the accumulated tokens
-                    buffer_format = process_format_to_response(token_buffer, request_id)
+                    buffer_format = process_format_to_response(token_buffer, qry_id)
                     send_data_to_server(buffer_format, response_url)
                     token_buffer = []  # Reset the buffer
                     last_sent_time = current_time  # Update the last sent time
@@ -244,7 +301,7 @@ def query_stream_to_clt():
                 # If "continue" is "E", send the accumulated tokens with END signal
                 elif token_dict.get("continue") == "E":
                     # Send the accumulated tokens --- EXCEPT LAST END TOKEN
-                    buffer_format = process_format_to_response(token_buffer[:-1], request_id, continue_="E")
+                    buffer_format = process_format_to_response(token_buffer[:-1], qry_id, continue_="E")
                     send_data_to_server(buffer_format, response_url)
                     token_buffer = []  # Reset the buffer
                     last_sent_time = current_time  # Update the last sent time
@@ -270,7 +327,9 @@ def query_stream_to_clt():
     job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
     job.start()
 
-    return Response(error_format("수신양호", 200), content_type="application/json")
+    return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
+
+# ------------------------------------------------
 
 # 새로 추가1: request_id로 대화 기록을 조회하는 API 엔드포인트
 @app.route("/history", methods=["GET"])
@@ -323,7 +382,6 @@ def get_reference():
     except Exception as e:
         error_resp = error_format(f"참조 조회 중 오류 발생: {str(e)}", 500)
         return Response(error_resp, content_type=content_type)
-
 
 # Flask app 실행
 if __name__ == "__main__":
