@@ -14,6 +14,7 @@ from transformers import (
 )
 
 import os
+import requests
 
 # 전역 캐시 변수 - 데이터의 변화를 감지하기 위한
 _cached_data = None
@@ -572,7 +573,7 @@ def process_to_format(qry_contents, type):
 
 
 @time_tracker
-def process_format_to_response(formats, qry_id, continue_="C"):
+def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
     # Get multiple formats to tuple
 
     ans_format = {
@@ -585,12 +586,65 @@ def process_format_to_response(formats, qry_id, continue_="C"):
         "data_list": [],
     }
 
-    for format in formats:
-        ans_format["data_list"].append(format)
+    # 누적된 토큰을 하나의 문자열로 결합합니다.
+    aggregated_answer = "".join(token.get("answer", "") for token in formats)
+    ans_format["data_list"].append({
+        "rsp_type": "A",
+        "rsp_tit": f"답변{update_index}",
+        "rsp_data": [aggregated_answer]
+    })
+
+    # for format in formats:
+    #     ans_format["data_list"].append(format)
 
     # return json.dumps(ans_format, ensure_ascii=False)
     return ans_format
 
+
+# @time_tracker
+# def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
+#     # 누적된 토큰들을 하나의 문자열로 결합합니다.
+#     aggregated_answer = "".join(token.get("answer", "") for token in formats)
+    
+#     # retrieval과 동일한 구조를 위해, 답변 데이터는 내부 data_list가 딕셔너리 형태로 구성됩니다.
+#     answer = {
+#         "rsp_type": "A",                # Answer
+#         "rsp_tit": f"답변{update_index}",
+#         "rsp_data": [                    # 바로 텍스트 응답 리스트를 구성
+#             {
+#                 "rsp_tit": f"답변{update_index}",
+#                 "rsp_data": [
+#                     {
+#                         'rsp_type': 'TT',
+#                         'rsp_tit': '',
+#                         'rsp_data': aggregated_answer,
+#                     }
+#                 ]
+                
+#             }
+#         ]
+#     }
+    
+#     # 최종 응답 구조: 최상위에 data_list는 리스트이고, 내부에 딕셔너리로 답변 데이터를 포함합니다.
+#     ans_format = {
+#         "status_code": 200,
+#         "result": "OK",
+#         "detail": "Answer",
+#         "continue": continue_,
+#         "qry_id": qry_id,
+#         "rsp_time": datetime.now().isoformat(),
+#         "data_list": [
+#             {
+#                 "type": "answer",               # 응답 타입 answer
+#                 "status_code": 200,
+#                 "result": "OK",
+#                 "detail": "Answer",
+#                 "evt_time": datetime.now().isoformat(),
+#                 "data_list": answer              # retrieval의 data_list와 동일하게 딕셔너리 형태
+#             }
+#         ]
+#     }
+#     return ans_format
 
 @time_tracker
 def error_format(message, status, qry_id=""):
@@ -605,11 +659,9 @@ def error_format(message, status, qry_id=""):
 
 @time_tracker
 def send_data_to_server(data, url):
-
     headers = {
         "Content-Type": "application/json; charset=utf-8"
     }
-
     try:
         # 다른 서버로 데이터를 전송 (POST 요청)
         response = requests.post(url, json=data, headers=headers)
@@ -617,6 +669,7 @@ def send_data_to_server(data, url):
             print(f"Data sent successfully: {data}")
         else:
             print(f"Failed to send data: {response.status_code}")
+            print(f"Failed data: {data}")
     except requests.exceptions.RequestException as e:
         print(f"Error sending data: {e}")
 

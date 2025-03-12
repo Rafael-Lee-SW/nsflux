@@ -18,7 +18,7 @@ os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
 # GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU)
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -281,6 +281,8 @@ def query_stream_to_clt():
             token_buffer = []  # To collect tokens
             last_sent_time = time.time()  # To track the last time data was sent
 
+            answer_counter = 1  # 답변 업데이트 순번 (답변1, 답변2, ...)
+            
             while True:
                 # Retrieve token from SSEQueueManager
                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
@@ -293,15 +295,16 @@ def query_stream_to_clt():
                 # If 1 second has passed, send the accumulated tokens
                 if current_time - last_sent_time >= 1:
                     # Send the accumulated tokens
-                    buffer_format = process_format_to_response(token_buffer, qry_id)
+                    buffer_format = process_format_to_response(token_buffer, qry_id, update_index=answer_counter)
                     send_data_to_server(buffer_format, response_url)
                     token_buffer = []  # Reset the buffer
                     last_sent_time = current_time  # Update the last sent time
+                    answer_counter += 1  # 순번 증가
                 
                 # If "continue" is "E", send the accumulated tokens with END signal
                 elif token_dict.get("continue") == "E":
                     # Send the accumulated tokens --- EXCEPT LAST END TOKEN
-                    buffer_format = process_format_to_response(token_buffer[:-1], qry_id, continue_="E")
+                    buffer_format = process_format_to_response(token_buffer[:-1], qry_id, continue_="E", update_index=answer_counter)
                     send_data_to_server(buffer_format, response_url)
                     token_buffer = []  # Reset the buffer
                     last_sent_time = current_time  # Update the last sent time

@@ -3,7 +3,7 @@
 ### Model
 model_id : 'google/gemma-2-27b-it'
 response_url : "http://202.20.84.16:8083/responseToUI"
-# response_url : "http://192.222.54.254:6462/testResponse"
+# response_url : "http://192.222.54.254:6460/testResponse"
 
 ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)
