@@ -6,26 +6,23 @@
   <title>FLUX_NS Chat</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
   <link rel="stylesheet" href="/static/chat_styles.css">
-  <style>
-    /* Example CSS to support PC sidebar toggle */
-    .sidebar {
-      transition: width 0.3s ease;
-    }
-    .sidebar.collapsed {
-      width: 0;
-      overflow: hidden;
-    }
-  </style>
 </head>
 <body>
   <!-- Sidebar -->
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
-      <button class="sidebar-toggle" onclick="toggleSidebar()">×</button>
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-      </svg>
-      <h2>FLUX_NS</h2>
+      <div class="sidebar-logo">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <h2>FLUX_NS</h2>
+      </div>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
     </div>
     <button class="new-chat-btn" onclick="createNewChatFromSidebar()">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -49,9 +46,16 @@
         </svg>
       </button>
       <h2 id="chatRoomId">Chat Room: -</h2>
-      <button id="toggleRefBtn" class="toggle-ref-btn" onclick="toggleReferences()">
-        Show References
-      </button>
+      <div class="header-actions">
+        <button id="toggleRefBtn" class="toggle-ref-btn" onclick="toggleReferences()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ref-icon">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+          <span>Show References</span>
+        </button>
+      </div>
     </div>
 
     <!-- Reference Container -->
@@ -59,11 +63,11 @@
 
     <!-- Chat Box -->
     <div class="chat-box" id="chatBox">
-      <!-- (원본 welcomeScreen 요소는 제거하고, 아래 welcome 내용은 템플릿으로 사용) -->
+      <!-- Welcome content will be inserted here by JS -->
     </div>
 
     <!-- Input Container -->
-    <div class="input-container">
+    <div class="input-container" id="inputContainer">
       <div class="input-box">
         <textarea 
           id="userMessage" 
@@ -90,80 +94,124 @@
     let chatRooms = []; // [{ requestId, messages: [{role, content, references?}] }]
     let referenceList = []; // 현재 쿼리로부터 수집된 참조 데이터
     let isProcessing = false; // 동시 요청 방지 플래그
+    let isMobileView = window.innerWidth <= 768;
 
     // welcome 화면 HTML 템플릿 (id 대신 클래스만 사용)
     const welcomeContentHTML = `
       <div class="welcome-screen">
         <div class="welcome-header">
-          <img src="/static/NS_LOGO_ONLY.svg?height=60&width=60" alt="FLUX_NS Logo" class="welcome-logo" />
+          <img src="/static/NS_LOGO_ONLY.svg?height=80&width=80" alt="FLUX_NS Logo" class="welcome-logo" />
           <h1>Welcome to FLUX_NS</h1>
+          <p class="welcome-subtitle">Ask me anything about NS information</p>
         </div>
         <div class="welcome-content">
           <div class="example-prompts">
             <h2>Examples</h2>
             <div class="example-cards">
               <button class="example-card" onclick="fillExamplePrompt('디지털 기획팀의 우선과제가 어떻게 돼?')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
                 <span>디지털 기획팀의 우선과제가 어떻게 돼?</span>
               </button>
               <button class="example-card" onclick="fillExamplePrompt('UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
                 <span>UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.</span>
               </button>
               <button class="example-card" onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
                 <span>IOT 컨테이너 사업 근황에 대해서 알려줘</span>
               </button>
               <button class="example-card" onclick="fillExamplePrompt('최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
                 <span>최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.</span>
               </button>
             </div>
           </div>
-          <div class="capabilities">
-            <h2>Capabilities</h2>
-            <ul class="capability-list">
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-                <span>최신 정보와 데이터 기반 응답</span>
-              </li>
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-                <span>남성해운의 주간회의, 계약서, 인사규범 등에 대한 답변</span>
-              </li>
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-                <span>상세한 답변 및 해설</span>
-              </li>
-            </ul>
+          
+          <div class="features-container">
+            <div class="capabilities">
+              <h2>Capabilities</h2>
+              <ul class="capability-list">
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                  <span>최신 정보와 데이터 기반 응답</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                  <span>남성해운의 주간회의, 계약서, 인사규범 등에 대한 답변</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                  <span>상세한 답변 및 해설</span>
+                </li>
+              </ul>
+            </div>
+            <div class="limitations">
+              <h2>Limitations</h2>
+              <ul class="limitation-list">
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                  <span>현재 모든 정보를 가지고 있지 아니함</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                  <span>가끔 정확하지 않은 정보를 제공할 수 있음</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                  <span>민감한 요청에 대한 응답이 제한될 수 있음</span>
+                </li>
+              </ul>
+            </div>
           </div>
-          <div class="limitations">
-            <h2>Limitations</h2>
-            <ul class="limitation-list">
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-                <span>현재 모든 정보를 가지고 있지 아니함</span>
-              </li>
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-                <span>가끔 정확하지 않은 정보를 제공할 수 있음</span>
-              </li>
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-                <span>민감한 요청에 대한 응답이 제한될 수 있음</span>
-              </li>
-            </ul>
+        </div>
+        
+        <div class="welcome-input-container">
+          <div class="input-prompt">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+            <span>질문을 입력하거나 위의 예시를 선택하세요</span>
+          </div>
+          <div class="welcome-input-box">
+            <textarea 
+              id="welcomeMessage" 
+              class="welcome-message-input" 
+              placeholder="메시지를 입력하세요..."
+              rows="1"
+              onkeydown="handleWelcomeKeyDown(event)"
+              oninput="autoResizeTextarea(this)"
+            ></textarea>
+            <button id="welcomeSendButton" class="welcome-send-btn" onclick="sendWelcomeMessage()">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
           </div>
         </div>
       </div>
@@ -180,7 +228,7 @@
       text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
       text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
       text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-      text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+      text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
       text = text.replace(/^### (.*$)/gm, '<h3>$1</h3>');
       text = text.replace(/^## (.*$)/gm, '<h2>$1</h2>');
       text = text.replace(/^# (.*$)/gm, '<h1>$1</h1>');
@@ -214,6 +262,17 @@
     function renderWelcomeScreen() {
       const chatBox = document.getElementById('chatBox');
       chatBox.innerHTML = welcomeContentHTML;
+      
+      // Hide the regular input container when welcome screen is shown
+      document.getElementById('inputContainer').classList.add('hidden');
+      
+      // Auto-resize the welcome textarea
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      if (welcomeTextarea) {
+        welcomeTextarea.addEventListener('input', function() {
+          autoResizeTextarea(this);
+        });
+      }
     }
 
     /************************************************************************
@@ -221,17 +280,52 @@
      ************************************************************************/
     function createNewChatFromSidebar() {
       createNewChatRoom();
-      if (window.innerWidth <= 768) {
+      if (isMobileView) {
         document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebar').classList.add('collapsed');
+        updateSidebarOpenerVisibility();
       }
     }
+    
     function fillExamplePrompt(text) {
-      const messageInput = document.getElementById('userMessage');
-      messageInput.value = text;
-      messageInput.focus();
-      messageInput.style.height = 'auto';
-      messageInput.style.height = messageInput.scrollHeight + 'px';
-      // (환영 화면은 새 채팅 시 계속 보이도록 하고, 메시지 전송 시 제거됩니다.)
+      // If welcome screen is visible, fill the welcome textarea
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      if (welcomeTextarea) {
+        welcomeTextarea.value = text;
+        autoResizeTextarea(welcomeTextarea);
+        welcomeTextarea.focus();
+      } else {
+        // Otherwise fill the regular textarea
+        const messageInput = document.getElementById('userMessage');
+        messageInput.value = text;
+        autoResizeTextarea(messageInput);
+        messageInput.focus();
+      }
+    }
+    
+    function autoResizeTextarea(textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+    }
+    
+    function handleWelcomeKeyDown(event) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendWelcomeMessage();
+      }
+    }
+    
+    function sendWelcomeMessage() {
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      if (welcomeTextarea && welcomeTextarea.value.trim()) {
+        const message = welcomeTextarea.value.trim();
+        // Copy the message to the regular input
+        document.getElementById('userMessage').value = message;
+        // Remove welcome screen
+        document.getElementById('inputContainer').classList.remove('hidden');
+        // Send the message
+        sendMessage();
+      }
     }
 
     /************************************************************************
@@ -241,41 +335,70 @@
       createNewChatRoom();
       setupTextareaAutoResize();
       setupMobileMenu();
+      
+      // Check for mobile view
+      checkMobileView();
+      window.addEventListener('resize', checkMobileView);
+      
+      // Initialize sidebar state
+      if (isMobileView) {
+        document.getElementById('sidebar').classList.add('collapsed');
+        updateSidebarOpenerVisibility();
+      }
     });
+    
+    function checkMobileView() {
+      isMobileView = window.innerWidth <= 768;
+      if (isMobileView) {
+        document.getElementById('sidebar').classList.add('collapsed');
+      } else {
+        document.getElementById('sidebar').classList.remove('collapsed');
+      }
+      updateSidebarOpenerVisibility();
+    }
 
     function setupTextareaAutoResize() {
       const textarea = document.getElementById('userMessage');
       textarea.addEventListener('input', function() {
-        this.style.height = 'auto';
-        this.style.height = this.scrollHeight + 'px';
+        autoResizeTextarea(this);
       });
     }
 
     function setupMobileMenu() {
-      const menuToggle = document.getElementById('menuToggle');
-      const sidebar = document.getElementById('sidebar');
-      menuToggle.addEventListener('click', () => {
-        sidebar.classList.toggle('open');
-      });
       document.addEventListener('click', (e) => {
-        if (sidebar.classList.contains('open') &&
+        const sidebar = document.getElementById('sidebar');
+        const sidebarOpener = document.getElementById('sidebarOpener');
+        
+        if (isMobileView && 
+            sidebar.classList.contains('open') &&
             !sidebar.contains(e.target) &&
-            !menuToggle.contains(e.target)) {
+            !sidebarOpener.contains(e.target)) {
           sidebar.classList.remove('open');
+          sidebar.classList.add('collapsed');
+          updateSidebarOpenerVisibility();
         }
       });
     }
 
     function toggleSidebar() {
       const sidebar = document.getElementById('sidebar');
-      sidebar.classList.toggle('collapsed');
+      
+      if (isMobileView) {
+        sidebar.classList.toggle('open');
+        sidebar.classList.toggle('collapsed');
+      } else {
+        sidebar.classList.toggle('collapsed');
+      }
+      
       updateSidebarOpenerVisibility();
     }
+    
     function updateSidebarOpenerVisibility() {
       const sidebar = document.getElementById('sidebar');
       const opener = document.getElementById('sidebarOpener');
+      
       if (sidebar.classList.contains('collapsed')) {
-        opener.style.display = 'block';
+        opener.style.display = 'flex';
       } else {
         opener.style.display = 'none';
       }
@@ -308,7 +431,11 @@
       const chatBox = document.getElementById("chatBox");
       chatBox.innerHTML = "";
       const room = chatRooms.find(r => r.requestId === requestId);
+      
       if (room && room.messages && room.messages.length > 0) {
+        // Show regular input container
+        document.getElementById('inputContainer').classList.remove('hidden');
+        
         room.messages.forEach((msg, index) => {
           let sender = msg.role === "human" ? "사용자" : "AI";
           appendMessageToChatBox(sender, msg.content, index);
@@ -316,6 +443,7 @@
       } else {
         renderWelcomeScreen();
       }
+      
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
@@ -334,8 +462,11 @@
       }
       renderChatRoomList();
       clearReferenceData();
-      if (window.innerWidth <= 768) {
+      
+      if (isMobileView) {
         document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebar').classList.add('collapsed');
+        updateSidebarOpenerVisibility();
       }
     }
     
@@ -391,11 +522,15 @@
       const welcomeElem = chatBox.querySelector('.welcome-screen');
       if (welcomeElem) {
         chatBox.removeChild(welcomeElem);
+        // Show the regular input container when welcome screen is removed
+        document.getElementById('inputContainer').classList.remove('hidden');
       }
+      
       const msgDiv = document.createElement("div");
       msgDiv.classList.add("message-line");
       let messageClass = "";
       let senderIcon = "";
+      
       if (sender === "사용자") {
         messageClass = "message-user";
         senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -428,6 +563,7 @@
           <line x1="12" y1="16" x2="12.01" y2="16"></line>
         </svg>`;
       }
+      
       const messageContent = sender === "AI" ? parseMarkdown(message) : escapeHtml(message);
       msgDiv.classList.add(messageClass);
       msgDiv.innerHTML = `
@@ -576,7 +712,7 @@
         renderChatBox(queryRequestId);
       }
       if (referenceList.length > 0) {
-        document.getElementById("toggleRefBtn").style.display = "block";
+        document.getElementById("toggleRefBtn").style.display = "flex";
       }
     }
     
@@ -595,25 +731,35 @@
     }
     function toggleReferences() {
       const container = document.getElementById("referenceContainer");
+      const toggleBtn = document.getElementById("toggleRefBtn");
+      
       if (container.style.display === "none" || container.style.display === "") {
         container.style.display = "block";
         if (!container.innerHTML.trim()) {
           renderReferenceData();
         }
-        document.getElementById("toggleRefBtn").textContent = "Hide References";
+        toggleBtn.querySelector('span').textContent = "Hide References";
       } else {
         container.style.display = "none";
-        document.getElementById("toggleRefBtn").textContent = "Show References";
+        toggleBtn.querySelector('span').textContent = "Show References";
       }
     }
     function renderReferenceData() {
       const container = document.getElementById("referenceContainer");
       container.innerHTML = "";
+      
+      if (referenceList.length === 0) {
+        container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
+        return;
+      }
+      
       referenceList.forEach((refObj, idx) => {
         const div = document.createElement("div");
         div.className = "reference-item";
         div.innerHTML = `
-          <h4>Reference #${idx + 1}</h4>
+          <div class="reference-header">
+            <h4>Reference #${idx + 1}</h4>
+          </div>
           <pre>${JSON.stringify(refObj, null, 2)}</pre>
         `;
         container.appendChild(div);
@@ -638,22 +784,28 @@
     function displayReferenceData(refs) {
       const container = document.getElementById("referenceContainer");
       container.innerHTML = "";
+      
       if (refs.length === 0) {
-        container.innerHTML = "<p>참조 데이터가 없습니다.</p>";
+        container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
       } else {
         refs.forEach((ref, idx) => {
           const div = document.createElement("div");
           div.className = "reference-item";
           div.innerHTML = `
-            <h4>Reference #${idx + 1}</h4>
+            <div class="reference-header">
+              <h4>Reference #${idx + 1}</h4>
+            </div>
             <pre>${JSON.stringify(ref, null, 2)}</pre>
           `;
           container.appendChild(div);
         });
       }
+      
       container.style.display = "block";
-      document.getElementById("toggleRefBtn").textContent = "Hide References";
+      document.getElementById("toggleRefBtn").style.display = "flex";
+      document.getElementById("toggleRefBtn").querySelector('span').textContent = "Hide References";
     }
   </script>
 </body>
 </html>
+
