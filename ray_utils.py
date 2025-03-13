@@ -37,42 +37,81 @@ from langchain.schema import HumanMessage, AIMessage
 class CustomConversationBufferMemory(ConversationBufferMemory):
     """대화 저장 시 추가 메타데이터를 함께 기록"""
     def save_context(self, inputs: dict, outputs: dict) -> None:
-        # human 메시지에 추가 메타데이터 포함
-        human_msg = HumanMessage(
-            content=inputs.get("qry_contents", ""),
-            additional_kwargs={
-                "qry_id": inputs.get("qry_id"),
-                "user_id": inputs.get("user_id"),
-                "auth_class": inputs.get("auth_class"),
-                "qry_time": inputs.get("qry_time")
+        """
+        inputs, outputs 예시:
+            inputs = {
+                "qry_contents": "사용자 질문",
+                "qry_id": "...",
+                "user_id": "...",
+                "auth_class": "...",
+                "qry_time": "..."
             }
-        )
-        ai_msg = AIMessage(
-            content=outputs.get("output", ""),
-            additional_kwargs={
-                "chunk_ids": outputs.get("chunk_ids", []),
-                "qry_id": inputs.get("qry_id"),
-                "user_id": inputs.get("user_id"),
-                "auth_class": inputs.get("auth_class"),
-                "qry_time": inputs.get("qry_time")
+            outputs = {
+                "output": "AI의 최종 답변",
+                "chunk_ids": [...참조 chunk_id 리스트...]
             }
-        )
-        self.chat_memory.messages.append(human_msg)
-        self.chat_memory.messages.append(ai_msg)
+        """
+        try:
+            user_content = inputs.get("qry_contents", "")
+            human_msg = HumanMessage(
+                content=user_content,
+                additional_kwargs={
+                    "qry_id": inputs.get("qry_id"),
+                    "user_id": inputs.get("user_id"),
+                    "auth_class": inputs.get("auth_class"),
+                    "qry_time": inputs.get("qry_time")
+                }
+            )
+            ai_content = outputs.get("output", "")
+            ai_msg = AIMessage(
+                content=ai_content,
+                additional_kwargs={
+                    "chunk_ids": outputs.get("chunk_ids", []),
+                    "qry_id": inputs.get("qry_id"),
+                    "user_id": inputs.get("user_id"),
+                    "auth_class": inputs.get("auth_class"),
+                    "qry_time": inputs.get("qry_time")
+                }
+            )
+
+            self.chat_memory.messages.append(human_msg)
+            self.chat_memory.messages.append(ai_msg)
+        except Exception as e:
+            print(f"[ERROR in save_context] {e}")
         
     def load_memory_variables(self, inputs: dict) -> dict:
-        return {"history": self.chat_memory.messages}
+        """
+        랭체인 규약에 의해 {"history": [메시지 리스트]} 형태 리턴
+        """
+        try:
+            return {"history": self.chat_memory.messages}
+        except Exception as e:
+            print(f"[ERROR in load_memory_variables] {e}")
+            return {"history": []}
 
 # Serialization function for messages
 def serialize_message(msg):
-    if isinstance(msg, HumanMessage):
-        return {"role": "human", "content": msg.content}
-    elif isinstance(msg, AIMessage):
-        refs = msg.additional_kwargs.get("chunk_ids", [])
-        print("직렬화 과정 체크, ref 잘 들어있는지 : ", refs)
-        return {"role": "ai", "content": msg.content, "references": refs}
-    else:
-        return {"role": "unknown", "content": msg.content if hasattr(msg, "content") else str(msg)}
+    """
+    HumanMessage -> {"role": "human", "content": ...}
+    AIMessage    -> {"role": "ai", "content": ..., "references": [...]}
+    """
+    try:
+        if isinstance(msg, HumanMessage):
+            return {"role": "human", "content": msg.content}
+        elif isinstance(msg, AIMessage):
+            refs = msg.additional_kwargs.get("chunk_ids", [])
+            # 디버그 출력
+            print(f"[DEBUG serialize_message] AI refs: {refs}")
+            return {"role": "ai", "content": msg.content, "references": refs}
+        else:
+            return {
+                "role": "unknown",
+                "content": getattr(msg, "content", str(msg))
+            }
+    except Exception as e:
+        print(f"[ERROR in serialize_message] {e}")
+        return {"role": "error", "content": str(e)}
+    
 # =============================================================================
 # =============================================================================
 
@@ -86,7 +125,7 @@ class InferenceActor:
         )
         # 데이터는 캐시 파일을 통해 로드
         self.data = load_data(config.data_path)
-        # 비동기 큐와 배치 처리 설정 (마이크로배칭)
+        # 비동기 큐와 배치 처리 설정 (마이크로 배칭)
         self.request_queue = asyncio.Queue()
         self.max_batch_size = config.ray.max_batch_size  # 최대 배치 수
         self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간
@@ -95,24 +134,21 @@ class InferenceActor:
         max_workers = int(min(config.ray.num_cpus * 0.8, (26*config.ray.actor_count)-4))
         self.process_pool = ProcessPoolExecutor(max_workers)
 
-        self.queue_manager = ray.get_actor("SSEQueueManager")
-        # --- NEW OR MODIFIED ---
+        # --- SSE Queue Manager ---
         # A dictionary to store SSE queues for streaming requests
         # Key = request_id, Value = an asyncio.Queue of partial token strings
+        self.queue_manager = ray.get_actor("SSEQueueManager")
         self.active_sse_queues: Dict[str, asyncio.Queue] = {}
 
         self.batch_counter = 0  # New counter to track batches
 
-        # Micro-batching만 적용
-        # asyncio.create_task(self._batch_processor())
-
-        # ---------------------------
-        # LangChain Memory 맵 (랭체인)
-        # key: request_id, value: ConversationBufferMemory()
-        # ---------------------------
+        
         self.memory_map = {}
 
-        # In-flight batching까지 추가 적용
+        # Micro-batching로 바꾸기(아래 주석 해체)
+        # asyncio.create_task(self._batch_processor())
+        
+        # In-flight batching까지 추가 적용(Micro 사용할 경우 주석)
         asyncio.create_task(self._in_flight_batch_processor())
 
 
@@ -126,26 +162,9 @@ class InferenceActor:
             self.memory_map[request_id] = CustomConversationBufferMemory(return_messages=True)
         return self.memory_map[request_id]
 
-    # --------------------------------------------------------
-    # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
-    # --------------------------------------------------------
-
-    async def process_query(self, http_query):
-        """
-        Existing synchronous method. Returns final string/dict once done.
-        """
-        loop = asyncio.get_event_loop()
-        future = loop.create_future()
-        # There's no SSE queue for normal queries
-        sse_queue = None
-        await self.request_queue.put((http_query, future, sse_queue))
-        # print("self.request_queue : ", self.request_queue)
-        return await future
-
     # -------------------------------------------------------------------------
-    # Micro_batch_processor
+    # Micro_batch_processor - OLD METHOD
     # -------------------------------------------------------------------------
-
     async def _batch_processor(self):
         """
         Continuously processes queued requests in batches (micro-batching).
@@ -198,11 +217,10 @@ class InferenceActor:
             )
             proc_time = time.time() - start_proc
             print(f"[DEBUG] 해당 배치 처리 완료 (처리시간: {proc_time:.2f}초)")
-
+            
     # -------------------------------------------------------------------------
     # In-flight BATCH PROCESSOR
     # -------------------------------------------------------------------------
-
     async def _in_flight_batch_processor(self):
         while True:
             # Wait for the first item (blocking until at least one is available)
@@ -268,31 +286,30 @@ class InferenceActor:
             f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}"
         )
         try:
-            # 1) request_id 구분
-            if (
-                isinstance(http_query_or_stream_dict, dict)
-                and "request_id" in http_query_or_stream_dict
-            ):
-                # It's a streaming request
+            # 1) 스트리밍 구분
+            if (isinstance(http_query_or_stream_dict, dict)
+                and "request_id" in http_query_or_stream_dict):
+                # 스트리밍
                 request_id = http_query_or_stream_dict["request_id"]
                 http_query = http_query_or_stream_dict["http_query"]
                 is_streaming = True
                 print(f"[STREAM] _process_single_query: request_id={request_id}")
             else:
-                # It's a normal synchronous request
+                # Non-스트리밍
                 request_id = None
                 http_query = http_query_or_stream_dict
                 is_streaming = False
-                print("[SYNC] _process_single_query started...")
+                print("[NORMAL] _process_single_query started...")
                 
             # 2) Memory 객체 가져오기 (없으면 새로 생성)
-            memory = self.get_memory_for_session(request_id)
+            page_id = http_query.get("page_id", request_id)
+            memory = self.get_memory_for_session(page_id)
 
             # 3) 유저가 현재 입력한 쿼리 가져오기
             user_input = http_query.get("qry_contents", "")
             
             # 4) LangChain Memory에서 이전 대화 이력(history) 추출
-            past_context = memory.load_memory_variables({})["history"]
+            past_context = memory.load_memory_variables({}).get("history", [])
             # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
             if isinstance(past_context, list):
                 recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
@@ -416,9 +433,25 @@ class InferenceActor:
                         # #     print("[ERROR] Summarization returned an empty string.")
                         # # else:
                         # #     print(f"[CHECK] Summarized conversation: {summarized}")
-                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
+                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
+                                            # 메모리에 저장
+                        try:
+                            memory.save_context(
+                                {
+                                    "qry_contents": user_input,
+                                    "qry_id": http_query.get("qry_id"),
+                                    "user_id": http_query.get("user_id"),
+                                    "auth_class": http_query.get("auth_class"),
+                                    "qry_time": http_query.get("qry_time")
+                                },
+                                {
+                                    "output": output,
+                                    "chunk_ids": chunk_ids_used
+                                }
+                            )
+                        except Exception as e:
+                            print(f"[ERROR memory.save_context] {e}")
                         # >>> CHANGED -----------------------------------------------------
-                        
                         future.set_result(outputs)
 
                 except Exception as e:
@@ -484,7 +517,24 @@ class InferenceActor:
                         # # Later, when calling the summarization function:
                         # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
                         
-                        memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
+                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
+                                            # 메모리 저장
+                        try:
+                            memory.save_context(
+                                {
+                                    "qry_contents": user_input,
+                                    "qry_id": http_query.get("qry_id"),
+                                    "user_id": http_query.get("user_id"),
+                                    "auth_class": http_query.get("auth_class"),
+                                    "qry_time": http_query.get("qry_time")
+                                },
+                                {
+                                    "output": output,
+                                    "chunk_ids": chunk_ids_used
+                                }
+                            )
+                        except Exception as e:
+                            print(f"[ERROR memory.save_context] {e}")
                         # --------------------------------------------------------------------
                         
                         future.set_result(outputs)
@@ -565,8 +615,9 @@ class InferenceActor:
             "data_list": retrieval
         }, ensure_ascii=False)
         await self.queue_manager.put_token.remote(request_id, reference_json)
-        print(f"[STREAM] Sent reference data for request_id={request_id}")
         
+        print(f"[STREAM] Sent reference data for request_id={request_id}")
+             
         # 1) 메모리 가져오기 (없으면 생성)
         try:
             memory = self.get_memory_for_session(request_id)
@@ -655,12 +706,6 @@ class InferenceActor:
             #     msg = f"[STREAM] memory.save_context failed: {str(e)}"
             #     print(msg)
                 
-            if chart is not None:
-                ans = process_to_format([final_text, chart], type="Answer")
-                final_res = process_format_to_response(retrieval, ans)
-            else:
-                ans = process_to_format([final_text], type="Answer")
-                final_res = process_format_to_response(retrieval, ans)
                 
             # >>> CHANGED: Update conversation summary in streaming branch as well
             chunk_ids_used = []
@@ -668,10 +713,36 @@ class InferenceActor:
             for doc in retrieval.get("rsp_data", []):
                 if "chunk_id" in doc:
                     chunk_ids_used.append(doc["chunk_id"])
-            memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used})
+                    
+            # memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used})
+            
+            # 메모리 저장
+            try:
+                memory.save_context(
+                    {
+                        "qry_contents": user_input,
+                        "qry_id": "",  # 필요한 경우 http_query에 있는 값을 넣음
+                    },
+                    {
+                        "output": final_text,
+                        "chunk_ids": chunk_ids_used
+                    }
+                )
+            except Exception as e:
+                print(f"[ERROR memory.save_context in stream] {e}")
+            
             print("메시지 저장 직후 chunk_id 확인 : ", memory)
             # >>> CHANGED: -------------------------------------------------------
             
+            # 최종 응답 구조
+            if chart is not None:
+                ans = process_to_format([final_text, chart], type="Answer")
+                final_res = process_format_to_response(retrieval, ans)
+            else:
+                ans = process_to_format([final_text], type="Answer")
+                final_res = process_format_to_response(retrieval, ans)
+                
+            # 담아서 보내기
             future.set_result(final_res)
             await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
             print(
@@ -679,12 +750,24 @@ class InferenceActor:
             )
         except Exception as e:
             msg = f"[STREAM] error in partial streaming => {str(e)}"
+            print(msg)
             future.set_result(error_format(msg, 500))
             await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
 
-    # ------------------------------------------------------------
-    # NEW METHODS TO SUPPORT SSE
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
+    # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
+    # --------------------------------------------------------
+    async def process_query(self, http_query):
+        """
+        Existing synchronous method. Returns final string/dict once done.
+        """
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        # There's no SSE queue for normal queries
+        sse_queue = None
+        await self.request_queue.put((http_query, future, sse_queue))
+        # print("self.request_queue : ", self.request_queue)
+        return await future
     # ----------------------
     # 1) Streaming Entrypoint
     # ----------------------
@@ -762,35 +845,40 @@ class InferenceActor:
         else:
             print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
     
-    # 대화 기록 가져오기
+    # ----------------------
+    # /history | 대화 기록 가져오기
+    # ----------------------
     async def get_conversation_history(self, request_id: str) -> dict:
         """
         Returns the conversation history for the given request_id.
         The messages are serialized into a JSON-friendly format.
         """
-        if request_id in self.memory_map:
-            memory = self.memory_map[request_id]
-            print("memory - 변환 전 : ", memory)
-            history = memory.load_memory_variables({})  # 예: {"history": [HumanMessage, AIMessage, ...]}
-            print("history - 변환 전 : ", history)
-            if "history" in history and isinstance(history["history"], list):
-                history["history"] = [serialize_message(msg) for msg in history["history"]]
-                print("history - 변환 후 : ", history["history"])
-            return history
-        else:
+        try:
+            if request_id in self.memory_map:
+                memory = self.memory_map[request_id]
+                history_obj = memory.load_memory_variables({})
+                if "history" in history_obj and isinstance(history_obj["history"], list):
+                    # 직렬화
+                    serialized = [serialize_message(msg) for msg in history_obj["history"]]
+                    print("[HISTORY] 대화 기록 반환(직렬화) : ", serialized)
+                    return {"history": serialized}
+                else:
+                    print("[HISTORY] 대화 기록 반환(직렬화X) : ", history_obj)
+                    return {"history": []}
+            else:
+                return {"history": []}
+        except Exception as e:
+            print(f"[ERROR get_conversation_history] {e}")
             return {"history": []}
-    # 해당 답변의 출처 가져오기
-    async def get_reference_data(self, chunk_ids: list) -> list:
-        """
-        Given a list of chunk_ids, search self.data for matching records
-        and return a list of dictionaries containing the reference info.
-        """
-        # Ensure self.data is up-to-date (if needed, reload here)
-        result = []
-        data = self.data  # data is a dict with keys: "chunk_ids", "file_names", "titles", "times", "texts_vis", etc.
-        for cid in chunk_ids:
-            try:
-                # Assuming chunk_ids are unique
+        
+    # ----------------------
+    # /reference | 해당 답변의 출처 가져오기
+    # ----------------------
+    async def get_reference_data(self, chunk_ids: list):
+        try:
+            result = []
+            data = self.data
+            for cid in chunk_ids:
                 if cid in data["chunk_ids"]:
                     idx = data["chunk_ids"].index(cid)
                     record = {
@@ -800,20 +888,19 @@ class InferenceActor:
                         "date": str(data["times"][idx])
                     }
                     result.append(record)
-            except Exception as e:
-                print(f"[ERROR] Looking up chunk_id {cid}: {e}")
-        return result
+            return result
+        except Exception as e:
+            print(f"[ERROR get_reference_data] {e}")
+            return []
 
 # Ray Serve를 통한 배포
-@serve.deployment(
-    name="inference",
-    max_ongoing_requests=100,
-    )
+@serve.deployment(name="inference", max_ongoing_requests=100)
 class InferenceService:
     def __init__(self, config):
         self.config = config
         self.actor = InferenceActor.options(
-            num_gpus=config.ray.num_gpus, num_cpus=config.ray.num_cpus
+            num_gpus=config.ray.num_gpus, 
+            num_cpus=config.ray.num_cpus
         ).remote(config)
 
     async def query(self, http_query: dict):
@@ -832,15 +919,14 @@ class InferenceService:
         await self.actor.close_sse_queue.remote(req_id)
         return "closed"
     
-    # 새로 추가: request_id에 따른 대화 기록을 조회하는 메서드
+    # /history
     async def get_history(self, request_id: str, last_index: int = None):
         result = await self.actor.get_conversation_history.remote(request_id)
-        # result["history"]는 이미 직렬화된 메시지 리스트임
         if last_index is not None and isinstance(result.get("history"), list):
-            # 마지막 인덱스 이후의 메시지만 반환
-            result["history"] = result["history"][last_index + 1:]
+            result["history"] = result["history"][last_index+1:]
         return result
-    # 새로 추가: chunk_id를 통해 자료를 가져오는 메서드
+
+    # /reference
     async def get_reference_data(self, chunk_ids: list):
         result = await self.actor.get_reference_data.remote(chunk_ids)
         return result
