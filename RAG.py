@@ -337,8 +337,8 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
                 "chunk_id": data["chunk_ids"][index],
             })
         print("-------------자료 검색 성공--------------")
-        print("-------", documents_list, "-------")
-        print("---------------------------------------")
+        # print("-------", documents_list, "-------")
+        # print("---------------------------------------")
         return documents, documents_list
         
         # Continue with document assembly...

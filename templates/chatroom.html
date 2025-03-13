@@ -6,11 +6,22 @@
   <title>FLUX_NS Chat</title>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
   <link rel="stylesheet" href="/static/chat_styles.css">
+  <style>
+    /* Example CSS to support PC sidebar toggle */
+    .sidebar {
+      transition: width 0.3s ease;
+    }
+    .sidebar.collapsed {
+      width: 0;
+      overflow: hidden;
+    }
+  </style>
 </head>
 <body>
   <!-- Sidebar -->
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
+      <button class="sidebar-toggle" onclick="toggleSidebar()">×</button>
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
       </svg>
@@ -30,7 +41,7 @@
   <div class="main-container">
     <!-- Chat Header -->
     <div class="chat-header">
-      <button class="menu-toggle" id="menuToggle">
+      <button id="sidebarOpener" class="sidebar-opener" onclick="toggleSidebar()">
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="3" y1="12" x2="21" y2="12"></line>
           <line x1="3" y1="6" x2="21" y2="6"></line>
@@ -48,8 +59,7 @@
 
     <!-- Chat Box -->
     <div class="chat-box" id="chatBox">
-      <!-- When there are no messages, show a welcome prompt -->
-      <div id="welcomePrompt" class="welcome-prompt">대화를 시작하려면 메시지를 입력하세요.</div>
+      <!-- (원본 welcomeScreen 요소는 제거하고, 아래 welcome 내용은 템플릿으로 사용) -->
     </div>
 
     <!-- Input Container -->
@@ -58,7 +68,7 @@
         <textarea 
           id="userMessage" 
           class="message-input" 
-          placeholder="Type a message..." 
+          placeholder="메시지를 입력하세요..."
           rows="1"
           onkeydown="handleKeyDown(event)"
         ></textarea>
@@ -76,10 +86,88 @@
     /************************************************************************
      * Global Variables and Data Structures
      ************************************************************************/
-    let currentRequestId = null;      // 현재 활성 채팅방의 requestId
-    let chatRooms = [];              // [{ requestId, messages: [{role, content, references?}] }]
-    let referenceList = [];          // 현재 쿼리로부터 수집된 참조 데이터
-    let isProcessing = false;        // 동시 요청 방지 플래그
+    let currentRequestId = null; // 현재 활성 채팅방의 requestId
+    let chatRooms = []; // [{ requestId, messages: [{role, content, references?}] }]
+    let referenceList = []; // 현재 쿼리로부터 수집된 참조 데이터
+    let isProcessing = false; // 동시 요청 방지 플래그
+
+    // welcome 화면 HTML 템플릿 (id 대신 클래스만 사용)
+    const welcomeContentHTML = `
+      <div class="welcome-screen">
+        <div class="welcome-header">
+          <img src="/static/NS_LOGO_ONLY.svg?height=60&width=60" alt="FLUX_NS Logo" class="welcome-logo" />
+          <h1>Welcome to FLUX_NS</h1>
+        </div>
+        <div class="welcome-content">
+          <div class="example-prompts">
+            <h2>Examples</h2>
+            <div class="example-cards">
+              <button class="example-card" onclick="fillExamplePrompt('디지털 기획팀의 우선과제가 어떻게 돼?')">
+                <span>디지털 기획팀의 우선과제가 어떻게 돼?</span>
+              </button>
+              <button class="example-card" onclick="fillExamplePrompt('UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
+                <span>UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.</span>
+              </button>
+              <button class="example-card" onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
+                <span>IOT 컨테이너 사업 근황에 대해서 알려줘</span>
+              </button>
+              <button class="example-card" onclick="fillExamplePrompt('최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.')">
+                <span>최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.</span>
+              </button>
+            </div>
+          </div>
+          <div class="capabilities">
+            <h2>Capabilities</h2>
+            <ul class="capability-list">
+              <li>
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <span>최신 정보와 데이터 기반 응답</span>
+              </li>
+              <li>
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <span>남성해운의 주간회의, 계약서, 인사규범 등에 대한 답변</span>
+              </li>
+              <li>
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+                <span>상세한 답변 및 해설</span>
+              </li>
+            </ul>
+          </div>
+          <div class="limitations">
+            <h2>Limitations</h2>
+            <ul class="limitation-list">
+              <li>
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+                <span>현재 모든 정보를 가지고 있지 아니함</span>
+              </li>
+              <li>
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+                <span>가끔 정확하지 않은 정보를 제공할 수 있음</span>
+              </li>
+              <li>
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+                <span>민감한 요청에 대한 응답이 제한될 수 있음</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    `;
 
     /************************************************************************
      * Markdown Parser
@@ -92,7 +180,7 @@
       text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
       text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
       text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-      text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
+      text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
       text = text.replace(/^### (.*$)/gm, '<h3>$1</h3>');
       text = text.replace(/^## (.*$)/gm, '<h2>$1</h2>');
       text = text.replace(/^# (.*$)/gm, '<h1>$1</h1>');
@@ -121,40 +209,76 @@
     }
 
     /************************************************************************
-    * Page Load and Initialization
-    ************************************************************************/
+     * Welcome Screen Rendering
+     ************************************************************************/
+    function renderWelcomeScreen() {
+      const chatBox = document.getElementById('chatBox');
+      chatBox.innerHTML = welcomeContentHTML;
+    }
+
+    /************************************************************************
+     * Function Definitions
+     ************************************************************************/
+    function createNewChatFromSidebar() {
+      createNewChatRoom();
+      if (window.innerWidth <= 768) {
+        document.getElementById('sidebar').classList.remove('open');
+      }
+    }
+    function fillExamplePrompt(text) {
+      const messageInput = document.getElementById('userMessage');
+      messageInput.value = text;
+      messageInput.focus();
+      messageInput.style.height = 'auto';
+      messageInput.style.height = messageInput.scrollHeight + 'px';
+      // (환영 화면은 새 채팅 시 계속 보이도록 하고, 메시지 전송 시 제거됩니다.)
+    }
+
+    /************************************************************************
+     * Page Load and Initialization
+     ************************************************************************/
     window.addEventListener('load', () => {
       createNewChatRoom();
       setupTextareaAutoResize();
       setupMobileMenu();
     });
 
-    // 텍스트 영역 자동 크기 조절
     function setupTextareaAutoResize() {
       const textarea = document.getElementById('userMessage');
       textarea.addEventListener('input', function() {
         this.style.height = 'auto';
-        this.style.height = (this.scrollHeight) + 'px';
+        this.style.height = this.scrollHeight + 'px';
       });
     }
 
-    // 모바일 메뉴(사이드바) 설정
     function setupMobileMenu() {
       const menuToggle = document.getElementById('menuToggle');
       const sidebar = document.getElementById('sidebar');
-
       menuToggle.addEventListener('click', () => {
         sidebar.classList.toggle('open');
       });
-
-      // 사이드바 외부 클릭 시 사이드바 닫기
       document.addEventListener('click', (e) => {
         if (sidebar.classList.contains('open') &&
             !sidebar.contains(e.target) &&
-            e.target !== menuToggle) {
+            !menuToggle.contains(e.target)) {
           sidebar.classList.remove('open');
         }
       });
+    }
+
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.classList.toggle('collapsed');
+      updateSidebarOpenerVisibility();
+    }
+    function updateSidebarOpenerVisibility() {
+      const sidebar = document.getElementById('sidebar');
+      const opener = document.getElementById('sidebarOpener');
+      if (sidebar.classList.contains('collapsed')) {
+        opener.style.display = 'block';
+      } else {
+        opener.style.display = 'none';
+      }
     }
 
     /************************************************************************
@@ -165,7 +289,6 @@
         const response = await fetch(`/history?request_id=${requestId}`);
         if (response.ok) {
           const historyData = await response.json();
-          // historyData.history is expected to be an array of serialized messages.
           const roomIndex = chatRooms.findIndex(r => r.requestId === requestId);
           if (roomIndex !== -1) {
             chatRooms[roomIndex].messages = historyData.history;
@@ -180,29 +303,36 @@
       }
     }
 
+    // renderChatBox: 만약 해당 채팅방에 메시지가 없으면 무조건 환영 화면을 보여줍니다.
     function renderChatBox(requestId) {
       const chatBox = document.getElementById("chatBox");
       chatBox.innerHTML = "";
       const room = chatRooms.find(r => r.requestId === requestId);
       if (room && room.messages && room.messages.length > 0) {
         room.messages.forEach((msg, index) => {
-          // For human messages, role is "human"; for AI, role is "ai"
           let sender = msg.role === "human" ? "사용자" : "AI";
           appendMessageToChatBox(sender, msg.content, index);
         });
       } else {
-        chatBox.innerHTML = `<div id="welcomePrompt" class="welcome-prompt">대화를 시작하려면 메시지를 입력하세요.</div>`;
+        renderWelcomeScreen();
       }
+      chatBox.scrollTop = chatBox.scrollHeight;
     }
 
-    function setActiveChatRoom(requestId) {
+    // setActiveChatRoom: 새로운 채팅방이면 바로 환영 화면, 기존 채팅방이면 history를 로드한 후 렌더링
+    async function setActiveChatRoom(requestId) {
       currentRequestId = requestId;
       document.getElementById("chatRoomId").innerText = `Chat Room: ${requestId}`;
-      // Load conversation history from backend
-      loadHistory(requestId).then(() => {
+      let room = chatRooms.find(r => r.requestId === requestId);
+      if (!room) {
+        room = { requestId: requestId, messages: [] };
+        chatRooms.push(room);
+        renderWelcomeScreen();
+      } else {
+        await loadHistory(requestId);
         renderChatBox(requestId);
-        renderChatRoomList();
-      });
+      }
+      renderChatRoomList();
       clearReferenceData();
       if (window.innerWidth <= 768) {
         document.getElementById('sidebar').classList.remove('open');
@@ -221,16 +351,10 @@
      ************************************************************************/
     function createNewChatRoom() {
       const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
+      // 새로운 채팅방은 messages 배열이 비어 있으므로 renderWelcomeScreen()에서 환영 화면이 나타납니다.
       chatRooms.push({ requestId: newRequestId, messages: [] });
       setActiveChatRoom(newRequestId);
       renderChatRoomList();
-    }
-
-    function createNewChatFromSidebar() {
-      createNewChatRoom();
-      if (window.innerWidth <= 768) {
-        document.getElementById('sidebar').classList.remove('open');
-      }
     }
 
     function renderChatRoomList() {
@@ -246,12 +370,9 @@
             chatName = firstUserMsg.content.substring(0, 20) + (firstUserMsg.content.length > 20 ? "..." : "");
           }
         }
-        btn.innerHTML = `
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-          </svg>
-          ${chatName}
-        `;
+        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg> ${chatName}`;
         if (room.requestId === currentRequestId) {
           btn.classList.add("active");
         }
@@ -266,6 +387,11 @@
      ************************************************************************/
     function appendMessageToChatBox(sender, message, msgIndex = null) {
       const chatBox = document.getElementById("chatBox");
+      // 만약 채팅창 내에 환영 화면(.welcome-screen)이 있다면 제거
+      const welcomeElem = chatBox.querySelector('.welcome-screen');
+      if (welcomeElem) {
+        chatBox.removeChild(welcomeElem);
+      }
       const msgDiv = document.createElement("div");
       msgDiv.classList.add("message-line");
       let messageClass = "";
@@ -287,7 +413,6 @@
           msgDiv.style.cursor = "pointer";
           msgDiv.title = "이 답변의 참조 보기";
           msgDiv.onclick = () => {
-            // Remove 'selected' from other AI messages
             document.querySelectorAll(".message-ai.selected").forEach(el => {
               el.classList.remove("selected");
             });
@@ -327,23 +452,23 @@
       isProcessing = true;
       document.getElementById("sendButton").disabled = true;
       
-      // 사용자 메시지 표시 및 로컬 대화 저장 (page_id를 현재 채팅방 id로 사용)
+      // 사용자가 메시지를 보내면 환영 화면은 더 이상 필요 없으므로 별도 처리 없이 메시지 추가 시 제거됨
+      
       appendMessageToChatBox("사용자", message);
       storeMessageInRoom(currentRequestId, "사용자", message);
       messageInput.value = "";
       messageInput.style.height = 'auto';
       clearReferenceData();
       
-      // payload 구성: qry_id는 개별 메시지 id(예: 타임스탬프+랜덤 값), user_id는 임의로 지정(테스트 시 "user123" 등), page_id는 현재 채팅방 id(currentRequestId)
+      const originalRequestId = currentRequestId;
       const payload = {
         qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
-        user_id: "user123",  // 실제 사용자 id로 대체 가능
-        page_id: currentRequestId,
-        auth_class: "admin", // 내부 통일값
+        user_id: "user123",
+        page_id: originalRequestId,
+        auth_class: "admin",
         qry_contents: message,
         qry_time: new Date().toISOString()
       };
-      
       console.log("Sending payload:", payload);
       
       try {
@@ -373,7 +498,7 @@
             if (line.startsWith("data:")) {
               const jsonStr = line.slice(5).trim();
               if (jsonStr === "[[STREAM_DONE]]") {
-                finalizeAIMessage(partialAnswer, currentRequestId);
+                finalizeAIMessage(partialAnswer, originalRequestId);
                 isProcessing = false;
                 document.getElementById("sendButton").disabled = false;
                 return;
@@ -383,11 +508,9 @@
                 if (sseData.type === "answer") {
                   partialAnswer += sseData.answer;
                   updateAIStreamingMessage(partialAnswer);
-                }
-                else if (sseData.type === "reference") {
+                } else if (sseData.type === "reference") {
                   addReferenceData(sseData);
-                }
-                else {
+                } else {
                   console.log("Other SSE data:", sseData);
                 }
               } catch (err) {
@@ -397,7 +520,7 @@
             }
           }
         }
-        finalizeAIMessage(partialAnswer, currentRequestId);
+        finalizeAIMessage(partialAnswer, originalRequestId);
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
       } catch (err) {
@@ -446,8 +569,6 @@
       const chatBox = document.getElementById("chatBox");
       chatBox.scrollTop = chatBox.scrollHeight;
     }
-
-    // 답변이 도착하면 다시 랜더링 되는 부분
     function finalizeAIMessage(finalText, queryRequestId) {
       storeMessageInRoom(queryRequestId, "AI", finalText);
       if (currentRequestId === queryRequestId) {
@@ -531,6 +652,7 @@
         });
       }
       container.style.display = "block";
+      document.getElementById("toggleRefBtn").textContent = "Hide References";
     }
   </script>
 </body>

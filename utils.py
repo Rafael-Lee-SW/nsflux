@@ -36,7 +36,7 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 # -------------------------------------------------
-# Function: find_weight_directory
+# Function: find_weight_directory - 허깅페이스 권한 문제 해결 후에 잘 사용되지 아니함
 # -------------------------------------------------
 # Recursively searches for weight files (safetensors or pytorch_model.bin) in a given base path.
 # This method Find the files searching the whole directory
@@ -59,7 +59,6 @@ def find_weight_directory(base_path):
                 except Exception as ex:
                     logging.debug(f"파일 크기 확인 실패: {file_path} - {ex}")
     return None, None
-
 
 # -------------------------------------------------
 # Function: load_model
@@ -158,6 +157,7 @@ def load_model(config):
                 raise e
             config_dict = hf_config.to_dict()
             if not config_dict.get("architectures"):
+                print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
@@ -165,6 +165,7 @@ def load_model(config):
             with open(config_file, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
             if not config_dict.get("architectures"):
+                print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
                 with open(config_file, "w", encoding="utf-8") as f:
                     json.dump(config_dict, f)
@@ -227,7 +228,6 @@ def load_model(config):
         #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
         
         # print("Final EngineArgs:", engine_args)
-        print("EngineArgs setting be finished")
         
         #         # ── 여기서 unified_attention 호출 추적을 위한 monkey-patch ──
         # try:
@@ -240,8 +240,11 @@ def load_model(config):
         #         logging.info("Monkey-patched unified_attention_with_output for tracking.")
         # except Exception as e:
         #     logging.warning("Failed to monkey-patch unified_attention_with_output: %s", e)
+        
         # # ── 끝 ──
 
+        print("EngineArgs setting be finished")
+        
         try:
             # --- v1 구동 해결책: 현재 스레드가 메인 스레드가 아니면 signal 함수를 임시 패치 ---
             import threading, signal
@@ -333,58 +336,9 @@ def load_model(config):
         model.eval()
         return model, tokenizer, embed_model, embed_tokenizer
 
-# @time_tracker
-# def load_data(data_path):
-#     global _cached_data, _cached_data_mtime
-#     try:
-#         current_mtime = os.path.getmtime(data_path)
-#     except Exception as e:
-#         print("파일 수정 시간 확인 실패:", e)
-#         return None
-
-#     # 캐시가 비어있거나 파일 수정 시간이 변경된 경우 데이터 재로드
-#     if _cached_data is None or current_mtime != _cached_data_mtime:
-#         with open(data_path, "r", encoding="utf-8") as json_file:
-#             data = json.load(json_file)
-#         # 데이터 전처리 (예: 리스트 변환 및 numpy, torch 변환)
-#         file_names = []
-#         titles = []
-#         times = []
-#         vectors = []
-#         texts = []
-#         texts_short = []
-#         texts_vis = []
-#         missing_time = 0
-#         for file in data:
-#             for chunk in file["chunks"]:
-#                 file_names.append(file["file_name"])
-#                 vectors.append(np.array(chunk["vector"]))
-#                 titles.append(chunk["title"])
-#                 if chunk["date"]:
-#                     times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
-#                 else:
-#                     missing_time += 1
-#                     times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
-#                 texts.append(chunk["text"])
-#                 texts_short.append(chunk["text_short"])
-#                 texts_vis.append(chunk["text_vis"])
-#         vectors = np.array(vectors)
-#         vectors = torch.from_numpy(vectors).to(torch.float32)
-#         _cached_data = {
-#             "file_names": file_names,
-#             "titles": titles,
-#             "times": times,
-#             "vectors": vectors,
-#             "texts": texts,
-#             "texts_short": texts_short,
-#             "texts_vis": texts_vis,
-#         }
-#         _cached_data_mtime = current_mtime
-#         print(f"Data loaded! Length: {len(titles)}, Missing times: {missing_time}")
-#     else:
-#         print("Using cached data")
-#     return _cached_data
-
+# -------------------------------------------------
+# Function: load_data
+# -------------------------------------------------
 @time_tracker
 def load_data(data_path):
     global _cached_data, _cached_data_mtime
@@ -467,7 +421,9 @@ def load_data(data_path):
 
     return _cached_data
 
-
+# -------------------------------------------------
+# Function: debug_vector_format
+# -------------------------------------------------
 def debug_vector_format(data):
     """
     data(List[Dict]): load_data에서 JSON으로 로드된 객체.
@@ -493,7 +449,9 @@ def debug_vector_format(data):
                 print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 변환 실패: {str(e)}")
     print("[DEBUG] ===== 벡터 형식 검사 종료 =====\n")
 
-
+# -------------------------------------------------
+# Function: random_seed
+# -------------------------------------------------
 @time_tracker
 def random_seed(seed):
     # Set random seed for Python's built-in random module
@@ -513,7 +471,9 @@ def random_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-
+# -------------------------------------------------
+# Function: process_to_format
+# -------------------------------------------------
 @time_tracker
 def process_to_format(qry_contents, type):
     # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
@@ -571,7 +531,6 @@ def process_to_format(qry_contents, type):
         print("Error! Type Not supported!")
         return None
 
-
 @time_tracker
 def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
     # Get multiple formats to tuple
@@ -599,7 +558,6 @@ def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
 
     # return json.dumps(ans_format, ensure_ascii=False)
     return ans_format
-
 
 # @time_tracker
 # def process_format_to_response(formats, qry_id, continue_="C", update_index=1):

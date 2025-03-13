@@ -81,7 +81,6 @@ inference_handle = serve.get_deployment_handle("inference", app_name="default")
 app = Flask(__name__)
 content_type = "application/json; charset=utf-8"
 
-
 # 기본 페이지를 불러오는 라우트
 @app.route("/")
 def index():
@@ -341,50 +340,59 @@ def conversation_history():
     last_index = request.args.get("last_index")
     if not request_id:
         error_resp = error_format("request_id 파라미터가 필요합니다.", 400)
-        return Response(error_resp, content_type=content_type)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
+    
     try:
-        # last_index 파라미터가 전달되면 정수 변환, 없으면 None
         last_index = int(last_index) if last_index is not None else None
         response = inference_handle.get_history.remote(request_id, last_index=last_index)
+        # DeploymentResponse를 ObjectRef로 변환
         obj_ref = response._to_object_ref_sync()
         history_data = ray.get(obj_ref)
         return jsonify(history_data)
     except Exception as e:
-        error_resp = error_format(f"대화 기록 조회 중 오류 발생: {str(e)}", 500)
-        return Response(error_resp, content_type=content_type)
+        print(f"[ERROR /history] {e}")
+        error_resp = error_format(f"대화 기록 조회 오류: {str(e)}", 500)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
 
 
 # 새로 추가2: request_id로 해당 답변의 참고자료를 볼 수 있는 API
 @app.route("/reference", methods=["GET"])
 def get_reference():
     request_id = request.args.get("request_id", "")
-    msg_index = request.args.get("msg_index", "")
-    if not request_id or msg_index == "":
+    msg_index_str = request.args.get("msg_index", "")
+    if not request_id or not msg_index_str:
         error_resp = error_format("request_id와 msg_index 파라미터가 필요합니다.", 400)
-        return Response(error_resp, content_type=content_type)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
+    
     try:
-        msg_index = int(msg_index)
-        # Retrieve conversation history
+        msg_index = int(msg_index_str)
+        # 먼저 history를 가져옴
         response = inference_handle.get_history.remote(request_id)
         obj_ref = response._to_object_ref_sync()
         history_data = ray.get(obj_ref)
-        if not isinstance(history_data.get("history"), list):
-            return jsonify({"references": []})
-        if msg_index < 0 or msg_index >= len(history_data["history"]):
-            return jsonify({"error": "유효하지 않은 메시지 인덱스입니다."}), 400
-        message = history_data["history"][msg_index]
+        
+        history_list = history_data.get("history", [])
+        if msg_index < 0 or msg_index >= len(history_list):
+            return jsonify({"error": "유효하지 않은 메시지 인덱스"}), 400
+        
+        message = history_list[msg_index]
         if message.get("role") != "ai":
-            return jsonify({"error": "선택한 메시지는 AI 응답이 아닙니다."}), 400
-        # Get chunk_ids from the message (if any)
+            return jsonify({"error": "해당 메시지는 AI 응답이 아닙니다."}), 400
+        
         chunk_ids = message.get("references", [])
-        # Now, call the new method on the actor to get the actual reference data
+        if not chunk_ids:
+            return jsonify({"references": []})
+        
+        # chunk_ids에 해당하는 실제 참조 데이터 조회
         ref_response = inference_handle.get_reference_data.remote(chunk_ids)
         ref_obj_ref = ref_response._to_object_ref_sync()
-        reference_data = ray.get(ref_obj_ref)
-        return jsonify({"references": reference_data})
+        references = ray.get(ref_obj_ref)
+        return jsonify({"references": references})
     except Exception as e:
-        error_resp = error_format(f"참조 조회 중 오류 발생: {str(e)}", 500)
-        return Response(error_resp, content_type=content_type)
+        print(f"[ERROR /reference] {e}")
+        error_resp = error_format(f"참조 조회 오류: {str(e)}", 500)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
+
 
 # Flask app 실행
 if __name__ == "__main__":
