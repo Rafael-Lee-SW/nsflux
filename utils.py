@@ -153,6 +153,9 @@ def load_model(config):
                     trust_remote_code=True,
                     token=token,
                 )
+                if not hasattr(hf_config, "vocab_size"):
+                    # 토크나이저가 이미 로드되어 있다면 그 값을 사용하거나 기본값 지정
+                    hf_config.vocab_size = getattr(embed_tokenizer, "vocab_size", 30522)
             except Exception as e:
                 raise e
             config_dict = hf_config.to_dict()
@@ -162,8 +165,16 @@ def load_model(config):
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
         else:
+            # 이미 config_file이 존재하는 경우
             with open(config_file, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
+
+            if "vocab_size" not in config_dict:
+                # embed_tokenizer의 vocab_size가 존재하면 사용하고, 없으면 기본값 30522로 설정
+                config_dict["vocab_size"] = getattr(embed_tokenizer, "vocab_size", 30522)
+                print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다:", config_dict["vocab_size"])
+                with open(config_file, "w", encoding="utf-8") as f:
+                    json.dump(config_dict, f)
             if not config_dict.get("architectures"):
                 print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
@@ -206,7 +217,7 @@ def load_model(config):
         
         vllm_conf = config.get("vllm", {})
         
-        engine_args.enable_prefix_caching = True
+        engine_args.enable_prefix_caching = False
         engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
         engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
@@ -217,6 +228,11 @@ def load_model(config):
         
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
+            
+        # # 새로 추가: disable_sliding_window 옵션 확인
+        # if vllm_conf.get("disable_sliding_window", False):
+        #     engine_args.sliding_window = (-1, -1)
+        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
         
         # engine_args.enable_memory_defrag = True # v1 새로운 기능
         # engine_args.max_model_len = vllm_conf.get("max_model_len") # Context Length
@@ -531,33 +547,97 @@ def process_to_format(qry_contents, type):
         print("Error! Type Not supported!")
         return None
 
+# @time_tracker
+# def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
+#     # Get multiple formats to tuple
+
+#     ans_format = {
+#         "status_code": 200,
+#         "result": "OK",
+#         "detail": "",
+#         "continue":continue_,
+#         "qry_id": qry_id,
+#         "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+#         "data_list": [],
+#     }
+
+#     # 누적된 토큰을 하나의 문자열로 결합합니다.
+#     aggregated_answer = "".join(token.get("answer", "") for token in formats)
+#     ans_format["data_list"].append({
+#         "rsp_type": "A",
+#         "rsp_tit": f"답변{update_index}",
+#         "rsp_data": [
+#             {
+#                 "rsp_type": "TT",
+#                 "rsp_data": aggregated_answer
+#             }
+#         ]
+#     })
+    
+#     # Validate JSON before returning
+#     try:
+#         json.dumps(ans_format, ensure_ascii=False)  # Test JSON validity
+#     except Exception as e:
+#         print(f"[ERROR] Invalid JSON structure: {str(e)}")
+#         ans_format["status_code"] = 500
+#         ans_format["result"] = "ERROR"
+#         ans_format["detail"] = f"JSON Error: {str(e)}"
+
+#     # for format in formats:
+#     #     ans_format["data_list"].append(format)
+
+#     # return json.dumps(ans_format, ensure_ascii=False)
+#     return ans_format
+
 @time_tracker
 def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
-    # Get multiple formats to tuple
+    # If there are any reference tokens, return only them.
+    reference_tokens = [token for token in formats if token.get("type") == "reference"]
+    if reference_tokens:
+        # For this example, we'll use the first reference token.
+        ref = reference_tokens[0]
+        # Add the extra keys.
+        ref["qry_id"] = qry_id
+        ref["continue"] = continue_
+        ref["rsp_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        # Ensure that a "rsp_tit" key exists to satisfy downstream requirements.
+        if "rsp_tit" not in ref:
+            ref["rsp_tit"] = "Reference"
+        return ref
 
+    # Otherwise, aggregate the normal answer tokens.
+    normal_tokens = [token.get("answer", "") for token in formats if token.get("type") != "reference"]
+    aggregated_answer = "".join(normal_tokens)
+    
     ans_format = {
         "status_code": 200,
         "result": "OK",
         "detail": "",
-        "continue":continue_,
+        "continue": continue_,
         "qry_id": qry_id,
         "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-        "data_list": [],
+        "data_list": [{
+            "rsp_type": "A",
+            "rsp_tit": f"답변{update_index}",
+            "rsp_data": [{
+                "rsp_type": "TT",
+                "rsp_data": aggregated_answer
+            }]
+        }]
     }
-
-    # 누적된 토큰을 하나의 문자열로 결합합니다.
-    aggregated_answer = "".join(token.get("answer", "") for token in formats)
-    ans_format["data_list"].append({
-        "rsp_type": "A",
-        "rsp_tit": f"답변{update_index}",
-        "rsp_data": [aggregated_answer]
-    })
-
-    # for format in formats:
-    #     ans_format["data_list"].append(format)
-
-    # return json.dumps(ans_format, ensure_ascii=False)
+    
+    # Validate JSON structure before returning.
+    try:
+        json.dumps(ans_format, ensure_ascii=False)
+    except Exception as e:
+        print(f"[ERROR] Invalid JSON structure: {str(e)}")
+        ans_format["status_code"] = 500
+        ans_format["result"] = "ERROR"
+        ans_format["detail"] = f"JSON Error: {str(e)}"
+    
     return ans_format
+
+
 
 # @time_tracker
 # def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
@@ -615,21 +695,41 @@ def error_format(message, status, qry_id=""):
     }
     return json.dumps(ans_format)
 
-@time_tracker
+# @time_tracker
+# def send_data_to_server(data, url):
+#     headers = {
+#         "Content-Type": "application/json; charset=utf-8"
+#     }
+#     try:
+#         # 다른 서버로 데이터를 전송 (POST 요청)
+#         response = requests.post(url, json=data, headers=headers)
+#         if response.status_code == 200:
+#             print(f"Data sent successfully: {data}")
+#         else:
+#             print(f"Failed to send data: {response.status_code}")
+#             print(f"Failed data: {data}")
+#     except requests.exceptions.RequestException as e:
+#         print(f"Error sending data: {e}")
+@time_tracker     
 def send_data_to_server(data, url):
-    headers = {
-        "Content-Type": "application/json; charset=utf-8"
-    }
     try:
-        # 다른 서버로 데이터를 전송 (POST 요청)
-        response = requests.post(url, json=data, headers=headers)
-        if response.status_code == 200:
-            print(f"Data sent successfully: {data}")
-        else:
-            print(f"Failed to send data: {response.status_code}")
-            print(f"Failed data: {data}")
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending data: {e}")
+        if not data or "data_list" not in data:
+            print("[ERROR] Empty or Invalid data structure")
+            return
+        # Log reference data if present
+        for item in data["data_list"]:
+            if item.get("rsp_type") == "A" and "references" in str(item):
+                print(f"[DEBUG] Sending reference data: {json.dumps(data, ensure_ascii=False, indent=2)}")
+        response = requests.post(url, json=data, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"[ERROR] Failed to send data: {response.status_code}, {response.text}")
+        
+        return response
+
+    except Exception as e:
+        print(f"[ERROR] send_data_to_server encountered an error: {str(e)}")
+
 
 # ---------------------- 벡터화 -----------------------
 

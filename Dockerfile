@@ -10,6 +10,9 @@ COPY requirements.txt .
 # pip 캐시 사용 안 함으로 설치 (임시 파일 최소화)
 RUN pip install --no-cache-dir -r requirements.txt
 
+# gemma3.py 패치 파일 복사 (vLLM gemma3 파일 덮어쓰기)
+COPY patches/vllm/gemma3.py /opt/conda/lib/python3.11/site-packages/vllm/model_executor/models/gemma3.py
+
 # Solve the C compier
 RUN apt-get update && apt-get install build-essential -y
 

@@ -612,8 +612,10 @@ class InferenceActor:
             "result": "OK",
             "detail": "Reference data",
             "evt_time": datetime.datetime.now().isoformat(),
-            "data_list": retrieval
+            "data_list": [retrieval]
         }, ensure_ascii=False)
+        # Debug: print the reference JSON before sending
+        print(f"[DEBUG] Prepared reference data: {reference_json}")
         await self.queue_manager.put_token.remote(request_id, reference_json)
         
         print(f"[STREAM] Sent reference data for request_id={request_id}")
