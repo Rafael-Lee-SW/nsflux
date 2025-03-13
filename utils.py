@@ -35,6 +35,15 @@ import logging
 
 logging.basicConfig(level=logging.DEBUG)
 
+# Gemma3Config 전역 패치: vocab_size 속성이 없으면 추가합니다.
+try:
+    from transformers.models.gemma3.configuration_gemma3 import Gemma3Config
+    if not hasattr(Gemma3Config, "vocab_size"):
+        Gemma3Config.vocab_size = 32000  # 또는 embed_tokenizer를 통해 동적으로 결정한 값
+        print("Gemma3Config에 vocab_size 패치 완료.")
+except Exception as e:
+    print("Gemma3Config 패치 실패:", e)
+
 # -------------------------------------------------
 # Function: find_weight_directory - 허깅페이스 권한 문제 해결 후에 잘 사용되지 아니함
 # -------------------------------------------------
@@ -153,11 +162,12 @@ def load_model(config):
                     trust_remote_code=True,
                     token=token,
                 )
-                if not hasattr(hf_config, "vocab_size"):
-                    # 토크나이저가 이미 로드되어 있다면 그 값을 사용하거나 기본값 지정
-                    hf_config.vocab_size = getattr(embed_tokenizer, "vocab_size", 30522)
             except Exception as e:
                 raise e
+            # 패치: vocab_size 속성이 없으면 embed_tokenizer의 값을 사용하여 추가
+            if not hasattr(hf_config, "vocab_size"):
+                print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다.")
+                hf_config.vocab_size = getattr(embed_tokenizer, "vocab_size", 32000)
             config_dict = hf_config.to_dict()
             if not config_dict.get("architectures"):
                 print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
