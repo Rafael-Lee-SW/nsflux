@@ -12,7 +12,7 @@ ray:
   batch_wait_timeout: 0.05        
   max_ongoing_requests: 100        # ray.serve에서 deployment setting으로 동시 요청 처리 갯수를 의미함(Batch랑 다름)
 
-use_vllm: True # vLLM 사용 여부
+use_vllm: False # vLLM 사용 여부
 vllm:
   enable_prefix_caching: True
   scheduler_delay_factor: 0.1
