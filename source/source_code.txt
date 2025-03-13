@@ -2,16 +2,11 @@
 
 ```
 ├─ Dockerfile
-├─ RAG.py
-├─ SQL_NS.py
 ├─ app.py
 ├─ config.yaml
-├─ prompt_rag.py
 ├─ ray_setup.py
 ├─ ray_utils.py
 ├─ requirements.txt
-├─ sql.py
-├─ templates/chatroom.html
 └─ utils.py
 ```
 
@@ -22,7 +17,7 @@
 # config.yaml
 # Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
 ### Model
-model_id : 'google/gemma-2-27b-it'
+model_id : 'google/gemma-3-27b-it'
 response_url : "http://202.20.84.16:8083/responseToUI"
 # response_url : "http://192.222.54.254:6460/testResponse"
 
@@ -41,9 +36,9 @@ vllm:
   enable_chunked_prefill: True
   tensor_parallel_size: 1         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
   max_num_seqs: 192               # v1에 따른 상향
-  max_num_batched_tokens: 8192   # v1에 따른 상향
+  max_num_batched_tokens: 16384   # v1에 따른 상향
   block_size: 128                 # 미적용
-  gpu_memory_utilization: 0.95    # v0: 0.95 / v1: 0.99로 상향
+  gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
   disable_custom_all_reduce: true
   enable_memory_defrag: True      # v1 신규 기능 활성화
   # 추가할 설정
@@ -97,6 +92,9 @@ COPY requirements.txt .
 
 # pip 캐시 사용 안 함으로 설치 (임시 파일 최소화)
 RUN pip install --no-cache-dir -r requirements.txt
+
+# gemma3.py 패치 파일 복사 (vLLM gemma3 파일 덮어쓰기)
+COPY patches/vllm/gemma3.py /opt/conda/lib/python3.11/site-packages/vllm/model_executor/models/gemma3.py
 
 # Solve the C compier
 RUN apt-get update && apt-get install build-essential -y
@@ -200,7 +198,7 @@ tokenizers==0.21.0
 torch==2.5.1
 torchvision==0.20.1
 tqdm==4.67.1
-transformers==4.48.2
+transformers==4.49.0
 typing_extensions==4.12.2
 urllib3==2.3.0
 virtualenv==20.29.1
@@ -459,26 +457,28 @@ def query_stream():
 
 # --------------------- CLT Streaming part ----------------------------
 
+# --------------------- CLT Streaming part ----------------------------
 @app.route("/queryToSLLM", methods=["POST"])
 def query_stream_to_clt():
     """
     POST 방식 SSE 스트리밍 엔드포인트.
-    클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
+    클라이언트가 {"qry_id": "...", "user_id": "...", "page_id": "...", "qry_contents": "...", "qry_time": "..." }
+    형태의 JSON을 보내면, 내부 Ray Serve SSE 스트림을 통해 처리한 후 지정된 response_url로 SSE 청크를 전송합니다.
     """
-    # POST 요청 params
+    # POST 요청 파라미터 파싱
     body = request.json or {}
-    
-    # CLT 통신과 맞는 규격
     qry_id = body.get("qry_id", "")
     user_id = body.get("user_id", "")
     page_id = body.get("page_id", "")
-    auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
+    auth_class = "admin"  # 모든 요청을 'admin'으로 처리
     user_input = body.get("qry_contents", "")
     qry_time = body.get("qry_time", "")
     
     response_url = config.response_url
 
-    print(f"[DEBUG] /query_stream_to_clt called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
+    print(f"[DEBUG] /queryToSLLM called with qry_id='{qry_id}', user_id='{user_id}', "
+          f"page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
+    
     # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
     http_query = {
         "qry_id": qry_id,
@@ -491,68 +491,285 @@ def query_stream_to_clt():
     }
     print(f"[DEBUG] Built http_query={http_query}")
 
-    # Obtain request_id from Ray
+    # Ray Serve에 SSE 스트리밍 요청 보내기
     response = inference_handle.process_query_stream.remote(http_query)
     obj_ref = response._to_object_ref_sync()
     request_id = ray.get(obj_ref)
-
     print(f"[DEBUG] streaming request_id={request_id}")
     
     def sse_generator(request_id, response_url):
+        token_buffer = []  # To collect tokens (for answer tokens only)
+        last_sent_time = time.time()  # To track the last time data was sent
+        answer_counter = 1  # 답변 업데이트 순번
         try:
-            token_buffer = []  # To collect tokens
-            last_sent_time = time.time()  # To track the last time data was sent
-
-            answer_counter = 1  # 답변 업데이트 순번 (답변1, 답변2, ...)
-            
             while True:
-                # Retrieve token from SSEQueueManager
                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
-                token_dict = json.loads(token) if isinstance(token, str) else token
-                
-                token_buffer.append(token_dict)  # Collect token
-                
-                current_time = time.time()
-
-                # If 1 second has passed, send the accumulated tokens
-                if current_time - last_sent_time >= 1:
-                    # Send the accumulated tokens
-                    buffer_format = process_format_to_response(token_buffer, qry_id, update_index=answer_counter)
-                    send_data_to_server(buffer_format, response_url)
-                    token_buffer = []  # Reset the buffer
-                    last_sent_time = current_time  # Update the last sent time
-                    answer_counter += 1  # 순번 증가
-                
-                # If "continue" is "E", send the accumulated tokens with END signal
-                elif token_dict.get("continue") == "E":
-                    # Send the accumulated tokens --- EXCEPT LAST END TOKEN
-                    buffer_format = process_format_to_response(token_buffer[:-1], qry_id, continue_="E", update_index=answer_counter)
-                    send_data_to_server(buffer_format, response_url)
-                    token_buffer = []  # Reset the buffer
-                    last_sent_time = current_time  # Update the last sent time
-
-                # If the "continue" key indicates to stop, break the loop
-                if token_dict.get("continue") == "E":
+                if token is None:
+                    print("[DEBUG] 토큰이 None 반환됨. 종료합니다.")
                     break
 
-        except Exception as e:
-            # error_token = json.dumps({"type": "error", "message": str(e)})
-            # yield f"data: {error_token}\n\n"
-            print(e)
+                if isinstance(token, str):
+                    token = token.strip()
+                if token == "[[STREAM_DONE]]":
+                    print("[DEBUG] 종료 토큰([[STREAM_DONE]]) 수신됨. 스트림 종료.")
+                    break
 
+                try:
+                    token_dict = json.loads(token) if isinstance(token, str) else token
+                except Exception as e:
+                    print(f"[ERROR] JSON 파싱 실패: {e}. 원시 토큰: '{token}'")
+                    continue
+
+                # If token is a reference token, send it immediately
+                if token_dict.get("type") == "reference":
+                    print(f"[DEBUG] Reference token details: {token_dict}")
+                    ref_format = process_format_to_response([token_dict], qry_id, continue_="C", update_index=answer_counter)
+                    print(f"[DEBUG] Sending reference data: {json.dumps(ref_format, ensure_ascii=False, indent=2)}")
+                    send_data_to_server(ref_format, response_url)
+                    continue
+
+                # Otherwise, accumulate answer tokens
+                token_buffer.append(token_dict)
+                current_time = time.time()
+                # If 1 second has passed, flush the accumulated answer tokens
+                if current_time - last_sent_time >= 1:
+                    if len(token_buffer) > 0:
+                        # Check if any token in the buffer signals termination.
+                        final_continue = "E" if any(t.get("continue") == "E" for t in token_buffer) else "C"
+                        print(f"[DEBUG] Flushing {len(token_buffer)} tokens with continue flag: {final_continue}")
+                        buffer_format = process_format_to_response(token_buffer, qry_id, continue_=final_continue, update_index=answer_counter)
+                        send_data_to_server(buffer_format, response_url)
+                        token_buffer = []  # Reset the buffer
+                        last_sent_time = current_time  # Update the last sent time
+                        answer_counter += 1
+                if token_dict.get("continue") == "E":
+                    # Immediately flush the buffer with termination flag if needed
+                    if len(token_buffer) > 0:
+                        print(f"[DEBUG] Immediate flush due to termination flag in buffer (size {len(token_buffer)}).")
+                        buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
+                        send_data_to_server(buffer_format, response_url)
+                        token_buffer = []
+                    break
+            # After loop: if tokens remain, flush them with termination flag
+            if len(token_buffer) > 0:
+                print(f"[DEBUG] Final flush of remaining {len(token_buffer)} tokens with end flag.")
+                buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
+                send_data_to_server(buffer_format, response_url)
+        except Exception as e:
+            print(f"[ERROR] sse_generator encountered an error: {e}")
         finally:
-            # Cleanup: close the SSE queue after streaming is done
             try:
                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
                 ray.get(obj_ref)
             except Exception as ex:
                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
             print("[DEBUG] SSE closed.")
+
     
+    # 별도의 스레드에서 SSE generator 실행
     job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
     job.start()
 
+    # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
+
+
+# @app.route("/queryToSLLM", methods=["POST"])
+# def query_stream_to_clt():
+#     """
+#     POST 방식 SSE 스트리밍 엔드포인트.
+#     클라이언트가 {"qry_id": "...", "user_id": "...", "page_id": "...", "qry_contents": "...", "qry_time": "..." }
+#     형태의 JSON을 보내면, 내부 Ray Serve SSE 스트림을 통해 처리한 후 지정된 response_url로 SSE 청크를 전송합니다.
+#     """
+#     # POST 요청 파라미터 파싱
+#     body = request.json or {}
+#     qry_id = body.get("qry_id", "")
+#     user_id = body.get("user_id", "")
+#     page_id = body.get("page_id", "")
+#     auth_class = "admin"  # 모든 요청을 'admin'으로 처리
+#     user_input = body.get("qry_contents", "")
+#     qry_time = body.get("qry_time", "")
+    
+#     response_url = config.response_url
+
+#     print(f"[DEBUG] /query_stream_to_clt called with qry_id='{qry_id}', user_id='{user_id}', "
+#           f"page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
+    
+#     # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
+#     http_query = {
+#         "qry_id": qry_id,
+#         "user_id": user_id,
+#         "page_id": page_id if page_id else str(uuid.uuid4()),
+#         "auth_class": auth_class,
+#         "qry_contents": user_input,
+#         "qry_time": qry_time,
+#         "response_url": response_url
+#     }
+#     print(f"[DEBUG] Built http_query={http_query}")
+
+#     # Ray Serve에 SSE 스트리밍 요청 보내기
+#     response = inference_handle.process_query_stream.remote(http_query)
+#     obj_ref = response._to_object_ref_sync()
+#     request_id = ray.get(obj_ref)
+#     print(f"[DEBUG] streaming request_id={request_id}")
+    
+#     def sse_generator(request_id, response_url):
+#         token_buffer = []  # To collect tokens
+#         last_sent_time = time.time()  # To track the last time data was sent
+#         answer_counter = 1  # 답변 업데이트 순번
+#         try:
+#             while True:
+#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
+#                 if token is None:
+#                     print("[DEBUG] 토큰이 None 반환됨. 종료합니다.")
+#                     break
+
+#                 if isinstance(token, str):
+#                     token = token.strip()
+#                 if token == "[[STREAM_DONE]]":
+#                     print("[DEBUG] 종료 토큰([[STREAM_DONE]]) 수신됨. 스트림 종료.")
+#                     break
+
+#                 try:
+#                     token_dict = json.loads(token) if isinstance(token, str) else token
+#                 except Exception as e:
+#                     print(f"[ERROR] JSON 파싱 실패: {e}. 원시 토큰: '{token}'")
+#                     continue
+
+#                 token_buffer.append(token_dict)
+#                 current_time = time.time()
+#                 # If 1 second has passed, send the accumulated tokens
+#                 if current_time - last_sent_time >= 1:
+#                     if len(token_buffer) > 0:
+#                         # Check if any token in the buffer signals termination.
+#                         final_continue = "E" if any(t.get("continue") == "E" for t in token_buffer) else "C"
+#                         buffer_format = process_format_to_response(token_buffer, qry_id, continue_=final_continue, update_index=answer_counter)
+#                         send_data_to_server(buffer_format, response_url)
+#                         token_buffer = []  # Reset the buffer
+#                         last_sent_time = current_time  # Update the last sent time
+#                         answer_counter += 1
+#                 if token_dict.get("continue") == "E":
+#                     # Immediately send the buffer with end flag if not already sent
+#                     if len(token_buffer) > 0:
+#                         buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
+#                         send_data_to_server(buffer_format, response_url)
+#                         token_buffer = []
+#                     break
+#             # After loop: if tokens remain, send them with continue_="E"
+#             if len(token_buffer) > 0:
+#                 buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
+#                 send_data_to_server(buffer_format, response_url)
+#         except Exception as e:
+#             print(f"[ERROR] sse_generator encountered an error: {e}")
+#         finally:
+#             try:
+#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+#                 ray.get(obj_ref)
+#             except Exception as ex:
+#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+#             print("[DEBUG] SSE closed.")
+    
+#     # 별도의 스레드에서 SSE generator 실행
+#     job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
+#     job.start()
+
+#     # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
+#     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
+
+# @app.route("/queryToSLLM", methods=["POST"])
+# def query_stream_to_clt():
+#     """
+#     POST 방식 SSE 스트리밍 엔드포인트.
+#     클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
+#     """
+#     # POST 요청 params
+#     body = request.json or {}
+    
+#     # CLT 통신과 맞는 규격
+#     qry_id = body.get("qry_id", "")
+#     user_id = body.get("user_id", "")
+#     page_id = body.get("page_id", "")
+#     auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
+#     user_input = body.get("qry_contents", "")
+#     qry_time = body.get("qry_time", "")
+    
+#     response_url = config.response_url
+
+#     print(f"[DEBUG] /query_stream_to_clt called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
+#     # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
+#     http_query = {
+#         "qry_id": qry_id,
+#         "user_id": user_id,
+#         "page_id": page_id if page_id else str(uuid.uuid4()),
+#         "auth_class": auth_class,
+#         "qry_contents": user_input,
+#         "qry_time": qry_time,
+#         "response_url": response_url
+#     }
+#     print(f"[DEBUG] Built http_query={http_query}")
+
+#     # Obtain request_id from Ray
+#     response = inference_handle.process_query_stream.remote(http_query)
+#     obj_ref = response._to_object_ref_sync()
+#     request_id = ray.get(obj_ref)
+
+#     print(f"[DEBUG] streaming request_id={request_id}")
+    
+#     def sse_generator(request_id, response_url):
+#         try:
+#             token_buffer = []  # To collect tokens
+#             last_sent_time = time.time()  # To track the last time data was sent
+
+#             answer_counter = 1  # 답변 업데이트 순번 (답변1, 답변2, ...)
+            
+#             while True:
+#                 # Retrieve token from SSEQueueManager
+#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
+#                 token_dict = json.loads(token) if isinstance(token, str) else token
+                
+#                 token_buffer.append(token_dict)  # Collect token
+                
+#                 current_time = time.time()
+
+#                 # If 1 second has passed, send the accumulated tokens
+#                 if current_time - last_sent_time >= 1:
+#                     # Send the accumulated tokens
+#                     buffer_format = process_format_to_response(token_buffer, qry_id, update_index=answer_counter)
+#                     send_data_to_server(buffer_format, response_url)
+#                     token_buffer = []  # Reset the buffer
+#                     last_sent_time = current_time  # Update the last sent time
+#                     answer_counter += 1  # 순번 증가
+                
+#                 # If "continue" is "E", send the accumulated tokens with END signal
+#                 elif token_dict.get("continue") == "E":
+#                     # Send the accumulated tokens --- EXCEPT LAST END TOKEN
+#                     buffer_format = process_format_to_response(token_buffer[:-1], qry_id, continue_="E", update_index=answer_counter)
+#                     send_data_to_server(buffer_format, response_url)
+#                     token_buffer = []  # Reset the buffer
+#                     last_sent_time = current_time  # Update the last sent time
+
+#                 # If the "continue" key indicates to stop, break the loop
+#                 if token_dict.get("continue") == "E":
+#                     break
+
+#         except Exception as e:
+#             # error_token = json.dumps({"type": "error", "message": str(e)})
+#             # yield f"data: {error_token}\n\n"
+#             print(e)
+
+#         finally:
+#             # Cleanup: close the SSE queue after streaming is done
+#             try:
+#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+#                 ray.get(obj_ref)
+#             except Exception as ex:
+#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+#             print("[DEBUG] SSE closed.")
+    
+#     job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
+#     job.start()
+
+#     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
 
 # ------------------------------------------------
 
@@ -1278,8 +1495,10 @@ class InferenceActor:
             "result": "OK",
             "detail": "Reference data",
             "evt_time": datetime.datetime.now().isoformat(),
-            "data_list": retrieval
+            "data_list": [retrieval]
         }, ensure_ascii=False)
+        # Debug: print the reference JSON before sending
+        print(f"[DEBUG] Prepared reference data: {reference_json}")
         await self.queue_manager.put_token.remote(request_id, reference_json)
         
         print(f"[STREAM] Sent reference data for request_id={request_id}")
@@ -1799,17 +2018,30 @@ def load_model(config):
                     trust_remote_code=True,
                     token=token,
                 )
+                if not hasattr(hf_config, "vocab_size"):
+                    # 토크나이저가 이미 로드되어 있다면 그 값을 사용하거나 기본값 지정
+                    hf_config.vocab_size = getattr(embed_tokenizer, "vocab_size", 30522)
             except Exception as e:
                 raise e
             config_dict = hf_config.to_dict()
             if not config_dict.get("architectures"):
+                print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
         else:
+            # 이미 config_file이 존재하는 경우
             with open(config_file, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
+
+            if "vocab_size" not in config_dict:
+                # embed_tokenizer의 vocab_size가 존재하면 사용하고, 없으면 기본값 30522로 설정
+                config_dict["vocab_size"] = getattr(embed_tokenizer, "vocab_size", 30522)
+                print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다:", config_dict["vocab_size"])
+                with open(config_file, "w", encoding="utf-8") as f:
+                    json.dump(config_dict, f)
             if not config_dict.get("architectures"):
+                print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
                 with open(config_file, "w", encoding="utf-8") as f:
                     json.dump(config_dict, f)
@@ -1850,7 +2082,7 @@ def load_model(config):
         
         vllm_conf = config.get("vllm", {})
         
-        engine_args.enable_prefix_caching = True
+        engine_args.enable_prefix_caching = False
         engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
         engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
@@ -1861,6 +2093,11 @@ def load_model(config):
         
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
+            
+        # # 새로 추가: disable_sliding_window 옵션 확인
+        # if vllm_conf.get("disable_sliding_window", False):
+        #     engine_args.sliding_window = (-1, -1)
+        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
         
         # engine_args.enable_memory_defrag = True # v1 새로운 기능
         # engine_args.max_model_len = vllm_conf.get("max_model_len") # Context Length
@@ -2175,33 +2412,97 @@ def process_to_format(qry_contents, type):
         print("Error! Type Not supported!")
         return None
 
+# @time_tracker
+# def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
+#     # Get multiple formats to tuple
+
+#     ans_format = {
+#         "status_code": 200,
+#         "result": "OK",
+#         "detail": "",
+#         "continue":continue_,
+#         "qry_id": qry_id,
+#         "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+#         "data_list": [],
+#     }
+
+#     # 누적된 토큰을 하나의 문자열로 결합합니다.
+#     aggregated_answer = "".join(token.get("answer", "") for token in formats)
+#     ans_format["data_list"].append({
+#         "rsp_type": "A",
+#         "rsp_tit": f"답변{update_index}",
+#         "rsp_data": [
+#             {
+#                 "rsp_type": "TT",
+#                 "rsp_data": aggregated_answer
+#             }
+#         ]
+#     })
+    
+#     # Validate JSON before returning
+#     try:
+#         json.dumps(ans_format, ensure_ascii=False)  # Test JSON validity
+#     except Exception as e:
+#         print(f"[ERROR] Invalid JSON structure: {str(e)}")
+#         ans_format["status_code"] = 500
+#         ans_format["result"] = "ERROR"
+#         ans_format["detail"] = f"JSON Error: {str(e)}"
+
+#     # for format in formats:
+#     #     ans_format["data_list"].append(format)
+
+#     # return json.dumps(ans_format, ensure_ascii=False)
+#     return ans_format
+
 @time_tracker
 def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
-    # Get multiple formats to tuple
+    # If there are any reference tokens, return only them.
+    reference_tokens = [token for token in formats if token.get("type") == "reference"]
+    if reference_tokens:
+        # For this example, we'll use the first reference token.
+        ref = reference_tokens[0]
+        # Add the extra keys.
+        ref["qry_id"] = qry_id
+        ref["continue"] = continue_
+        ref["rsp_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        # Ensure that a "rsp_tit" key exists to satisfy downstream requirements.
+        if "rsp_tit" not in ref:
+            ref["rsp_tit"] = "Reference"
+        return ref
 
+    # Otherwise, aggregate the normal answer tokens.
+    normal_tokens = [token.get("answer", "") for token in formats if token.get("type") != "reference"]
+    aggregated_answer = "".join(normal_tokens)
+    
     ans_format = {
         "status_code": 200,
         "result": "OK",
         "detail": "",
-        "continue":continue_,
+        "continue": continue_,
         "qry_id": qry_id,
         "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-        "data_list": [],
+        "data_list": [{
+            "rsp_type": "A",
+            "rsp_tit": f"답변{update_index}",
+            "rsp_data": [{
+                "rsp_type": "TT",
+                "rsp_data": aggregated_answer
+            }]
+        }]
     }
-
-    # 누적된 토큰을 하나의 문자열로 결합합니다.
-    aggregated_answer = "".join(token.get("answer", "") for token in formats)
-    ans_format["data_list"].append({
-        "rsp_type": "A",
-        "rsp_tit": f"답변{update_index}",
-        "rsp_data": [aggregated_answer]
-    })
-
-    # for format in formats:
-    #     ans_format["data_list"].append(format)
-
-    # return json.dumps(ans_format, ensure_ascii=False)
+    
+    # Validate JSON structure before returning.
+    try:
+        json.dumps(ans_format, ensure_ascii=False)
+    except Exception as e:
+        print(f"[ERROR] Invalid JSON structure: {str(e)}")
+        ans_format["status_code"] = 500
+        ans_format["result"] = "ERROR"
+        ans_format["detail"] = f"JSON Error: {str(e)}"
+    
     return ans_format
+
+
 
 # @time_tracker
 # def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
@@ -2259,21 +2560,41 @@ def error_format(message, status, qry_id=""):
     }
     return json.dumps(ans_format)
 
-@time_tracker
+# @time_tracker
+# def send_data_to_server(data, url):
+#     headers = {
+#         "Content-Type": "application/json; charset=utf-8"
+#     }
+#     try:
+#         # 다른 서버로 데이터를 전송 (POST 요청)
+#         response = requests.post(url, json=data, headers=headers)
+#         if response.status_code == 200:
+#             print(f"Data sent successfully: {data}")
+#         else:
+#             print(f"Failed to send data: {response.status_code}")
+#             print(f"Failed data: {data}")
+#     except requests.exceptions.RequestException as e:
+#         print(f"Error sending data: {e}")
+@time_tracker     
 def send_data_to_server(data, url):
-    headers = {
-        "Content-Type": "application/json; charset=utf-8"
-    }
     try:
-        # 다른 서버로 데이터를 전송 (POST 요청)
-        response = requests.post(url, json=data, headers=headers)
-        if response.status_code == 200:
-            print(f"Data sent successfully: {data}")
-        else:
-            print(f"Failed to send data: {response.status_code}")
-            print(f"Failed data: {data}")
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending data: {e}")
+        if not data or "data_list" not in data:
+            print("[ERROR] Empty or Invalid data structure")
+            return
+        # Log reference data if present
+        for item in data["data_list"]:
+            if item.get("rsp_type") == "A" and "references" in str(item):
+                print(f"[DEBUG] Sending reference data: {json.dumps(data, ensure_ascii=False, indent=2)}")
+        response = requests.post(url, json=data, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"[ERROR] Failed to send data: {response.status_code}, {response.text}")
+        
+        return response
+
+    except Exception as e:
+        print(f"[ERROR] send_data_to_server encountered an error: {str(e)}")
+
 
 # ---------------------- 벡터화 -----------------------
 
@@ -2452,1776 +2773,74 @@ def diagnose_and_fix_dataset(data_path, output_path=None):
 
 ```
 
+# Error log
+```log
 
---- RAG.py
+(InferenceActor pid=563) 2025-03-13 07:35:19,107 INFO Entering load_model()
+(InferenceActor pid=563) 2025-03-13 07:35:19,107 INFO Starting model loading...
+(InferenceActor pid=563) Loading embedding model
+(InferenceActor pid=563) 2025-03-13 07:35:19,465 INFO Entering find_weight_directory()
+(InferenceActor pid=563) 2025-03-13 07:35:19,466 INFO Exiting find_weight_directory() -- Elapsed: 0.00s
+(InferenceActor pid=563) :Embedding tokenizer loaded successfully.
+(InferenceActor pid=563) vLLM mode enabled. Starting to load main LLM model via vLLM.
+(InferenceActor pid=563) Using pure option of Model(No quantization)
+(InferenceActor pid=563) [MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다: 32000
+(InferenceActor pid=563) EngineArgs setting be finished
+(InferenceActor pid=563) 비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.
+(InferenceActor pid=563) INFO 03-13 07:35:19 config.py:2444] Downcasting torch.float32 to torch.float16.
+(InferenceActor pid=563) INFO 03-13 07:35:24 config.py:549] This model supports multiple tasks: {'generate', 'classify', 'embed', 'reward', 'score'}. Defaulting to 'generate'.
+(InferenceActor pid=563) INFO 03-13 07:35:24 config.py:1555] Chunked prefill is enabled with max_num_batched_tokens=16384.
+(InferenceActor pid=563) INFO 03-13 07:35:25 core.py:50] Initializing a V1 LLM engine (v0.7.3) with config: model='/workspace/huggingface/models--google--gemma-3-27b-it/snapshots/dfb98f29ff907e391ceed2be3834ca071ea260f1', speculative_config=None, tokenizer='google/gemma-3-27b-it', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, override_neuron_config=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.float16, max_seq_len=1048576, download_dir='/workspace/huggingface', load_format=LoadFormat.SAFETENSORS, tensor_parallel_size=1, pipeline_parallel_size=1, disable_custom_all_reduce=True, quantization=None, enforce_eager=False, kv_cache_dtype=auto,  device_config=cuda, decoding_config=DecodingConfig(guided_decoding_backend='xgrammar'), observability_config=ObservabilityConfig(otlp_traces_endpoint=None, collect_model_forward_time=False, collect_model_execute_time=False), seed=0, served_model_name=/workspace/huggingface/models--google--gemma-3-27b-it/snapshots/dfb98f29ff907e391ceed2be3834ca071ea260f1, num_scheduler_steps=1, multi_step_stream_outputs=True, enable_prefix_caching=False, chunked_prefill_enabled=True, use_async_output_proc=True, disable_mm_preprocessor_cache=False, mm_processor_kwargs=None, pooler_config=None, compilation_config={"level":3,"custom_ops":["none"],"splitting_ops":["vllm.unified_attention","vllm.unified_attention_with_output"],"use_inductor":true,"compile_sizes":[],"use_cudagraph":true,"cudagraph_num_of_warmups":1,"cudagraph_capture_sizes":[512,504,496,488,480,472,464,456,448,440,432,424,416,408,400,392,384,376,368,360,352,344,336,328,320,312,304,296,288,280,272,264,256,248,240,232,224,216,208,200,192,184,176,168,160,152,144,136,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,4,2,1],"max_capture_size":512}
+(InferenceActor pid=563) WARNING 03-13 07:35:25 utils.py:2262] Methods determine_num_available_blocks,device_config,get_cache_block_size_bytes,list_loras,load_config,pin_lora,remove_lora,scheduler_config not implemented in <vllm.v1.worker.gpu_worker.Worker object at 0x7018fbd285d0>
+(InferenceActor pid=563) INFO 03-13 07:35:26 gpu_model_runner.py:1049] Starting to load model /workspace/huggingface/models--google--gemma-3-27b-it/snapshots/dfb98f29ff907e391ceed2be3834ca071ea260f1...
+(InferenceActor pid=563) WARNING 03-13 07:35:26 utils.py:78] Gemma3ForConditionalGeneration has no vLLM implementation, falling back to Transformers implementation. Some features may not be supported and performance may not be optimal.
+(InferenceActor pid=563) INFO 03-13 07:35:26 transformers.py:129] Using Transformers backend.
+(InferenceActor pid=563) WARNING 03-13 07:35:26 config.py:3473] `torch.compile` is turned on, but the model /workspace/huggingface/models--google--gemma-3-27b-it/snapshots/dfb98f29ff907e391ceed2be3834ca071ea260f1 does not support it. Please open an issue on GitHubif you want it to be supported.
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291] EngineCore hit an exception: Traceback (most recent call last):
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 283, in run_engine_core
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     engine_core = EngineCoreProc(*args, **kwargs)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 238, in __init__
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     super().__init__(vllm_config, executor_class, log_stats)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 56, in __init__
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     self.model_executor = executor_class(vllm_config)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/executor/executor_base.py", line 52, in __init__
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     self._init_executor()
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/executor/uniproc_executor.py", line 47, in _init_executor
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     self.collective_rpc("load_model")
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/executor/uniproc_executor.py", line 56, in collective_rpc
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     answer = run_method(self.driver_worker, method, args, kwargs)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/utils.py", line 2196, in run_method
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     return func(*args, **kwargs)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]            ^^^^^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/v1/worker/gpu_worker.py", line 133, in load_model
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     self.model_runner.load_model()
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/v1/worker/gpu_model_runner.py", line 1051, in load_model
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     self.model = get_model(vllm_config=self.vllm_config)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/model_executor/model_loader/__init__.py", line 14, in get_model
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     return loader.load_model(vllm_config=vllm_config)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/model_executor/model_loader/loader.py", line 406, in load_model
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     model = _initialize_model(vllm_config=vllm_config)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/model_executor/model_loader/loader.py", line 125, in _initialize_model
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     return model_class(vllm_config=vllm_config, prefix=prefix)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/vllm/model_executor/models/transformers.py", line 135, in __init__
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     self.vocab_size = config.vocab_size
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]                       ^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]   File "/opt/conda/lib/python3.11/site-packages/transformers/configuration_utils.py", line 214, in __getattribute__
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]     return super().__getattribute__(key)
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291] AttributeError: 'Gemma3Config' object has no attribute 'vocab_size'
+(InferenceActor pid=563) ERROR 03-13 07:35:26 core.py:291]
+(raylet) A worker died or was killed while executing a task by an unexpected system error. To troubleshoot the problem, check the logs for the dead worker. RayTask ID: ffffffffffffffffb613e7356796f8beb37b1d1401000000 Worker ID: 7fd72ec033883704502de90cb459aecb840009fa4790d14e8a19025c Node ID: 9e022cea4b6634e84c679fa9b6033cebfdf9b25e733c384ffdcdbba7 Worker IP address: 172.17.0.4 Worker port: 42145 Worker PID: 563 Worker exit type: SYSTEM_ERROR Worker exit detail: Worker unexpectedly exits with a connection error code 2. End of file. There are some potential root causes. (1) The process is killed by SIGKILL by OOM killer due to high memory usage. (2) ray stop --force is called. (3) The worker is crashed unexpectedly due to SIGSEGV or other unexpected errors.
 
-```python
-
-# RAG.py
-import torch
-import re
-import numpy as np
-import rank_bm25
-import random
-import uuid
-import logging
-from datetime import datetime, timedelta
-from sql import generate_sql
-
-# Tracking
-from tracking import time_tracker
-
-# Import the vLLM to use the AsyncLLMEngine
-from vllm.engine.async_llm_engine import AsyncLLMEngine
-
-# In RAG.py (at the top, add an import for prompts)
-from prompt_rag import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE
-
-global beep
-beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
-
-@time_tracker
-def execute_rag(QU, KE, TA, TI, **kwargs):
-    print("[SOOWAN]: execute_rag : 진입")
-    model = kwargs.get("model")
-    tokenizer = kwargs.get("tokenizer")
-    embed_model = kwargs.get("embed_model")
-    embed_tokenizer = kwargs.get("embed_tokenizer")
-    data = kwargs.get("data")
-    config = kwargs.get("config")
-
-    if TA == "yes":  # Table 이 필요하면
-        print("[SOOWAN]: execute_rag : 테이블 필요 (TA == yes). SQL 생성 시작합니다.")
-        try:
-            result = generate_sql(QU, model, tokenizer, config)
-        except Exception as e:
-            # 1) generate_sql() 자체가 도중에 예외를 던지는 경우
-            print("[ERROR] generate_sql() 도중 예외 발생:", e)
-            # 멈추지 않고, 에러 형식으로 데이터를 만들어 반환
-            docs = "테이블 조회 시도 중 예외가 발생했습니다. " \
-                "해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다."
-            docs_list = []
-            return docs, docs_list
-
-        # 2) 함수가 정상 실행됐지만 결과가 None인 경우(= SQL 쿼리 결과가 없거나 오류)
-        if result is None:
-            print("[WARNING] generate_sql()에서 None을 반환했습니다. " 
-                "SQL 수행 결과가 없거나 에러가 발생한 것일 수 있습니다.")
-            docs = "테이블 조회 결과가 비어 있습니다. " \
-                "조회할 데이터가 없거나 SQL 오류가 발생했습니다."
-            docs_list = []
-            return docs, docs_list
-
-        # 정상적인 경우(튜플 언패킹)
-        final_sql_query, title, explain, table_json, chart_json = result
-
-        # docs : LLM 입력용 (string)
-        PROMPT = (
-            f"다음은 SQL 추출에 사용된 쿼리문: {final_sql_query}\n\n"
-            f"추가 설명: {explain}\n\n"
-            f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
-        )
-        # docs_list : 사용자에게 보여줄 정보(List)
-        docs_list = [
-            {"title": title, "data": table_json},
-            {"title": "시각화 차트", "data": chart_json},
-        ]
-        print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
-        return PROMPT, docs_list
-
-    else:
-        print("[SOOWAN]: execute_rag : 테이블 필요없음")
-        # 적응형 시간 필터링으로 RAG 실행
-        filtered_data = expand_time_range_if_needed(TI, data, min_docs=50)
-        
-        # 디버깅을 위해 문서 수 로깅
-        print(f"[RETRIEVE] 검색에 사용되는 문서 수: {len(filtered_data.get('vectors', []))}")
-        
-        docs, docs_list = retrieve(KE, filtered_data, config.N, embed_model, embed_tokenizer)
-        return docs, docs_list
-
-
-@time_tracker
-async def generate_answer(query, docs, **kwargs):
-    model = kwargs.get("model")
-    tokenizer = kwargs.get("tokenizer")
-    config = kwargs.get("config")
-    
-    answer = await generate(docs, query, model, tokenizer, config)
-    return answer
-
-
-@time_tracker
-async def query_sort(params):
-    # params: 딕셔너리로 전달된 값들
-    query = params["user_input"]
-    model = params["model"]
-    tokenizer = params["tokenizer"]
-    embed_model = params["embed_model"]
-    embed_tokenizer = params["embed_tokenizer"]
-    data = params["data"]
-    config = params["config"]
-
-    # prompts/prompt_rag.py에서 프롬프트 별도 관리
-    PROMPT = QUERY_SORT_PROMPT.format(user_query=query)
-    
-    # Get Answer from LLM
-    print("##### query_sort is starting #####")
-    if config.use_vllm:  # use_vllm = True case 
-        from vllm import SamplingParams
-
-        sampling_params = SamplingParams(
-            max_tokens=config.model.max_new_tokens,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-        )
-        accepted_request_id = str(uuid.uuid4())
-        answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
-    else:
-        input_ids = tokenizer(
-            PROMPT, return_tensors="pt", truncation=True, max_length=4024
-        ).to("cuda")
-        token_count = input_ids["input_ids"].shape[1]
-        outputs = model.generate(
-            **input_ids,
-            max_new_tokens=config.model.max_new_tokens,
-            do_sample=config.model.do_sample,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-        answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-
-    print("[DEBUG query_sort] Generated answer:")
-    print(answer)
-    
-    # Regular expressions for tags
-    query_pattern = r"<query.*?>(.*?)<query.*?>"
-    keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
-    table_pattern = r"<table.*?>(.*?)<table.*?>"
-    time_pattern = r"<time.*?>(.*?)<time.*?>"
-    
-    # [DEBUG-CHANGE]: Check each match before calling group(1)
-    m_query = re.search(query_pattern, answer, re.DOTALL)
-    m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
-    m_table = re.search(table_pattern, answer, re.DOTALL)
-    m_time = re.search(time_pattern, answer, re.DOTALL)
-    
-    if not m_query:
-        print("[ERROR query_sort] query_pattern not found in answer:")
-        print(answer)
-        raise ValueError("Missing <query> tag in generated answer.")
-    if not m_keyword:
-        print("[ERROR query_sort] keyword_pattern not found in answer:")
-        print(answer)
-        raise ValueError("Missing <keyword> tag in generated answer.")
-    if not m_table:
-        print("[ERROR query_sort] table_pattern not found in answer:")
-        print(answer)
-        raise ValueError("Missing <table> tag in generated answer.")
-    if not m_time:
-        print("[ERROR query_sort] time_pattern not found in answer:")
-        print(answer)
-        raise ValueError("Missing <time> tag in generated answer.")
-
-    QU = m_query.group(1)
-    KE = m_keyword.group(1)
-    TA = m_table.group(1)
-    TI = m_time.group(1)
-
-    if TI == "all":
-        TI = "1900-01-01:2099-01-01"
-    print(beep)
-    print(f"구체화 질문: {QU}, 키워드 : {KE}, 테이블 필요 유무: {TA}, 시간: {TI}")
-    print(beep)
-    return QU, KE, TA, TI
-
-
-# @time_tracker
-# def sort_by_time(time_bound, data):
-#     date_format = "%Y-%m-%d"
-#     target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
-#     target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
-
-#     matching_indices = [
-#         i
-#         for i, date in enumerate(data["times"])
-#         if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
-#     ]
-
-#     (
-#         data["file_names"],
-#         data["titles"],
-#         data["times"],
-#         data["vectors"],
-#         data["texts"],
-#         data["texts_short"],
-#         data["texts_vis"],
-#     ) = (
-#         [lst[i] for i in matching_indices]
-#         for lst in (
-#             data["file_names"],
-#             data["titles"],
-#             data["times"],
-#             data["vectors"],
-#             data["texts"],
-#             data["texts_short"],
-#             data["texts_vis"],
-#         )
-#     )
-#     return data
-
-
-# @time_tracker
-# def retrieve(query, data, N, embed_model, embed_tokenizer):
-#     print("[SOOWAN] retrieve : 진입")
-#     print("[SOOWAN] retrieve : 진입 정보 :", query)
-    
-#     sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
-#     print("[SOOWAN] retrieve : sim_score :", sim_score)
-    
-#     try:
-#         bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
-#     except Exception as e:
-#         print("[SOOWAN] retrieve : BM25 score exception, using zeros", e)
-#         bm25_score = np.zeros(len(data["texts_short"]))
-#     print("[SOOWAN] retrieve : bm25_score")
-    
-#     scaled_sim_score = min_max_scaling(sim_score)
-#     scaled_bm25_score = min_max_scaling(bm25_score)
-#     score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
-#     top_k = score[:, 0, 0].argsort()[-N:][::-1]
-#     documents = ""
-#     documents_list = []
-#     for i, index in enumerate(top_k):
-#         documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
-#         documents_list.append({
-#             "file_name": data["file_names"][index],
-#             "title": data["titles"][index],
-#             "contents": data["texts_vis"][index],
-#         })
-#         print("\n" + beep)
-#     print("-------------자료 검색 성공--------------")
-#     return documents, documents_list
-
-@time_tracker
-def sort_by_time(time_bound, data):
-    """
-    원본 데이터는 유지하고 필터링된 복사본을 반환하는 함수
-    """
-    # 원본 문서 수 로깅
-    original_count = len(data["times"])
-    print(f"[시간 필터 전] 문서 수: {original_count}")
-    
-    # "all" 시간 범위 특별 처리
-    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
-        print(f"[시간 필터] 전체 기간 사용 - 모든 문서 포함")
-        return data  # 원본 데이터 그대로 반환
-    
-    # 시간 범위 파싱
-    date_format = "%Y-%m-%d"
-    target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
-    target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
-    
-    # 시간 범위에 맞는 문서 인덱스 찾기
-    matching_indices = [
-        i
-        for i, date in enumerate(data["times"])
-        if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
-    ]
-    
-    filtered_count = len(matching_indices)
-    print(f"[시간 필터 후] 문서 수: {filtered_count}, 기간: {time_bound}")
-    
-    # 너무 적은 문서가 남은 경우 경고 로그
-    if filtered_count < 50 and filtered_count < original_count * 0.1:
-        print(f"[경고] 시간 필터로 인해 문서가 크게 줄었습니다: {original_count} → {filtered_count}")
-    
-    # 필터링된 데이터를 새로운 딕셔너리에 복사
-    filtered_data = {}
-    filtered_data["file_names"] = [data["file_names"][i] for i in matching_indices]
-    filtered_data["titles"] = [data["titles"][i] for i in matching_indices]
-    filtered_data["times"] = [data["times"][i] for i in matching_indices]
-    
-    # 벡터 타입에 따른 다른 처리
-    if isinstance(data["vectors"], torch.Tensor):
-        filtered_data["vectors"] = data["vectors"][matching_indices]
-    else:
-        filtered_data["vectors"] = [data["vectors"][i] for i in matching_indices]
-    
-    filtered_data["texts"] = [data["texts"][i] for i in matching_indices]
-    filtered_data["texts_short"] = [data["texts_short"][i] for i in matching_indices]
-    filtered_data["texts_vis"] = [data["texts_vis"][i] for i in matching_indices]
-    
-    return filtered_data
-
-@time_tracker
-def retrieve(query, data, N, embed_model, embed_tokenizer):
-    print("[SOOWAN] retrieve : 진입")
-    logging.info(f"Retrieval for query: '{query}'")
-    logging.info(f"Available documents: {len(data['vectors'])}")
-    
-    try:
-        sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
-        logging.info(f"Similarity score shape: {sim_score.shape}")
-        
-        bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
-        logging.info(f"BM25 score shape: {bm25_score.shape}")
-        
-        scaled_sim_score = min_max_scaling(sim_score)
-        scaled_bm25_score = min_max_scaling(bm25_score)
-        
-        # Combined score (0.4 semantic + 0.6 lexical)
-        score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
-        top_k = score[:, 0, 0].argsort()[-N:][::-1]
-        
-        # Log top results for debugging
-        logging.info(f"Top {N} document indices: {top_k}")
-        logging.info(f"Top {N} document scores: {[score[:, 0, 0][i] for i in top_k]}")
-        logging.info(f"Top document titles: {[data['titles'][i] for i in top_k]}")
-        
-        documents = ""
-        documents_list = []
-        for i, index in enumerate(top_k):
-            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
-            documents_list.append({
-                "file_name": data["file_names"][index],
-                "title": data["titles"][index],
-                "contents": data["texts_vis"][index],
-                "chunk_id": data["chunk_ids"][index],
-            })
-        print("-------------자료 검색 성공--------------")
-        # print("-------", documents_list, "-------")
-        # print("---------------------------------------")
-        return documents, documents_list
-        
-        # Continue with document assembly...
-    except Exception as e:
-        logging.error(f"Retrieval error: {str(e)}", exc_info=True)
-        return "", []
-
-@time_tracker
-def expand_time_range_if_needed(time_bound, data, min_docs=50):
-    """
-    시간 필터링 결과가 너무 적은 경우 자동으로 시간 범위를 확장하는 함수
-    """
-    # "all" 시간 범위는 그대로 사용
-    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
-        print(f"[시간 범위] 전체 기간 사용")
-        return data
-    
-    # 원래 시간 범위로 먼저 시도
-    filtered_data = sort_by_time(time_bound, data)
-    filtered_count = len(filtered_data.get("times", []))
-    
-    # 필터링된 문서 수가 충분하면 바로 반환
-    if filtered_count >= min_docs:
-        print(f"[시간 범위] 원래 범위로 충분한 문서 확보: {filtered_count}개")
-        return filtered_data
-    
-    # 시간 범위 확장 시도
-    print(f"[시간 범위 확장] 원래 범위는 {filtered_count}개 문서만 제공 (최소 필요: {min_docs}개)")
-    
-    # 원래 날짜 파싱
-    date_format = "%Y-%m-%d"
-    try:
-        start_date = datetime.strptime(time_bound.split(":")[0], date_format)
-        end_date = datetime.strptime(time_bound.split(":")[1], date_format)
-    except Exception as e:
-        print(f"[시간 범위 오류] 날짜 형식 오류: {time_bound}, 오류: {e}")
-        return data  # 오류 시 원본 데이터 반환
-    
-    # 점진적으로 더 넓은 범위 시도
-    expansions = [
-        (3, "3개월"),
-        (6, "6개월"),
-        (12, "1년"),
-        (24, "2년"),
-        (60, "5년")
-    ]
-    
-    for months, label in expansions:
-        # 양방향으로 균등하게 확장
-        new_start = start_date - timedelta(days=30*months//2)
-        new_end = end_date + timedelta(days=30*months//2)
-        
-        new_range = f"{new_start.strftime(date_format)}:{new_end.strftime(date_format)}"
-        print(f"[시간 범위 확장] {label} 확장 시도: {new_range}")
-        
-        expanded_data = sort_by_time(new_range, data)
-        expanded_count = len(expanded_data.get("times", []))
-        
-        if expanded_count >= min_docs:
-            print(f"[시간 범위 확장] {label} 확장으로 {expanded_count}개 문서 확보")
-            return expanded_data
-    
-    # 모든 확장이 실패하면 전체 데이터셋 사용
-    print(f"[시간 범위 확장] 모든 확장 시도 실패, 전체 데이터셋 사용")
-    return data
-
-@time_tracker
-def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
-    print("[SOOWAN] cal_sim_score : 진입 / query : ", query)
-    query_V = embed(query, embed_model, embed_tokenizer)
-    print("[SOOWAN] cal_sim_score : query_V 생산 완료")
-    if len(query_V.shape) == 1:
-        query_V = query_V.unsqueeze(0)
-        print("[SOOWAN] cal_sim_score : query_V.shape == 1")
-    score = []
-    for chunk in chunks:
-        if len(chunk.shape) == 1:
-            chunk = chunk.unsqueeze(0)
-        query_norm = query_V / query_V.norm(dim=1)[:, None]
-        chunk_norm = chunk / chunk.norm(dim=1)[:, None]
-        tmp = torch.mm(query_norm, chunk_norm.transpose(0, 1)) * 100
-        score.append(tmp.detach())
-    return np.array(score)
-
-
-# @time_tracker
-# def cal_bm25_score(query, indexes, embed_tokenizer):
-#     print("[SOOWAN] cal_bm25_score : 진입")
-#     try:
-#         tokenized_corpus = [
-#             embed_tokenizer(
-#                 text,
-#                 return_token_type_ids=False,
-#                 return_attention_mask=False,
-#                 return_offsets_mapping=False,
-#             )
-#             for text in indexes
-#         ]
-#         tokenized_corpus = [
-#             embed_tokenizer.convert_ids_to_tokens(corpus["input_ids"])
-#             for corpus in tokenized_corpus
-#         ]
-#         print(f"[SOOWAN] cal_bm25_score : Tokenized corpus (first 2 items): {tokenized_corpus[:2]}")
-#     except Exception as e:
-#         print(f"[SOOWAN ERROR BM25] Error tokenizing corpus: {str(e)}")
-#         return np.zeros(len(indexes))
-#     if not tokenized_corpus or all(len(tokens) == 0 for tokens in tokenized_corpus):
-#         print("[SOOWAN] cal_bm25_score: Empty tokenized corpus, returning zeros.")
-#         return np.zeros(len(indexes))
-#     try:
-#         bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
-#     except Exception as e:
-#         print(f"[SOOWAN ERROR BM25] Error initializing BM25: {str(e)}")
-#         return np.zeros(len(indexes))
-#     try:
-#         tokenized_query = embed_tokenizer(query)
-#         tokenized_query = embed_tokenizer.convert_ids_to_tokens(tokenized_query["input_ids"])
-#         print(f"[SOOWAN] cal_bm25_score : Tokenized query: {tokenized_query}")
-#     except Exception as e:
-#         print(f"[SOOWAN ERROR BM25] Error tokenizing query: {str(e)}")
-#         return np.zeros(len(indexes))
-#     try:
-#         bm25_score = bm25.get_scores(tokenized_query)
-#         print(f"[SOOWAN] cal_bm25_score : BM25 score: {bm25_score}")
-#     except Exception as e:
-#         print(f"[SOOWAN ERROR BM25] Error computing BM25 scores: {str(e)}")
-#         return np.zeros(len(indexes))
-#     return np.array(bm25_score)
-@time_tracker
-def cal_bm25_score(query, indexes, embed_tokenizer):
-    logging.info(f"Starting BM25 calculation for query: {query}")
-    logging.info(f"Document count: {len(indexes)}")
-    
-    if not indexes:
-        logging.warning("Empty document list provided to BM25")
-        return np.zeros(0)
-        
-    # Process documents individually to isolate failures
-    tokenized_corpus = []
-    for i, text in enumerate(indexes):
-        try:
-            tokens = embed_tokenizer(text, return_token_type_ids=False,
-                                    return_attention_mask=False,
-                                    return_offsets_mapping=False)
-            tokens = embed_tokenizer.convert_ids_to_tokens(tokens["input_ids"])
-            if len(tokens) == 0:
-                logging.warning(f"Document {i} tokenized to empty list")
-                tokens = ["<empty>"]  # Placeholder to avoid BM25 errors
-            tokenized_corpus.append(tokens)
-        except Exception as e:
-            logging.error(f"Failed to tokenize document {i}: {str(e)}")
-            tokenized_corpus.append(["<error>"])  # Placeholder
-    
-    try:
-        bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
-        tokenized_query = embed_tokenizer.convert_ids_to_tokens(
-            embed_tokenizer(query)["input_ids"]
-        )
-        scores = bm25.get_scores(tokenized_query)
-        
-        # Check for valid scores
-        if np.isnan(scores).any() or np.isinf(scores).any():
-            logging.warning("BM25 produced NaN/Inf scores - replacing with zeros")
-            scores = np.nan_to_num(scores)
-            
-        logging.info(f"BM25 scores: min={scores.min():.4f}, max={scores.max():.4f}, mean={scores.mean():.4f}")
-        return scores
-    except Exception as e:
-        logging.error(f"BM25 scoring failed: {str(e)}")
-        return np.zeros(len(indexes))
-
-
-
-@time_tracker
-def embed(query, embed_model, embed_tokenizer):
-    print("[SOOWAN] embed: 진입")
-    inputs = embed_tokenizer(query, padding=True, truncation=True, return_tensors="pt")
-    embeddings, _ = embed_model(**inputs, return_dict=False)
-    print("[SOOWAN] embed: 완료")
-    return embeddings[0][0]
-
-
-@time_tracker
-def min_max_scaling(arr):
-    arr_min = arr.min()
-    arr_max = arr.max()
-    if arr_max == arr_min:
-        print("[SOOWAN] min_max_scaling: Zero range detected, returning zeros.")
-        return np.zeros_like(arr)
-    return (arr - arr_min) / (arr_max - arr_min)
-
-
-@time_tracker
-async def generate(docs, query, model, tokenizer, config):
-    PROMPT = GENERATE_PROMPT_TEMPLATE.format(docs=docs, query=query)
-    print("Inference steps")
-    if config.use_vllm:
-        from vllm import SamplingParams
-        sampling_params = SamplingParams(
-            max_tokens=config.model.max_new_tokens,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-        )
-        accepted_request_id = str(uuid.uuid4())
-        answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
-    else:
-        input_ids = tokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
-        token_count = input_ids["input_ids"].shape[1]
-        outputs = model.generate(
-            **input_ids,
-            max_new_tokens=config.model.max_new_tokens,
-            do_sample=config.model.do_sample,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-        generated_tokens = outputs[0].shape[0]
-        answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-        print(answer)
-        print(">>> decode done, returning answer")
-    return answer
-
-
-@time_tracker
-async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id):
-    import asyncio, concurrent.futures
-    outputs = []
-    async for output in model.generate(PROMPT, request_id=accepted_request_id, sampling_params=sampling_params):
-        outputs.append(output)
-    if not outputs:
-        raise RuntimeError("No outputs were generated by the model.")
-    final_output = next((o for o in outputs if getattr(o, "finished", False)), outputs[-1])
-    answer = "".join([getattr(comp, "text", "") for comp in getattr(final_output, "outputs", [])])
-    return answer
-
-
-@time_tracker
-async def generate_answer_stream(query, docs, model, tokenizer, config):
-    prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
-    if config.use_vllm:
-        from vllm import SamplingParams
-        sampling_params = SamplingParams(
-            max_tokens=config.model.max_new_tokens,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-        )
-        request_id = str(uuid.uuid4())
-        async for partial_chunk in collect_vllm_text_stream(prompt, model, sampling_params, request_id):
-            # print(f"[STREAM] generate_answer_stream yielded: {partial_chunk}")
-            yield partial_chunk
-    else:
-        import torch
-        from transformers import TextIteratorStreamer
-        input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
-        streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
-        generation_kwargs = dict(
-            **input_ids,
-            streamer=streamer,
-            max_new_tokens=config.model.max_new_tokens,
-            do_sample=config.model.do_sample,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-        )
-        import threading
-        t = threading.Thread(target=model.generate, kwargs=generation_kwargs)
-        t.start()
-        for new_token in streamer:
-            yield new_token
-
-@time_tracker
-async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_params, request_id) -> str:
-    async for request_output in engine.generate(prompt, request_id=request_id, sampling_params=sampling_params):
-        if not request_output.outputs:
-            continue
-        for completion in request_output.outputs:
-            # print(f"[STREAM] collect_vllm_text_stream yielding: {completion.text}")
-            yield completion.text
-
-
-if __name__ == "__main__":
-    import asyncio
-    # engine = AsyncLLMEngine.from_engine_args(engine_args, start_engine_loop=False)
-    # if not engine.is_running:
-    #     engine.start_background_loop()
-    
-    async def main():
-        status = True
-        while status:
-            query = input("질문 : ")
-            QU, TA, TI = await query_sort({"user_input": query, "model": None, "tokenizer": None, "embed_model": None, "embed_tokenizer": None, "data": None, "config": None})
-            print("query_sort result done")
-            if TA == "yes":
-                print("\n" + beep)
-                SQL_results = generate_sql(QU)
-                answer = await generate(SQL_results, query)
-                print(answer)
-                print("\n" + beep)
-            else:
-                file_names, titles, times, vectors, texts, texts_short = sort_by_time(TI, file_names, titles, times, vectors, texts, texts_short)
-                print("\n" + beep)
-                docs = retrieve(QU, vectors, texts, texts_short, file_names, N)
-                print("\n" + beep)
-                answer = await generate(docs, query)
-                print(answer)
-                print("\n" + beep)
-    asyncio.run(main())
 
 ```
-
-
---- prompt_rag.py
-
-```python
-
-# prompts/prompt_rag.py
-from datetime import datetime
-
-# Get today's date (this is computed when the module is loaded)
-TODAY = datetime.today()
-
-# Prompt for query sorting
-QUERY_SORT_PROMPT = f"""
-<bos><start_of_turn>user
-너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. 
-query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. 
-keyword는 질문의 키워드를 뽑는거야. 
-table은 질문에 대한 답을 할때 표형식 데이터가 필요한지 여부야, 현재는 매출액 관련 질문만 대응 가능하니 이때만 yes로 답해줘.
-time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는 {TODAY.year}년 {TODAY.month}월 {TODAY.day}일). 
-시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) 
-또한, '최근'이라는 말이 들어가면 2024-06-01:{TODAY.year}-{TODAY.month}-{TODAY.day}로 설정해줘.
-
-내가 먼저 예시를 줄게
-
-질문: 최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?
-답변:
-<query/>최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?<query>
-<keyword/>일본발 베트남착 매출 기여도 화주 고객<keyword>
-<table/>yes<table>
-<time/>2024-08-01:2024-{TODAY.month}-{TODAY.day}<time>
-
-질문: 올해 3월에 중국 시장 전망에 대해 조사했던 내용을 정리해줘
-답변:
-<query/>2024년 3월 중국시장 전망에 대한 조사내용을 알려주고 정리해줘<query>
-<keyword/>2024년 3월 중국시장 전망<keyword>
-<table/>no<table>
-<time/>2024-02-01:2024-05-01<time>
-
-질문: 부산발 인도네시아착 경쟁사 서비스 및 항차수를 알려줘
-답변:
-<query/>부산 출발 인도네시아 도착 경쟁사 서비스 및 항차수<query>
-<keyword/>부산발 인도네시아착 경쟁사 서비스 항차수<keyword>
-<table/>no<table>
-<time/>all<time>
-
-질문: 남성해운의 인도 대리점 선정 과정은 어떻게 돼?
-답변:
-<query/>인도 대리점 선정과정을 보기 좋게 정리해줘<query>
-<keyword/>인도 대리점 선정과정<keyword>
-<table/>no<table>
-<time/>all<time>
-
-### 아래 구분자를 추가하여 실제 사용자 질문을 명확히 구분합니다.
-### 새로운 질문: {{user_query}}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-# Template for generating an answer based on internal documents
-GENERATE_PROMPT_TEMPLATE = """
-<bos><start_of_turn>user
-너는 남성해운의 도움을 주는 데이터 분석가야.
-주어진 내부 자료에 기반해서 내 질문에 대답해줘. 답변 형식은 보고서처럼 길고 자세하며 논리정연하게 사실만을 가지고 작성해줘.
-만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
-또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
-내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
-문단 구분을 확실하게 해줘.
-답변 형식은 markdown 형식으로 작성해줘.
-내부 자료: {docs}
-질문: {query}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-# Template for the streaming version of answer generation
-STREAM_PROMPT_TEMPLATE = """
-<bos><start_of_turn>user
-너는 남성해운의 도움을 주는 데이터 분석가야.
-주어진 내부 자료에 기반해서 내 질문에 대답해줘. 답변 형식은 보고서처럼 길고 자세하며 논리정연하게 사실만을 가지고 작성해줘.
-만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
-또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
-내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
-문단 구분을 확실하게 해줘.
-답변 형식은 markdown 형식으로 작성해줘.
-내부 자료: {docs}
-질문: {query}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-```
-
-
---- SQL_NS.py
-
-```python
-
-import os
-import subprocess
-
-# 환경 변수 설정
-os.environ['ORACLE_HOME'] = '/workspace/sql/instantclient_23_7'
-os.environ['LD_LIBRARY_PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('LD_LIBRARY_PATH', '')
-os.environ['PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('PATH', '')
-
-# sqlplus 실행 여부 확인
-def check_sqlplus():
-    try:
-        # sqlplus 버전 확인
-        result = subprocess.run(['sqlplus', '-version'], capture_output=True, text=True, check=True)
-        print("SQL*Plus is working!")
-        print("Version info:\n", result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f"Error: {e.stderr}")
-
-# DB 접속 확인
-def check_db_connection():
-    try:
-        # SQL*Plus를 실행하여 데이터베이스에 접속 가능한지 테스트
-        test_command = [
-            'sqlplus', '-S', 'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR', 
-            'SELECT 1 FROM dual;'
-        ]
-        result = subprocess.run(test_command, capture_output=True, text=True, check=True)
-        
-        # SQL*Plus 결과 출력
-        if "1" in result.stdout:
-            print("Successfully connected to the Namsung database!")
-        else:
-            print("Connection to the database failed!")
-    except subprocess.CalledProcessError as e:
-        print(f"Error: {e.stderr}")
-
-# Oracle sqlplus 명령어 실행 예시
-def run_sqlplus_query():
-    # SQL*Plus 명령어를 실행할 기본 명령어
-    sqlplus_command = [
-        'sqlplus',  # sqlplus 실행 파일
-        '-S',  # 간단한 출력 모드
-        'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR',  # Oracle 접속 정보
-        '@', '/workspace/sql/DG_check.sql'  # SQL 파일 실행 (예: DG_CHECK1.sql)
-    ]
-    
-    # subprocess를 사용하여 SQL*Plus 명령어 실행
-    try:
-        result = subprocess.run(sqlplus_command, capture_output=True, text=True, check=True)
-        # SQL*Plus의 출력 결과를 받아옵니다
-        print("SQL Query Results:\n", result.stdout)
-    except subprocess.CalledProcessError as e:
-        # 오류가 발생한 경우 오류 메시지 출력
-        print(f"Error: {e.stderr}")
-
-if __name__ == "__main__":
-    check_sqlplus()  # sqlplus가 잘 동작하는지 확인
-    check_db_connection()  # 데이터베이스 접속 여부 확인
-    run_sqlplus_query()  # 실제 SQL 쿼리 실행
-
-```
-
-
---- sql.py
-
-```python
-
-# sql.py
-import json
-import sqlite3
-import re
-
-def generate_sql(query, model, tokenizer, config):
-    with open(config.metadata_path, 'r', encoding='utf-8') as file:
-        Metadata = json.load(file)
-    column_usage = Metadata['column_usage']
-
-    # first_LLM
-    outputs_1, filter_conditions, aggregations, orders, sql_query, parsed_columns = first_llm(model, tokenizer, column_usage, query, config)
-    print(f'FirstLLM\n필터:{filter_conditions}\n집계:{aggregations}\n정렬:{orders}\nSQL:{sql_query}\n컬럼:{parsed_columns}')
-    print(config.beep)
-
-    relevant_metadata = extract_relevant_metadata(parsed_columns, column_usage) # 추출된 컬럼에 해당하는 메타데이터 가져오기
-    retrival_metadata = parse_and_augment_filter_conditions(filter_conditions, Metadata)   # Metadata와 매핑하여 구체화된 필터 조건 찾기
-    print(f'MetaData\n관련:{relevant_metadata}\n검색:{retrival_metadata}')
-    print(config.beep)
-    # second_LLM
-    final_sql_query, title, explain, outputs_2 = second_llm(model, tokenizer, relevant_metadata, sql_query, query, retrival_metadata, parsed_columns, config)
-    print(f'SecondLLM\n제목:{title}\n설명:{explain}\nSQL:{final_sql_query}')
-    print(config.beep)
-    
-        # SQL 실행
-    columns, results = execute_sql_query(final_sql_query, config)
-    if columns is None and results is None:
-        # DB 에러 발생 등
-        print("[SQL Debug] DB 처리 중 오류가 발생했거나 SQL이 잘못되어 결과 없음.")
-        return None
-
-    # 결과 처리
-    if not results:
-        print("[SQL Debug] SQL 실행 결과가 비어 있습니다. (0개 행)")
-        # None을 반환하여 상위에서 체크하게끔.
-        return None
-
-    # result -> json
-    table_json = create_table_json(columns, results)
-    chart_json = create_chart_json(columns, results)
-    
-    print("[SQL Debug] 조회된 컬럼:", columns)
-    print("[SQL Debug] 조회된 결과(Row) 예시:", results[:3], "...")
-    return final_sql_query, title, explain, table_json, chart_json
-
-    
-def first_llm(model, tokenizer, column_usage, user_query, config):
-    PROMPT =\
-    f'''
-    <bos><start_of_turn>user
-    너는 남성 해운 회사의 데이터로 SQL 쿼리를 작성하는 데 도움을 주는 시스템이야. 사용자로부터 받은 질문을 분석하여, 필터 조건, 집계 함수, 정렬 조건, SQL 쿼리 초안, SQL 쿼리에 사용된 모든 컬럼을 추출해줘.
-    
-    ### 참고 사항:
-    1. 다음은 해운 회사 데이터의 메타데이터야. 테이블은 "revenue" 하나뿐이야.: 
-    "{column_usage}"
-    2. 사용자가 입력한 질문을 분석하여 필요한 컬럼을 식별하고, SQL 쿼리에서 사용할 필터 조건, 집계 함수, 정렬 기준을 제공해줘.
-    3. 사용되는 프로그램은 SQLite 야. 이 프로그램에 맞는 언어를 사용해줘 (SQLite 날짜 형식 사용 예시 : strftime('%Y', OUTOBD) AS Year )
-    
-    ### 사용자가 입력한 질문:
-    "{user_query}"
-    
-    ### 필요한 정보:
-    1. 필터 조건 (필요한 경우, 예: <filter/>OUTPOL = '부산', OUTPOD = '일본', OUTBOR = '2024-08-01 이후'<filter/>)
-    2. 집계 함수 (필요한 경우, 예: <aggregation/>화주(고객)별 매출액의 합계<aggregation/>)
-    3. 정렬 조건 (필요한 경우, 예: <order/>매출액 기준 내림차순<order/>)
-    4. SQL 쿼리 초안 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE OUTPOL = \'한국\' AND OUTPOD = \'베트남\' AND OUTOBD >= \'2023-01-01\'    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
-    5. SQL 쿼리에 사용된 모든 컬럼 (예: <columns/>OUTPOL,OUTPOD,OUTBOR,OUTSHC,OUTSTL<columns/>)
-    
-    ### 출력 형식:
-    1. 필터 조건: <filter/><filter/>
-    2. 집계 함수:<aggregation/><aggregation/>
-    3. 정렬 조건:<order/><order/>
-    4. SQL 쿼리 초안 : <sql_query/><sql_query/>
-    5. SQL 쿼리에 사용된 모든 컬럼:<columns/><columns/>
-    6. 날짜는 YYYY-MM-DD 형식을 사용 (ex: "2023-05-01")
-    
-    <end_of_turn>
-    <start_of_turn>model
-    '''
-
-    # Get Answer
-    input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
-    input_length = input_ids['input_ids'].shape[1]
-    outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
-    outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-
-    # Regular expression to extract content between <query/> and <query>
-    filter_pattern = r'<filter.*?>(.*?)<filter.*?>'
-    aggregation_pattern = r'<aggregation.*?>(.*?)<aggregation.*?>'
-    order_pattern = r'<order.*?>(.*?)<order.*?>'
-    sql_pattern = r'<sql_query.*?>(.*?)<sql_query.*?>'
-    columns_pattern = r'<columns.*?>(.*?)<columns.*?>'
-    
-    filter_conditions = re.search(filter_pattern, outputs_result, re.DOTALL).group(1)
-    aggregations = re.search(aggregation_pattern, outputs_result, re.DOTALL).group(1)
-    orders = re.search(order_pattern, outputs_result, re.DOTALL).group(1)
-    sql_queries = re.search(sql_pattern, outputs_result, re.DOTALL).group(1)
-    parsed_columns = [col.strip() for col in re.search(columns_pattern, outputs_result, re.DOTALL).group(1).split(",")]
-    return outputs_result, filter_conditions, aggregations, orders, sql_queries, parsed_columns
-
-# 추출된 컬럼에 해당하는 메타데이터만 가져오는 함수
-def extract_relevant_metadata(columns, metadata):
-    relevant_metadata = {}
-    for column in columns:
-        if column in metadata["column_usage"]:
-            relevant_metadata[column] = metadata["column_usage"][column]
-    return relevant_metadata
-
-# def parse_and_augment_filter_conditions(filter_conditions, Metadata):
-#     pattern = r"(\w+)\s*=\s*'([^']+)'"  # ex: OUTPOL = '부산' 과 같은 패턴 추출
-#     matches = re.findall(pattern, filter_conditions)
-    
-#     augmented_filters = []
-    
-#     for col, val in matches:
-#         if col == 'OUTPOL' or col == 'OUTPOD':
-#             location_code = Metadata['location_code']
-#             mapped_value = search_location_db(val, location_code)
-#             if mapped_value != "UNKNOWN":
-#                 augmented_filters.append(f"컬럼 {col}에 대한 값 '{val}' -> '{mapped_value}'로 매핑되었습니다.")
-#             else:
-#                 augmented_filters.append(f"컬럼 {col}의 값 '{val}'에 대한 매핑 정보를 찾을 수 없습니다.")
-#     return "\n".join(augmented_filters)
-
-def parse_and_augment_filter_conditions(filter_conditions, Metadata):
-    # '컬럼명 = '값'' 또는 '컬럼명 IN ('값1', '값2', ...)' 패턴에 대응하는 정규식
-    pattern = r"(\w+)\s*=\s*'([^']+)'|\b(\w+)\s+IN\s+\(([^)]+)\)"
-    matches = re.findall(pattern, filter_conditions)
-    
-    augmented_filters = []
-    for match in matches:
-        # 매칭 결과에서 'IN' 조건과 '=' 조건을 구분하여 처리
-        if match[0]:  # '=' 조건
-            col, val = match[0], match[1]
-            if col == 'OUTPOL' or col == 'OUTPOD':
-                location_code = Metadata['location_code']
-                mapped_value = search_location_db(val, location_code)
-                if mapped_value != "UNKNOWN":
-                    augmented_filters.append(f"컬럼 {col}에 대한 값 '{val}' -> '{mapped_value}'로 매핑되었습니다.")
-                else:
-                    augmented_filters.append(f"컬럼 {col}의 값 '{val}'에 대한 매핑 정보를 찾을 수 없습니다.")
-                    
-        elif match[2]:  # 'IN' 조건
-            col, val_list = match[2], match[3]
-            if col == 'OUTPOL' or col == 'OUTPOD':
-                location_code = Metadata['location_code']
-                values = [val.strip().strip("'") for val in val_list.split(",")]
-                
-                mapped_values = []
-                for val in values:
-                    mapped_value = search_location_db(val, location_code)
-                    if mapped_value != "UNKNOWN":
-                        mapped_values.append(f"'{val}' -> '{mapped_value}'")
-                    else:
-                        mapped_values.append(f"'{val}' (매핑 정보 없음)")
-                
-                augmented_filters.append(f"컬럼 {col}에 대한 값들: {', '.join(mapped_values)}")
-
-    return "\n".join(augmented_filters)
-
-# Location 검색 알고리즘 (매핑 정보 검색)
-def search_location_db(location, location_code):
-    return location_code.get(location, "Mapping error")
-
-def second_llm(model, tokenizer, relevant_metadata, sql_query, user_query, retrival_metadata, parsed_columns, config):
-    PROMPT =\
-    f'''
-    <bos><start_of_turn>user
-    너는 남성 해운 회사의 데이터로 정확한 SQL 쿼리를 작성해주는 시스템이야. 너가 참고해야 할 정보가 있는 경우에는 이를 참고해서 SQL 쿼리 초안을 구체화해서 정확한 SQL 쿼리를 만들어줘. 그리고 이 SQL 쿼리가 어떤 정보를 추출해주는지 짧게 제목을 짓고, 어떻게 사용자의 질문에 답할 수 있는 정보를 추출하는지 설명해줘. 참고해야 할 정보가 없고 SQL 쿼리 초안이 이미 정확하다면, 그대로 출력해줘.
-
-    ### 참고 사항:
-    1. 다음은 너가 참고해야 할 정보야:
-    "{retrival_metadata}"
-    2. SQL 쿼리 초안:
-    "{sql_query}"    
-    3. 다음은 사용한 데이터의 메타데이터야:
-    "{relevant_metadata}"
-    4. 다음은 사용자가 입력한 질문이야:
-    "{user_query}"    
-
-
-    ### 필요한 정보:
-    1. 정확한 SQL 쿼리 (예: <sql_query/>SELECT OUTSHC,SUM(OUTSTL) AS TotalRevenue\n    FROM revenue\n    WHERE WHERE OUTPOL = \'KRPUS\' AND OUTPOD LIKE \'CN%\' AND OUTOBD >= \'2023-01-01\'\n    GROUP BY OUTSHC\n    ORDER BY TotalRevenue DESC;<sql_query/>)
-    2. SQL가 조회하는 데이터 요약 (예: 부산발 중국착 매출 순위 (화주별))
-    3. SQL 쿼리 설명
-
-    ### 출력 형식(아래 출력 형식을 꼭 지켜야 해 시작부분에 / 이 들어가고 끝부분에는 없어):
-    1. 정확한 SQL 쿼리: <sql_query/>SQL 명령어<sql_query>
-    2. SQL가 조회하는 데이터 요약: <title/>데이터 설명문<title>
-    3. SQL 쿼리 설명: <explain/>SQL 설명문<explain>
-    
-    ### 참고자료
-    1. 만약 참고자료에 KR% 같은 조건이 있으면 LIKE 를, KRCRD 같은 정확한 정보는 = 를 사용.
-    2. 만약 여러개의 LIKE 조건이 있으면 (예시: WHERE OUTPOL LIKE 'KR%' OR OUTPOL LIKE 'CN%' OR OUTPOL LIKE 'JP%') 를 사용.
-    3. 날짜는 YYYY-MM-DD 형식을 사용 (ex: "2023-05-01")
-    4. LIKE 로 들어간 컬럼들은 다음과 같이 보기좋게 해줘.
-    예시 : 
-    SELECT 
-        CASE 
-            WHEN OUTPOL LIKE 'KR%' THEN '한국'
-            WHEN OUTPOL LIKE 'JP%' THEN '일본'
-            WHEN OUTPOL LIKE 'CN%' THEN '중국'
-            ELSE '기타' 
-        END AS 국가,
-        SUM(OUTSTL) AS TotalRevenue
-
-    <end_of_turn>
-    <start_of_turn>model
-    '''
-
-    # Get Answer
-    input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
-    input_length = input_ids['input_ids'].shape[1]
-    outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
-    outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-    print(f'2번째 LLM Output:{outputs_result}')
-    sql_pattern = r'<sql_query.*?>(.*?)<sql_query.*?>'
-    title_pattern = r'<title.*?>(.*?)<title.*?>'
-    explain_pattern = r'<explain.*?>(.*?)<explain.*?>'
-    
-    sql_queries = re.search(sql_pattern, outputs_result, re.DOTALL).group(1)
-    title = re.search(title_pattern, outputs_result, re.DOTALL).group(1)
-    explain = re.search(explain_pattern, outputs_result, re.DOTALL).group(1)
-    
-    return sql_queries, title, explain, outputs_result
-
-def execute_sql_query(sql_query, config):
-    try:
-        conn = sqlite3.connect(config.sql_data_path)        # SQLite 데이터베이스에 연결
-        cursor = conn.cursor()
-
-        if (config.k is not None) and ("LIMIT" not in sql_query):
-            sql_query = sql_query.split(";")[0].strip()
-            sql_query += f"\nLIMIT {config.k};"
-                 
-        cursor.execute(sql_query)        # SQL 쿼리 실행
-        
-        result = cursor.fetchall()        # 결과 가져오기
-        column_names = [description[0] for description in cursor.description]        # 컬럼 이름도 포함하기 위해 description을 사용
-
-        cursor.close()
-        conn.close()
-        
-        return column_names, result
-
-    except sqlite3.Error as e:
-        print(f"데이터베이스 오류 발생: {e}")
-        return None, None
-
-def create_table_json(columns, results):
-    head = "||".join(columns)
-    body = "^ ".join("||".join(map(str, row)) for row in results)
-    table = {"head": head, "body": body}
-    return table
-
-def create_chart_json(columns, results):
-    chart = [
-        {"label": f"{row[-2]}", "data": [{"x": "매출액", "y": str(row[-1])}]}
-        for i, row in enumerate(results)
-    ]
-    return chart
-
-```
-
-
---- templates/chatroom.html
-
-```html
-
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FLUX_NS Chat</title>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
-  <link rel="stylesheet" href="/static/chat_styles.css">
-  <style>
-    /* Example CSS to support PC sidebar toggle */
-    .sidebar {
-      transition: width 0.3s ease;
-    }
-    .sidebar.collapsed {
-      width: 0;
-      overflow: hidden;
-    }
-  </style>
-</head>
-<body>
-  <!-- Sidebar -->
-  <div class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-      </svg>
-      <h2>FLUX_NS</h2>
-    </div>
-    <button class="new-chat-btn" onclick="createNewChatFromSidebar()">
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="12" y1="5" x2="12" y2="19"></line>
-        <line x1="5" y1="12" x2="19" y2="12"></line>
-      </svg>
-      New Chat
-    </button>
-    <ul id="chatRoomList" class="chat-room-list"></ul>
-  </div>
-
-  <!-- Main Container -->
-  <div class="main-container">
-    <!-- Chat Header -->
-    <div class="chat-header">
-      <button class="menu-toggle" id="menuToggle">
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="3" y1="12" x2="21" y2="12"></line>
-          <line x1="3" y1="6" x2="21" y2="6"></line>
-          <line x1="3" y1="18" x2="21" y2="18"></line>
-        </svg>
-      </button>
-      <h2 id="chatRoomId">Chat Room: -</h2>
-      <button id="toggleRefBtn" class="toggle-ref-btn" onclick="toggleReferences()">
-        Show References
-      </button>
-    </div>
-
-    <!-- Reference Container -->
-    <div id="referenceContainer" class="reference-container"></div>
-
-    <!-- Chat Box -->
-    <div class="chat-box" id="chatBox">
-      <!-- Welcome Screen -->
-      <div id="welcomeScreen" class="welcome-screen">
-        <div class="welcome-header">
-          <img src="/static/NS_LOGO_ONLY.svg?height=60&width=60" alt="FLUX_NS Logo" class="welcome-logo" />
-          <h1>Welcome to FLUX_NS</h1>
-        </div>
-        <div class="welcome-content">
-          <div class="example-prompts">
-            <h2>Examples</h2>
-            <div class="example-cards">
-              <button class="example-card" onclick="fillExamplePrompt('디지털 기획팀의 우선과제가 어떻게 돼?')">
-                <span>디지털 기획팀의 우선과제가 어떻게 돼?</span>
-              </button>
-              <button class="example-card" onclick="fillExamplePrompt('UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
-                <span>UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.
-                </span>
-              </button>
-              <button class="example-card" onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
-                <span>IOT 컨테이너 사업 근황에 대해서 알려줘</span>
-              </button>
-              <button class="example-card" onclick="fillExamplePrompt('최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.')">
-                <span>최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.</span>
-              </button>
-            </div>
-          </div>
-          
-          <div class="capabilities">
-            <h2>Capabilities</h2>
-            <ul class="capability-list">
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-                <span>최신 정보와 데이터 기반 응답</span>
-              </li>
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-                <span>남성해운의 주간회의, 계약서, 인사규범 등에 대한 답변</span>
-              </li>
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-                <span>상세한 답변 및 해설</span>
-              </li>
-            </ul>
-          </div>
-          
-          <div class="limitations">
-            <h2>Limitations</h2>
-            <ul class="limitation-list">
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-                <span>현재 모든 정보를 가지고 있지 아니함</span>
-              </li>
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-                <span>가끔 정확하지 않은 정보를 제공할 수 있음</span>
-              </li>
-              <li>
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-                <span>민감한 요청에 대한 응답이 제한될 수 있음</span>
-              </li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Input Container -->
-    <div class="input-container">
-      <div class="input-box">
-        <textarea 
-          id="userMessage" 
-          class="message-input" 
-          placeholder="메시지를 입력하세요..."
-          rows="1"
-          onkeydown="handleKeyDown(event)"
-        ></textarea>
-        <button id="sendButton" class="send-btn" onclick="sendMessage()">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-          </svg>
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    /************************************************************************
-     * Global Variables and Data Structures
-     ************************************************************************/
-    let currentRequestId = null; // 현재 활성 채팅방의 requestId
-    let chatRooms = []; // [{ requestId, messages: [{role, content, references?}] }]
-    let referenceList = []; // 현재 쿼리로부터 수집된 참조 데이터
-    let isProcessing = false; // 동시 요청 방지 플래그
-
-    /************************************************************************
-     * Markdown Parser
-     ************************************************************************/
-    function parseMarkdown(text) {
-      if (!text) return '';
-      text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(match, language, code) {
-        return `<pre><code class="language-${language}">${escapeHtml(code.trim())}</code></pre>`;
-      });
-      text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-      text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-      text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-      text = text.replace(/^### (.*$)/gm, '<h3>$1</h3>');
-      text = text.replace(/^## (.*$)/gm, '<h2>$1</h2>');
-      text = text.replace(/^# (.*$)/gm, '<h1>$1</h1>');
-      text = text.replace(/^\s*\* (.*$)/gm, '<li>$1</li>');
-      text = text.replace(/^\s*\d+\. (.*$)/gm, '<li>$1</li>');
-      text = text.replace(/<li>(.*)<\/li>/g, function(match) {
-        return '<ul>' + match + '</ul>';
-      });
-      text = text.replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>');
-      text = text.replace(/\n\s*\n/g, '</p><p>');
-      text = text.replace(/\n/g, '<br>');
-      if (!text.startsWith('<')) {
-        text = '<p>' + text + '</p>';
-      }
-      text = text.replace(/<\/p><p><ul>/g, '<ul>');
-      text = text.replace(/<\/ul><\/p>/g, '</ul>');
-      return text;
-    }
-    function escapeHtml(unsafe) {
-      return unsafe
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-    }
-
-    /************************************************************************
-     * Function Definitions
-     ************************************************************************/
-    function createNewChatFromSidebar() {
-      createNewChatRoom();
-    }
-    function fillExamplePrompt(text) {
-      const messageInput = document.getElementById('userMessage');
-      messageInput.value = text;
-      messageInput.focus();
-      messageInput.style.height = 'auto';
-      messageInput.style.height = messageInput.scrollHeight + 'px';
-      const welcomeScreen = document.getElementById('welcomeScreen');
-      if (welcomeScreen) {
-        welcomeScreen.style.display = 'none';
-      }
-    }
-
-    /************************************************************************
-     * Page Load and Initialization
-     ************************************************************************/
-    window.addEventListener('load', () => {
-      createNewChatRoom();
-      setupTextareaAutoResize();
-      setupMobileMenu();
-      showWelcomeScreen();
-    });
-
-    function showWelcomeScreen() {
-      const chatBox = document.getElementById('chatBox');
-      const welcomeScreen = document.getElementById('welcomeScreen');
-      // If no messages exist in the current chat room, always show welcome content
-      const room = chatRooms.find(r => r.requestId === currentRequestId);
-      if (!room || !room.messages || room.messages.length === 0) {
-        chatBox.innerHTML = '';
-        if (welcomeScreen) {
-          // 복제 후 id 제거
-          const clonedWelcome = welcomeScreen.cloneNode(true);
-          clonedWelcome.removeAttribute('id');
-          chatBox.appendChild(clonedWelcome);
-        }
-      } else {
-        renderChatBox(currentRequestId);
-      }
-    }
-
-    function setupTextareaAutoResize() {
-      const textarea = document.getElementById('userMessage');
-      textarea.addEventListener('input', function() {
-        this.style.height = 'auto';
-        this.style.height = this.scrollHeight + 'px';
-      });
-    }
-
-    function setupMobileMenu() {
-      const menuToggle = document.getElementById('menuToggle');
-      const sidebar = document.getElementById('sidebar');
-      menuToggle.addEventListener('click', () => {
-        sidebar.classList.toggle('open');
-      });
-      document.addEventListener('click', (e) => {
-        if (sidebar.classList.contains('open') &&
-            !sidebar.contains(e.target) &&
-            !menuToggle.contains(e.target)) {
-          sidebar.classList.remove('open');
-        }
-      });
-    }
-
-    /************************************************************************
-     * History Loading and Chat Room Rendering
-     ************************************************************************/
-    async function loadHistory(requestId) {
-      try {
-        const response = await fetch(`/history?request_id=${requestId}`);
-        if (response.ok) {
-          const historyData = await response.json();
-          const roomIndex = chatRooms.findIndex(r => r.requestId === requestId);
-          if (roomIndex !== -1) {
-            chatRooms[roomIndex].messages = historyData.history;
-          } else {
-            chatRooms.push({ requestId: requestId, messages: historyData.history });
-          }
-        } else {
-          console.error("History load error:", response.status);
-        }
-      } catch (error) {
-        console.error("Error loading history:", error);
-      }
-    }
-
-    // 기존의 showWelcomeScreen() 대신, renderChatBox()가 welcome content를 보여줌
-    function renderChatBox(requestId) {
-      const chatBox = document.getElementById("chatBox");
-      chatBox.innerHTML = "";
-      const room = chatRooms.find(r => r.requestId === requestId);
-      // 메시지가 있으면 메시지들을 렌더링, 없으면 welcome content 클론해서 붙임.
-      if (room && room.messages && room.messages.length > 0) {
-        room.messages.forEach((msg, index) => {
-          let sender = msg.role === "human" ? "사용자" : "AI";
-          appendMessageToChatBox(sender, msg.content, index);
-        });
-      } else {
-        const welcomeScreen = document.getElementById('welcomeScreen');
-        if (welcomeScreen) {
-          // cloneNode(true)를 사용하여 welcomeScreen을 복제 후 추가
-          chatBox.appendChild(welcomeScreen.cloneNode(true));
-        }
-      }
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    // setActiveChatRoom() 함수 수정: 히스토리 로딩 없이 바로 renderChatBox()를 호출
-    function setActiveChatRoom(requestId) {
-      currentRequestId = requestId;
-      document.getElementById("chatRoomId").innerText = `Chat Room: ${requestId}`;
-      // 새 채팅인 경우, 해당 방의 메시지 배열은 빈 배열로 초기화
-      let room = chatRooms.find(r => r.requestId === requestId);
-      if (!room) {
-        room = { requestId: requestId, messages: [] };
-        chatRooms.push(room);
-      } else {
-        // 기존 방이 있으면 메시지 배열을 강제로 초기화하여 환영 화면이 보이도록 함
-        room.messages = [];
-      }
-      renderChatBox(requestId);
-      renderChatRoomList();
-      clearReferenceData();
-      if (window.innerWidth <= 768) {
-        document.getElementById('sidebar').classList.remove('open');
-      }
-    }
-    
-    function handleKeyDown(event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-      }
-    }
-
-    /************************************************************************
-     * Chat Room Management
-     ************************************************************************/
-    function createNewChatRoom() {
-      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
-      chatRooms.push({ requestId: newRequestId, messages: [] });
-      setActiveChatRoom(newRequestId);
-      renderChatRoomList();
-    }
-
-    function createNewChatFromSidebar() {
-      createNewChatRoom();
-      if (window.innerWidth <= 768) {
-        document.getElementById('sidebar').classList.remove('open');
-      }
-    }
-
-    function renderChatRoomList() {
-      const ul = document.getElementById("chatRoomList");
-      ul.innerHTML = "";
-      chatRooms.forEach((room) => {
-        const li = document.createElement("li");
-        const btn = document.createElement("button");
-        let chatName = "New Chat";
-        if (room.messages && room.messages.length > 0) {
-          const firstUserMsg = room.messages.find(msg => msg.role === "human");
-          if (firstUserMsg) {
-            chatName = firstUserMsg.content.substring(0, 20) + (firstUserMsg.content.length > 20 ? "..." : "");
-          }
-        }
-        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg> ${chatName}`;
-        if (room.requestId === currentRequestId) {
-          btn.classList.add("active");
-        }
-        btn.onclick = () => setActiveChatRoom(room.requestId);
-        li.appendChild(btn);
-        ul.appendChild(li);
-      });
-    }
-
-    /************************************************************************
-     * Chat Message Display Helpers
-     ************************************************************************/
-    function appendMessageToChatBox(sender, message, msgIndex = null) {
-      const chatBox = document.getElementById("chatBox");
-      const welcomeScreen = document.getElementById('welcomeScreen');
-      if (welcomeScreen && welcomeScreen.parentNode === chatBox) {
-        chatBox.removeChild(welcomeScreen);
-      }
-      const msgDiv = document.createElement("div");
-      msgDiv.classList.add("message-line");
-      let messageClass = "";
-      let senderIcon = "";
-      if (sender === "사용자") {
-        messageClass = "message-user";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-          <circle cx="12" cy="7" r="4"></circle>
-        </svg>`;
-      } else if (sender === "AI") {
-        messageClass = "message-ai";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="3" y1="9" x2="21" y2="9"></line>
-          <line x1="9" y1="21" x2="9" y2="9"></line>
-        </svg>`;
-        if (msgIndex !== null) {
-          msgDiv.style.cursor = "pointer";
-          msgDiv.title = "이 답변의 참조 보기";
-          msgDiv.onclick = () => {
-            document.querySelectorAll(".message-ai.selected").forEach(el => {
-              el.classList.remove("selected");
-            });
-            msgDiv.classList.add("selected");
-            loadReferenceForMessage(msgIndex);
-          };
-        }
-      } else {
-        messageClass = "message-system";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>`;
-      }
-      const messageContent = sender === "AI" ? parseMarkdown(message) : escapeHtml(message);
-      msgDiv.classList.add(messageClass);
-      msgDiv.innerHTML = `
-        <div class="message-header">
-          ${senderIcon}
-          ${sender}
-        </div>
-        <div class="message-content">${messageContent}</div>
-      `;
-      chatBox.appendChild(msgDiv);
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    /************************************************************************
-     * Streaming (SSE) Message Sending and Receiving
-     ************************************************************************/
-    async function sendMessage() {
-      const messageInput = document.getElementById("userMessage");
-      const message = messageInput.value.trim();
-      if (!message || isProcessing) return;
-      
-      isProcessing = true;
-      document.getElementById("sendButton").disabled = true;
-      
-      const welcomeScreen = document.getElementById('welcomeScreen');
-      if (welcomeScreen && welcomeScreen.style.display !== 'none') {
-        welcomeScreen.style.display = 'none';
-      }
-      
-      appendMessageToChatBox("사용자", message);
-      storeMessageInRoom(currentRequestId, "사용자", message);
-      messageInput.value = "";
-      messageInput.style.height = 'auto';
-      clearReferenceData();
-      
-      const originalRequestId = currentRequestId;
-      const payload = {
-        qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
-        user_id: "user123",
-        page_id: originalRequestId,
-        auth_class: "admin",
-        qry_contents: message,
-        qry_time: new Date().toISOString()
-      };
-      if (originalRequestId) {
-        payload.page_id = originalRequestId;
-      }
-      console.log("Sending payload:", payload);
-      
-      try {
-        const response = await fetch('/query_stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!response.ok) {
-          throw new Error("Response error: " + response.status);
-        }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let sseBuffer = "";
-        let partialAnswer = "";
-        startAIStreamingMessage();
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          sseBuffer += chunk;
-          const lines = sseBuffer.split("\n");
-          sseBuffer = lines.pop();
-          for (let line of lines) {
-            line = line.trim();
-            if (!line) continue;
-            if (line.startsWith("data:")) {
-              const jsonStr = line.slice(5).trim();
-              if (jsonStr === "[[STREAM_DONE]]") {
-                finalizeAIMessage(partialAnswer, originalRequestId);
-                isProcessing = false;
-                document.getElementById("sendButton").disabled = false;
-                return;
-              }
-              try {
-                const sseData = JSON.parse(jsonStr);
-                if (sseData.type === "answer") {
-                  partialAnswer += sseData.answer;
-                  updateAIStreamingMessage(partialAnswer);
-                } else if (sseData.type === "reference") {
-                  addReferenceData(sseData);
-                } else {
-                  console.log("Other SSE data:", sseData);
-                }
-              } catch (err) {
-                partialAnswer += jsonStr;
-                updateAIStreamingMessage(partialAnswer);
-              }
-            }
-          }
-        }
-        finalizeAIMessage(partialAnswer, originalRequestId);
-        isProcessing = false;
-        document.getElementById("sendButton").disabled = false;
-      } catch (err) {
-        appendMessageToChatBox("시스템", "Error occurred: " + err.message);
-        storeMessageInRoom(currentRequestId, "시스템", "Error occurred: " + err.message);
-        isProcessing = false;
-        document.getElementById("sendButton").disabled = false;
-      }
-    }
-    
-    function storeMessageInRoom(requestId, sender, text) {
-      const room = chatRooms.find(r => r.requestId === requestId);
-      if (room) {
-        room.messages.push({ role: sender === "사용자" ? "human" : "ai", content: text });
-      }
-    }
-
-    /************************************************************************
-     * AI Streaming Display (Temporary Message)
-     ************************************************************************/
-    let tempAiMsgDiv = null;
-    function startAIStreamingMessage() {
-      const chatBox = document.getElementById("chatBox");
-      tempAiMsgDiv = document.createElement("div");
-      tempAiMsgDiv.classList.add("message-line", "message-ai");
-      tempAiMsgDiv.innerHTML = `
-        <div class="message-header">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-            <line x1="3" y1="9" x2="21" y2="9"></line>
-            <line x1="9" y1="21" x2="9" y2="9"></line>
-          </svg>
-          AI
-        </div>
-        <div class="message-content" id="aiTempText"></div>
-      `;
-      chatBox.appendChild(tempAiMsgDiv);
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-    function updateAIStreamingMessage(text) {
-      if (!tempAiMsgDiv) return;
-      const contentDiv = tempAiMsgDiv.querySelector("#aiTempText");
-      if (contentDiv) {
-        contentDiv.innerHTML = parseMarkdown(text);
-      }
-      const chatBox = document.getElementById("chatBox");
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-    function finalizeAIMessage(finalText, queryRequestId) {
-      storeMessageInRoom(queryRequestId, "AI", finalText);
-      if (currentRequestId === queryRequestId) {
-        renderChatRoomList();
-        renderChatBox(queryRequestId);
-      }
-      if (referenceList.length > 0) {
-        document.getElementById("toggleRefBtn").style.display = "block";
-      }
-    }
-    
-    /************************************************************************
-     * Reference Data Related Functions
-     ************************************************************************/
-    function addReferenceData(refData) {
-      referenceList.push(refData);
-      console.log("Reference data received:", refData);
-    }
-    function clearReferenceData() {
-      referenceList = [];
-      document.getElementById("toggleRefBtn").style.display = "none";
-      document.getElementById("referenceContainer").style.display = "none";
-      document.getElementById("referenceContainer").innerHTML = "";
-    }
-    function toggleReferences() {
-      const container = document.getElementById("referenceContainer");
-      if (container.style.display === "none" || container.style.display === "") {
-        container.style.display = "block";
-        if (!container.innerHTML.trim()) {
-          renderReferenceData();
-        }
-        document.getElementById("toggleRefBtn").textContent = "Hide References";
-      } else {
-        container.style.display = "none";
-        document.getElementById("toggleRefBtn").textContent = "Show References";
-      }
-    }
-    function renderReferenceData() {
-      const container = document.getElementById("referenceContainer");
-      container.innerHTML = "";
-      referenceList.forEach((refObj, idx) => {
-        const div = document.createElement("div");
-        div.className = "reference-item";
-        div.innerHTML = `
-          <h4>Reference #${idx + 1}</h4>
-          <pre>${JSON.stringify(refObj, null, 2)}</pre>
-        `;
-        container.appendChild(div);
-      });
-    }
-    function loadReferenceForMessage(msgIndex) {
-      const url = `/reference?request_id=${currentRequestId}&msg_index=${msgIndex}`;
-      fetch(url)
-        .then(response => response.json())
-        .then(data => {
-          if (data.error) {
-            alert(data.error);
-            return;
-          }
-          displayReferenceData(data.references);
-        })
-        .catch(err => {
-          console.error("참조 데이터 로딩 오류:", err);
-          alert("참조 데이터를 불러오는 중 오류 발생");
-        });
-    }
-    function displayReferenceData(refs) {
-      const container = document.getElementById("referenceContainer");
-      container.innerHTML = "";
-      if (refs.length === 0) {
-        container.innerHTML = "<p>참조 데이터가 없습니다.</p>";
-      } else {
-        refs.forEach((ref, idx) => {
-          const div = document.createElement("div");
-          div.className = "reference-item";
-          div.innerHTML = `
-            <h4>Reference #${idx + 1}</h4>
-            <pre>${JSON.stringify(ref, null, 2)}</pre>
-          `;
-          container.appendChild(div);
-        });
-      }
-      container.style.display = "block";
-      document.getElementById("toggleRefBtn").textContent = "Hide References";
-    }
-  </script>
-</body>
-</html>
-
-```
-
 
 -----------------
 
@@ -4240,5 +2859,4 @@ Answer-Rule:
  2. 전체 코드는 한국어로 주석 및 설명이 포함되어, 이해와 유지보수가 용이하도록 작성됩니다.
 
 My-Requirements:
- 1. User requirements.
- 2. My requirements.
+ 1. Gemma3로 모델을 업데이트하고자 하는데 다음과 같은 에러가 발생하고 있어. 이에 대한 원인을 분석하고 이를 해결해줘.
