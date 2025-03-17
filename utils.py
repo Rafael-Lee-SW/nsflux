@@ -33,6 +33,9 @@ from tracking import time_tracker
 # Logging
 import logging
 
+# POST
+import requests
+
 logging.basicConfig(level=logging.DEBUG)
 
 # Gemma3Config 전역 패치: vocab_size 속성이 없으면 추가합니다.
@@ -334,6 +337,22 @@ def load_model(config):
         return engine, tokenizer, embed_model, embed_tokenizer
 
     else:
+
+        if config.model.quantization_4bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+            print("Using 4-bit quantization.")
+        elif config.model.quantization_8bit:
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+            print("Using 8-bit quantization.")
+        else:
+            bnb_config = None
+            print("Using pure option of Model(No quantization)")
+
         print("DEBUG: vLLM is not used. Loading model via standard HF method.")
         try:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -740,6 +759,15 @@ def send_data_to_server(data, url):
     except Exception as e:
         print(f"[ERROR] send_data_to_server encountered an error: {str(e)}")
 
+    try:
+        # 다른 서버로 데이터를 전송 (POST 요청)
+        response = requests.post(url, json=data, headers=headers)
+        if response.status_code == 200:
+            print(f"Data sent successfully: {data}")
+        else:
+            print(f"Failed to send data: {response}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending data: {e}")
 
 # ---------------------- 벡터화 -----------------------
 

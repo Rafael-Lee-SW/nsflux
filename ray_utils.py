@@ -13,6 +13,7 @@ import datetime
 from RAG import (
     query_sort,
     execute_rag,
+    execute_sql,
     generate_answer,
     generate_answer_stream,
 )  # hypothetically
@@ -368,7 +369,7 @@ class InferenceActor:
             # 4) RAG
             if TA == "yes":
                 try:
-                    docs, docs_list = execute_rag(
+                    docs, docs_list = await execute_sql(
                         QU,
                         KE,
                         TA,
@@ -381,7 +382,11 @@ class InferenceActor:
                         config=self.config,
                     )
                     try:
-                        retrieval, chart = process_to_format(docs_list, type="SQL")
+                        # 기존 방식
+                        # retrieval, chart = process_to_format(docs_list, type="SQL")
+                        # 수정된 방식 - Talbe,Chart 없이 Answer Part에 SQL 결과 전송.
+                        retrieval_sql = process_to_format(docs, type="Answer")
+                        await self.queue_manager.put_token.remote(request_id, retrieval_sql)
                     except Exception as e:
                         print("[ERROR] process_to_format (SQL) failed:", str(e))
                         retrieval, chart = [], None
@@ -617,7 +622,7 @@ class InferenceActor:
         # Debug: print the reference JSON before sending
         print(f"[DEBUG] Prepared reference data: {reference_json}")
         await self.queue_manager.put_token.remote(request_id, reference_json)
-        
+
         print(f"[STREAM] Sent reference data for request_id={request_id}")
              
         # 1) 메모리 가져오기 (없으면 생성)
@@ -693,10 +698,11 @@ class InferenceActor:
                 if not new_text.strip():
                     continue
                     # Wrap answer tokens in a JSON object with type "answer"
-                answer_json = json.dumps({
-                    "type": "answer",
-                    "answer": new_text
-                }, ensure_ascii=False)
+                # answer_json = json.dumps({
+                #     "type": "answer",
+                #     "answer": new_text
+                # }, ensure_ascii=False)
+                answer_json = process_to_format(new_text,"Answer")
                 # Use the central SSEQueueManager to put tokens
                 # print(f"[STREAM] Sending token: {answer_json}")
                 await self.queue_manager.put_token.remote(request_id, answer_json)
@@ -797,6 +803,7 @@ class InferenceActor:
         queued_item = {
             "request_id": chat_id,   # 내부적으로 page_id를 request_id처럼 사용
             "http_query": http_query,
+            "response_url": response_url
         }
 
         print(f"[STREAM] Putting item into request_queue for chat_id={chat_id}")
