@@ -222,31 +222,69 @@
      ************************************************************************/
     function parseMarkdown(text) {
       if (!text) return '';
+    
+      // 입력 텍스트가 이미 HTML 태그로 시작하면 그대로 반환
+      if (text.trim().startsWith('<')) {
+        return text;
+      }
+      
+      // 1. 인라인 Markdown 변환 수행
+      // 코드 블록 처리
       text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(match, language, code) {
         return `<pre><code class="language-${language}">${escapeHtml(code.trim())}</code></pre>`;
       });
+      // 인라인 코드 처리
       text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+      // 굵은 글씨 처리
       text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      // 기울임 글씨 처리
       text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+      // 링크 처리 (필요시 수정)
       text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
-      text = text.replace(/^### (.*$)/gm, '<h3>$1</h3>');
-      text = text.replace(/^## (.*$)/gm, '<h2>$1</h2>');
-      text = text.replace(/^# (.*$)/gm, '<h1>$1</h1>');
-      text = text.replace(/^\s*\* (.*$)/gm, '<li>$1</li>');
-      text = text.replace(/^\s*\d+\. (.*$)/gm, '<li>$1</li>');
-      text = text.replace(/<li>(.*)<\/li>/g, function(match) {
+      // 제목 처리
+      text = text.replace(/^### (.*)$/gm, '<h3>$1</h3>');
+      text = text.replace(/^## (.*)$/gm, '<h2>$1</h2>');
+      text = text.replace(/^# (.*)$/gm, '<h1>$1</h1>');
+      // 목록 처리
+      text = text.replace(/^\s*\* (.*)$/gm, '<li>$1</li>');
+      text = text.replace(/^\s*\d+\. (.*)$/gm, '<li>$1</li>');
+      // 목록 아이템을 <ul>로 감싸기 (이미 <ul>이면 건너뜀)
+      text = text.replace(/(<li>[\s\S]*?<\/li>)/gm, function(match) {
+        if (match.trim().startsWith('<ul>')) {
+          return match;
+        }
         return '<ul>' + match + '</ul>';
       });
-      text = text.replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>');
-      text = text.replace(/\n\s*\n/g, '</p><p>');
-      text = text.replace(/\n/g, '<br>');
-      if (!text.startsWith('<')) {
-        text = '<p>' + text + '</p>';
-      }
-      text = text.replace(/<\/p><p><ul>/g, '<ul>');
-      text = text.replace(/<\/ul><\/p>/g, '</ul>');
-      return text;
+      // 인용문 처리
+      text = text.replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>');
+      
+      // 2. 문단 구분 처리: 두 줄 이상의 줄바꿈(\n\n)으로 블록을 나눕니다.
+      const blocks = text.split(/\n\s*\n/);
+      
+      // 블록 수준 태그 목록: 해당 태그로 시작하면 이미 블록 요소로 간주합니다.
+      const blockLevelTags = ['<h1>', '<h2>', '<h3>', '<ul>', '<ol>', '<blockquote>', '<pre>'];
+      
+      // 각 블록을 처리: blockLevelTags로 시작하지 않으면 <p> 태그로 감쌉니다.
+      const htmlBlocks = blocks.map(block => {
+        const trimmed = block.trim();
+        // 블록 수준 태그로 시작하면 그대로 반환
+        for (let tag of blockLevelTags) {
+          if (trimmed.startsWith(tag)) {
+            return trimmed;
+          }
+        }
+        // 그렇지 않으면 단일 줄바꿈은 <br>로 변환 후 <p>로 감쌉니다.
+        const replaced = trimmed.replace(/\n/g, '<br>');
+        return `<p>${replaced}</p>`;
+      });
+      
+      let html = htmlBlocks.join('');
+      
+      // 3. 불필요한 <br> 태그 제거 (필요한 경우)
+      html = html.replace(/<\/(h1|h2|h3|ul|ol|blockquote|pre)><br><p>/g, '</$1><p>');
+      return html;
     }
+    
     function escapeHtml(unsafe) {
       return unsafe
         .replace(/&/g, "&amp;")
@@ -255,6 +293,8 @@
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
     }
+    
+    
 
     /************************************************************************
      * Welcome Screen Rendering
