@@ -219,93 +219,85 @@ async def generate_answer(query, docs, **kwargs):
 
 @time_tracker
 async def query_sort(params):
-    # params: 딕셔너리로 전달된 값들
-    query = params["user_input"]
-    model = params["model"]
-    tokenizer = params["tokenizer"]
-    embed_model = params["embed_model"]
-    embed_tokenizer = params["embed_tokenizer"]
-    data = params["data"]
-    config = params["config"]
+    max_attempts = 3
+    attempt = 0
+    while attempt < max_attempts:
+        # params: 딕셔너리로 전달된 값들
+        query = params["user_input"]
+        model = params["model"]
+        tokenizer = params["tokenizer"]
+        embed_model = params["embed_model"]
+        embed_tokenizer = params["embed_tokenizer"]
+        data = params["data"]
+        config = params["config"]
+        
+        # 프롬프트 생성
+        PROMPT = QUERY_SORT_PROMPT.format(user_query=query)
+        print("##### query_sort is starting, attempt:", attempt+1, "#####")
+        
+        # Get Answer from LLM
+        if config.use_vllm:  # use_vllm = True case 
+            from vllm import SamplingParams
 
-    # prompts/prompt_rag.py에서 프롬프트 별도 관리
-    PROMPT = QUERY_SORT_PROMPT.format(user_query=query)
-    
-    # Get Answer from LLM
-    print("##### query_sort is starting #####")
-    if config.use_vllm:  # use_vllm = True case 
-        from vllm import SamplingParams
+            sampling_params = SamplingParams(
+                max_tokens=config.model.max_new_tokens,
+                temperature=config.model.temperature,
+                top_k=config.model.top_k,
+                top_p=config.model.top_p,
+                repetition_penalty=config.model.repetition_penalty,
+            )
+            accepted_request_id = str(uuid.uuid4())
+            answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+        else:
+            input_ids = tokenizer(
+                PROMPT, return_tensors="pt", truncation=True, max_length=4024
+            ).to("cuda")
+            token_count = input_ids["input_ids"].shape[1]
+            outputs = model.generate(
+                **input_ids,
+                max_new_tokens=config.model.max_new_tokens,
+                do_sample=config.model.do_sample,
+                temperature=config.model.temperature,
+                top_k=config.model.top_k,
+                top_p=config.model.top_p,
+                repetition_penalty=config.model.repetition_penalty,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+            answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
 
-        sampling_params = SamplingParams(
-            max_tokens=config.model.max_new_tokens,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-        )
-        accepted_request_id = str(uuid.uuid4())
-        answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
-    else:
-        input_ids = tokenizer(
-            PROMPT, return_tensors="pt", truncation=True, max_length=4024
-        ).to("cuda")
-        token_count = input_ids["input_ids"].shape[1]
-        outputs = model.generate(
-            **input_ids,
-            max_new_tokens=config.model.max_new_tokens,
-            do_sample=config.model.do_sample,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-        answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-
-    print("[DEBUG query_sort] Generated answer:")
-    print(answer)
-    
-    # Regular expressions for tags
-    query_pattern = r"<query.*?>(.*?)<query.*?>"
-    keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
-    table_pattern = r"<table.*?>(.*?)<table.*?>"
-    time_pattern = r"<time.*?>(.*?)<time.*?>"
-    
-    # [DEBUG-CHANGE]: Check each match before calling group(1)
-    m_query = re.search(query_pattern, answer, re.DOTALL)
-    m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
-    m_table = re.search(table_pattern, answer, re.DOTALL)
-    m_time = re.search(time_pattern, answer, re.DOTALL)
-    
-    if not m_query:
-        print("[ERROR query_sort] query_pattern not found in answer:")
+        print("[DEBUG query_sort] Generated answer:")
         print(answer)
-        raise ValueError("Missing <query> tag in generated answer.")
-    if not m_keyword:
-        print("[ERROR query_sort] keyword_pattern not found in answer:")
-        print(answer)
-        raise ValueError("Missing <keyword> tag in generated answer.")
-    if not m_table:
-        print("[ERROR query_sort] table_pattern not found in answer:")
-        print(answer)
-        raise ValueError("Missing <table> tag in generated answer.")
-    if not m_time:
-        print("[ERROR query_sort] time_pattern not found in answer:")
-        print(answer)
-        raise ValueError("Missing <time> tag in generated answer.")
-
-    QU = m_query.group(1)
-    KE = m_keyword.group(1)
-    TA = m_table.group(1)
-    TI = m_time.group(1)
-
-    if TI == "all":
-        TI = "1900-01-01:2099-01-01"
-    print(beep)
-    print(f"구체화 질문: {QU}, 키워드 : {KE}, 테이블 필요 유무: {TA}, 시간: {TI}")
-    print(beep)
-    return QU, KE, TA, TI
+        
+        # Regular expressions for tags
+        query_pattern = r"<query.*?>(.*?)<query.*?>"
+        keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
+        table_pattern = r"<table.*?>(.*?)<table.*?>"
+        time_pattern = r"<time.*?>(.*?)<time.*?>"
+        
+        # [DEBUG-CHANGE]: Check each match before calling group(1)
+        m_query = re.search(query_pattern, answer, re.DOTALL)
+        m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
+        m_table = re.search(table_pattern, answer, re.DOTALL)
+        m_time = re.search(time_pattern, answer, re.DOTALL)
+        
+        if m_query and m_keyword and m_table and m_time:
+            QU = m_query.group(1).strip()
+            KE = m_keyword.group(1).strip()
+            TA = m_table.group(1).strip()
+            TI = m_time.group(1).strip()
+            if TI == "all":
+                TI = "1900-01-01:2099-01-01"
+            print(beep)
+            print(f"구체화 질문: {QU}, 키워드 : {KE}, 테이블 필요 유무: {TA}, 시간: {TI}")
+            print(beep)
+            return QU, KE, TA, TI
+        else:
+            print("[ERROR query_sort] 필요한 태그들이 누락되었습니다. 재시도합니다.")
+            attempt += 1
+    
+    # 3회 재시도 후에도 실패하면 에러 발생
+    raise ValueError("LLM이 올바른 태그 형식의 답변을 생성하지 못했습니다.")
 
 
 # @time_tracker
@@ -413,6 +405,7 @@ def sort_by_time(time_bound, data):
     filtered_data["file_names"] = [data["file_names"][i] for i in matching_indices]
     filtered_data["titles"] = [data["titles"][i] for i in matching_indices]
     filtered_data["times"] = [data["times"][i] for i in matching_indices]
+    filtered_data["chunk_ids"] = [data["chunk_ids"][i] for i in matching_indices]  # 추가된 부분
     
     # 벡터 타입에 따른 다른 처리
     if isinstance(data["vectors"], torch.Tensor):
@@ -444,17 +437,18 @@ def retrieve(query, data, N, embed_model, embed_tokenizer):
         
         # Combined score (0.4 semantic + 0.6 lexical)
         score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+        score_values = score[:, 0, 0]
         top_k = score[:, 0, 0].argsort()[-N:][::-1]
         
         # Log top results for debugging
         logging.info(f"Top {N} document indices: {top_k}")
         logging.info(f"Top {N} document scores: {[score[:, 0, 0][i] for i in top_k]}")
         logging.info(f"Top document titles: {[data['titles'][i] for i in top_k]}")
-        
         documents = ""
         documents_list = []
         for i, index in enumerate(top_k):
-            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
+            score_str = f"{score_values[index]:.4f}"
+            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}, , Score: {score_str}\n"
             documents_list.append({
                 "file_name": data["file_names"][index],
                 "title": data["titles"][index],
@@ -708,6 +702,7 @@ async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
 @time_tracker
 async def generate_answer_stream(query, docs, model, tokenizer, config):
     prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    print("최종 LLM 추론용 prompt 생성 : ", prompt)
     if config.use_vllm:
         from vllm import SamplingParams
         sampling_params = SamplingParams(

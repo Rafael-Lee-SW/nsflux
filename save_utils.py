@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from transformers import (
     AutoModel,
     AutoTokenizer,
+    Gemma3Processor,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
     AutoConfig,
@@ -33,19 +34,7 @@ from tracking import time_tracker
 # Logging
 import logging
 
-# POST
-import requests
-
 logging.basicConfig(level=logging.DEBUG)
-
-# Gemma3Config 전역 패치: vocab_size 속성이 없으면 추가합니다.
-try:
-    from transformers.models.gemma3.configuration_gemma3 import Gemma3Config
-    if not hasattr(Gemma3Config, "vocab_size"):
-        Gemma3Config.vocab_size = 32000  # 또는 embed_tokenizer를 통해 동적으로 결정한 값
-        print("Gemma3Config에 vocab_size 패치 완료.")
-except Exception as e:
-    print("Gemma3Config 패치 실패:", e)
 
 # -------------------------------------------------
 # Function: find_weight_directory - 허깅페이스 권한 문제 해결 후에 잘 사용되지 아니함
@@ -126,11 +115,11 @@ def load_model(config):
         raise e
     print(":Embedding tokenizer loaded successfully.")
     embed_model.eval()
-    embed_tokenizer.model_max_length = 4096
+    embed_tokenizer.model_max_length = 4024
 
     # -------------------------------
     # Load the main LLM model via vLLM.
-    # -------------------------------
+    # -------------------------------E
     if config.use_vllm:
         print("vLLM mode enabled. Starting to load main LLM model via vLLM.")
         if config.model.quantization_4bit:
@@ -152,8 +141,16 @@ def load_model(config):
             config.cache_dir, "models--" + config.model_id.replace("/", "--")
         )
         local_model_path = os.path.abspath(local_model_path)
+        
+        # ★ 디버그: config와 경로 출력 ★
+        print("DEBUG: config.cache_dir =", config.cache_dir)
+        print("DEBUG: config.model_id =", config.model_id)
+        print("DEBUG: local_model_path =", local_model_path)
 
         config_file = os.path.join(local_model_path, "config.json")
+        # [디버그용] 우리가 불러올 config.json 경로 출력
+        print(f"DEBUG: Trying to load config.json from: {config_file}")
+        
         need_patch = False
 
         if not os.path.exists(config_file):
@@ -167,32 +164,57 @@ def load_model(config):
                 )
             except Exception as e:
                 raise e
+            
+            config_dict = hf_config.to_dict()
+            
+            # 여기서 hf_config는 Python 객체이므로, 아래처럼 print로 확인
+            print(f"[DEBUG] Downloaded hf_config from HuggingFace => hidden_size={hf_config.text_config.hidden_size}, "
+                    f"num_attention_heads={hf_config.text_config.num_attention_heads}, "
+                    f"head_dim={getattr(hf_config.text_config.head_dim, 'head_dim', 'N/A')}, "
+                    f"intermediate_size={getattr(hf_config.text_config.intermediate_size, 'intermediate_size', 'N/A')}")
+
+            # 필요시 vocab_size / architectures 등도 출력
+            print(f"[DEBUG] hf_config vocab_size={getattr(hf_config, 'vocab_size', 'N/A')}, "
+                    f"architectures={getattr(hf_config, 'architectures', 'N/A')}")
+            
             # 패치: vocab_size 속성이 없으면 embed_tokenizer의 값을 사용하여 추가
             if not hasattr(hf_config, "vocab_size"):
                 print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다.")
                 hf_config.vocab_size = getattr(embed_tokenizer, "vocab_size", 32000)
-            config_dict = hf_config.to_dict()
+            
             if not config_dict.get("architectures"):
                 print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
+            print(["[MODEL-LOADING] config_dict 저장 후 : ", config_dict])
         else:
-            # 이미 config_file이 존재하는 경우
-            with open(config_file, "r", encoding="utf-8") as f:
-                config_dict = json.load(f)
+            # config_file이 있을 경우, 로컬에서 읽어서 AutoConfig 불러오기
+            try:
+                # 먼저 config_dict를 파일에서 읽어옵니다.
+                with open(config_file, "r", encoding="utf-8") as f:
+                    config_dict = json.load(f)
+                
+                hf_config = AutoConfig.from_pretrained(
+                    local_model_path,
+                    trust_remote_code=True,
+                    token=token,
+                )
+                
+                config_dict = hf_config.to_dict()
+                
+                if not config_dict.get("architectures"):
+                    print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
+                    config_dict["architectures"] = ["Gemma2ForCausalLM"]
+                
+                # config_dict를 다시 저장합니다.
+                with open(config_file, "w", encoding="utf-8") as f:
+                    json.dump(config_dict, f)
 
-            if "vocab_size" not in config_dict:
-                # embed_tokenizer의 vocab_size가 존재하면 사용하고, 없으면 기본값 30522로 설정
-                config_dict["vocab_size"] = getattr(embed_tokenizer, "vocab_size", 30522)
-                print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다:", config_dict["vocab_size"])
-                with open(config_file, "w", encoding="utf-8") as f:
-                    json.dump(config_dict, f)
-            if not config_dict.get("architectures"):
-                print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
-                config_dict["architectures"] = ["Gemma2ForCausalLM"]
-                with open(config_file, "w", encoding="utf-8") as f:
-                    json.dump(config_dict, f)
+                print(["[MODEL-LOADING] config_dict 저장 후 : ", config_dict])
+            except Exception as e:
+                print("DEBUG: Failed to load local config, trying fallback:", e)
+                hf_config = None
 
         weight_dir, weight_format = find_weight_directory(local_model_path)
         if weight_dir is None:
@@ -235,7 +257,7 @@ def load_model(config):
         engine_args.enable_chunked_prefill = True
         engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
         # engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
-        engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
+        # engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
         # engine_args.block_size = vllm_conf.get("block_size", 128)
         engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization")
         
@@ -272,6 +294,37 @@ def load_model(config):
         
         # # ── 끝 ──
 
+        # 여기서 config_file 값을 명시적으로 설정합니다.
+        # ... (기존 코드에서 engine_args를 생성한 후)
+
+        # 여기서 config_file 값을 명시적으로 설정합니다.
+        engine_args.config_file = "config.json"  # 보통 "config.json"
+        print("DEBUG: Updated engine_args.config_file =", engine_args.config_file)
+        print("DEBUG: engine_args =", engine_args)
+        print("EngineArgs setting be finished")
+        
+        # **추가 코드**: generation_config가 None인 경우 GenerationConfig를 불러와서 override_generation_config에 설정
+        # config 내에 revision이 정의되어 있다면 사용하고, 없으면 None을 사용합니다.
+        revision = config.get("revision", None)
+        if engine_args.generation_config is None and engine_args.override_generation_config is None:
+            print("DEBUG: generation_config is None, setting override_generation_config using config.model_id:", config.model_id)
+            try:
+                # 명시적으로 local scope에서 GenerationConfig를 import합니다.
+                from transformers import GenerationConfig
+                gen_config = GenerationConfig.from_pretrained(
+                    config.model_id,
+                    revision=revision,
+                    cache_dir=config.cache_dir,
+                    trust_remote_code=True,
+                    token=token,
+                    config_file="config.json"  # 보통 "config.json"
+                )
+                engine_args.override_generation_config = gen_config
+                print("DEBUG: override_generation_config set successfully.")
+            except Exception as ex:
+                print("DEBUG: Failed to load generation config, error:", ex)
+        
+        print("DEBUG: engine_args =", engine_args)
         print("EngineArgs setting be finished")
         
         try:
@@ -323,7 +376,7 @@ def load_model(config):
 
         print("DEBUG: Loading main LLM tokenizer with token authentication.")
         try:
-            tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer = Gemma3Processor.from_pretrained(
                 config.model_id,
                 cache_dir=config.cache_dir,
                 trust_remote_code=True,
@@ -337,22 +390,6 @@ def load_model(config):
         return engine, tokenizer, embed_model, embed_tokenizer
 
     else:
-
-        if config.model.quantization_4bit:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
-            print("Using 4-bit quantization.")
-        elif config.model.quantization_8bit:
-            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-            print("Using 8-bit quantization.")
-        else:
-            bnb_config = None
-            print("Using pure option of Model(No quantization)")
-
         print("DEBUG: vLLM is not used. Loading model via standard HF method.")
         try:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -576,48 +613,6 @@ def process_to_format(qry_contents, type):
         print("Error! Type Not supported!")
         return None
 
-# @time_tracker
-# def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
-#     # Get multiple formats to tuple
-
-#     ans_format = {
-#         "status_code": 200,
-#         "result": "OK",
-#         "detail": "",
-#         "continue":continue_,
-#         "qry_id": qry_id,
-#         "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-#         "data_list": [],
-#     }
-
-#     # 누적된 토큰을 하나의 문자열로 결합합니다.
-#     aggregated_answer = "".join(token.get("answer", "") for token in formats)
-#     ans_format["data_list"].append({
-#         "rsp_type": "A",
-#         "rsp_tit": f"답변{update_index}",
-#         "rsp_data": [
-#             {
-#                 "rsp_type": "TT",
-#                 "rsp_data": aggregated_answer
-#             }
-#         ]
-#     })
-    
-#     # Validate JSON before returning
-#     try:
-#         json.dumps(ans_format, ensure_ascii=False)  # Test JSON validity
-#     except Exception as e:
-#         print(f"[ERROR] Invalid JSON structure: {str(e)}")
-#         ans_format["status_code"] = 500
-#         ans_format["result"] = "ERROR"
-#         ans_format["detail"] = f"JSON Error: {str(e)}"
-
-#     # for format in formats:
-#     #     ans_format["data_list"].append(format)
-
-#     # return json.dumps(ans_format, ensure_ascii=False)
-#     return ans_format
-
 @time_tracker
 def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
     # If there are any reference tokens, return only them.
@@ -666,53 +661,6 @@ def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
     
     return ans_format
 
-
-
-# @time_tracker
-# def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
-#     # 누적된 토큰들을 하나의 문자열로 결합합니다.
-#     aggregated_answer = "".join(token.get("answer", "") for token in formats)
-    
-#     # retrieval과 동일한 구조를 위해, 답변 데이터는 내부 data_list가 딕셔너리 형태로 구성됩니다.
-#     answer = {
-#         "rsp_type": "A",                # Answer
-#         "rsp_tit": f"답변{update_index}",
-#         "rsp_data": [                    # 바로 텍스트 응답 리스트를 구성
-#             {
-#                 "rsp_tit": f"답변{update_index}",
-#                 "rsp_data": [
-#                     {
-#                         'rsp_type': 'TT',
-#                         'rsp_tit': '',
-#                         'rsp_data': aggregated_answer,
-#                     }
-#                 ]
-                
-#             }
-#         ]
-#     }
-    
-#     # 최종 응답 구조: 최상위에 data_list는 리스트이고, 내부에 딕셔너리로 답변 데이터를 포함합니다.
-#     ans_format = {
-#         "status_code": 200,
-#         "result": "OK",
-#         "detail": "Answer",
-#         "continue": continue_,
-#         "qry_id": qry_id,
-#         "rsp_time": datetime.now().isoformat(),
-#         "data_list": [
-#             {
-#                 "type": "answer",               # 응답 타입 answer
-#                 "status_code": 200,
-#                 "result": "OK",
-#                 "detail": "Answer",
-#                 "evt_time": datetime.now().isoformat(),
-#                 "data_list": answer              # retrieval의 data_list와 동일하게 딕셔너리 형태
-#             }
-#         ]
-#     }
-#     return ans_format
-
 @time_tracker
 def error_format(message, status, qry_id=""):
     ans_format = {
@@ -724,21 +672,6 @@ def error_format(message, status, qry_id=""):
     }
     return json.dumps(ans_format)
 
-# @time_tracker
-# def send_data_to_server(data, url):
-#     headers = {
-#         "Content-Type": "application/json; charset=utf-8"
-#     }
-#     try:
-#         # 다른 서버로 데이터를 전송 (POST 요청)
-#         response = requests.post(url, json=data, headers=headers)
-#         if response.status_code == 200:
-#             print(f"Data sent successfully: {data}")
-#         else:
-#             print(f"Failed to send data: {response.status_code}")
-#             print(f"Failed data: {data}")
-#     except requests.exceptions.RequestException as e:
-#         print(f"Error sending data: {e}")
 @time_tracker     
 def send_data_to_server(data, url):
     try:
@@ -759,15 +692,6 @@ def send_data_to_server(data, url):
     except Exception as e:
         print(f"[ERROR] send_data_to_server encountered an error: {str(e)}")
 
-    try:
-        # 다른 서버로 데이터를 전송 (POST 요청)
-        response = requests.post(url, json=data, headers=headers)
-        if response.status_code == 200:
-            print(f"Data sent successfully: {data}")
-        else:
-            print(f"Failed to send data: {response}")
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending data: {e}")
 
 # ---------------------- 벡터화 -----------------------
 
