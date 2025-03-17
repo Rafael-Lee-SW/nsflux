@@ -207,10 +207,10 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     # SQL*Plus 명령어를 실행할 기본 명령어
     sql_query = \
     f"""
-    SET LINESIZE 100;
+    SET LINESIZE 150;
     SET PAGESIZE 1000;
     SET TRIMSPOOL ON;
-    
+
     SELECT 
         p.cls  AS CLS,
         p.unno AS UNNO,
@@ -235,8 +235,41 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     except subprocess.CalledProcessError as e:
         # 오류가 발생한 경우 오류 메시지 출력
         print(f"🔴 Error: {e.stderr}")
+    # import code
+    # code.interact(local=locals())  # 현재 변수들을 유지한 상태에서 Python 인터랙티브 셸 실행
+    return sql_query, result.stdout
 
-def generate_sql(model, tokenizer, metadata_PORT, user_query, config):
+def get_metadata(config):
+    """
+    - port_path JSON: 딕셔너리 형태이며, 'location_code' 키의 값을 추출.
+    - unno_path JSON: 리스트 형태이며, 모든 항목을 문자열로 반환.
+    """
+    unno_path = config.metadata_unno
+    port_path = config.metadata_path
+
+    # 1️⃣ port_path JSON 파일 로드 (딕셔너리)
+    with open(port_path, "r", encoding="utf-8") as f:
+        port_data = json.load(f)
+    
+    # location_code 값 추출 (키가 없을 경우 빈 리스트 반환)
+    location_codes = json.dumps(port_data.get("location_code"), ensure_ascii=False)
+
+    # 2️⃣ unno_path JSON 파일 로드 (리스트)
+    with open(unno_path, "r", encoding="utf-8") as f:
+        unno_data = json.load(f)
+    
+    # 리스트 내 모든 요소를 문자열로 변환
+    unno_list_as_string = json.dumps(unno_data, ensure_ascii=False)
+
+    return location_codes, unno_list_as_string
+
+
+@time_tracker
+async def generate_sql(user_query, model, tokenizer, config):
+    
+    # Parse Metadata
+    metadata_location, metadata_unno = get_metadata(config)
+
     PROMPT =\
 f'''
 <bos>
@@ -246,7 +279,7 @@ f'''
 "Requirements": [
     unno: UNNO Number는 4개의 숫자로 이루어진 위험물 번호 코드야. 
     class : UN Class는 2.1, 6.0,,, 의 숫자로 이루어진 코드야.
-    pol_port, pod_port: 항구 코드는 5개의 알파벳 또는 나라의 경우 2개의 알파벳과 %로 이루어져 있어. 다음은 항구 코드에 대한 메타데이터야 {metadata_PORT}. 여기에서 매칭되는 코드만을 사용해야 해. 항구는 항구코드, 나라는 2개의 나라코드와 %를 사용해.
+    pol_port, pod_port: 항구 코드는 5개의 알파벳 또는 나라의 경우 2개의 알파벳과 %로 이루어져 있어. 다음은 항구 코드에 대한 메타데이터야 {metadata_location}. 여기에서 매칭되는 코드만을 사용해야 해. 항구는 항구코드, 나라는 2개의 나라코드와 %를 사용해.
     unknown : 질문에서 찾을 수 없는 정보는 NULL을 출력해줘.
 ]
 
@@ -275,12 +308,26 @@ f'''
 
 
     # Get Answer
-    input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
-    input_length = input_ids['input_ids'].shape[1]
-    print(f"✅ INPUT LENGTH: {input_length}")
-    outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
-    outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-    print(f"✅ OUTPUTS: {outputs_result}")
+    ## From Vllm Inference
+    from vllm import SamplingParams
+    import uuid
+    from RAG import collect_vllm_text
+    sampling_params = SamplingParams(
+        max_tokens=config.model.max_new_tokens,
+        temperature=config.model.temperature,
+        top_k=config.model.top_k,
+        top_p=config.model.top_p,
+        repetition_penalty=config.model.repetition_penalty,
+    )
+    accepted_request_id = str(uuid.uuid4())
+    outputs_result = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+    print(f"✅ SQL Model Outputs:{outputs_result}")
+    # input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
+    # input_length = input_ids['input_ids'].shape[1]
+    # print(f"✅ INPUT LENGTH: {input_length}")
+    # outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
+    # outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
+    # print(f"✅ OUTPUTS: {outputs_result}")
 
     # Regular expression to extract content between <query/> and <query>
     unno_pattern = r'<unno.*?>(.*?)<unno.*?>'
@@ -294,31 +341,11 @@ f'''
     POD = re.search(pod_port_pattern, outputs_result, re.DOTALL).group(1)
 
     print(f"✅ UN_number:{UN_number}, UN_class:{UN_class}, POL:{POL}, POD:{POD}")
-    return UN_number,UN_class,POL,POD
+    final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
 
-def get_metadata(config):
-    """
-    - port_path JSON: 딕셔너리 형태이며, 'location_code' 키의 값을 추출.
-    - unno_path JSON: 리스트 형태이며, 모든 항목을 문자열로 반환.
-    """
-    unno_path = config.metadata_unno
-    port_path = config.metadata_path
-
-    # 1️⃣ port_path JSON 파일 로드 (딕셔너리)
-    with open(port_path, "r", encoding="utf-8") as f:
-        port_data = json.load(f)
-    
-    # location_code 값 추출 (키가 없을 경우 빈 리스트 반환)
-    location_codes = json.dumps(port_data.get("location_code"), ensure_ascii=False)
-
-    # 2️⃣ unno_path JSON 파일 로드 (리스트)
-    with open(unno_path, "r", encoding="utf-8") as f:
-        unno_data = json.load(f)
-    
-    # 리스트 내 모든 요소를 문자열로 변환
-    unno_list_as_string = json.dumps(unno_data, ensure_ascii=False)
-
-    return location_codes, unno_list_as_string
+    ### Temporary ###
+    title, explain, table_json, chart_json = (None,) * 4
+    return final_sql_query, title, explain, result, chart_json
 
 if __name__ == "__main__":
     # check_sqlplus()             # sqlplus가 잘 동작하는지 확인
@@ -326,9 +353,9 @@ if __name__ == "__main__":
     # get_all_schema_tables()    # ICON Table Name 반환
     # run_sql_unno(cls=4.1, pol_port="KR%", pod_port="JPUKB")         # 실제 SQL 쿼리 실행
     # make_metadata_from_table()
-    query = "UNNO 2443 화물의 한국에서 일본으로의 선적이 가능한지 알아봐줘."
-    metadata_location, metadata_unno = get_metadata(config)
+
+    query = "UN번호 1033, UN 클래스 2.1인 화물의 부산항에서 고베항으로의 선적이 가능한지 알아봐줘."
     model,tokenizer = initialze(config)
     # print(f"✅ METADATA: {metadata_location}")
-    UN_number, UN_class, POL_port, POD_port = generate_sql(model, tokenizer, metadata_location, query, config)
-    run_sql_unno(UN_class, UN_number, POL_port, POD_port)
+    final_sql_query, title, explain, table_json, chart_json = generate_sql(query, model, tokenizer, config)
+    print(f"✅ Final Sql Query: {final_sql_query}\n✅ Result: {table_json}")

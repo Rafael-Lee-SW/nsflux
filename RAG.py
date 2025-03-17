@@ -7,7 +7,8 @@ import random
 import uuid
 import logging
 from datetime import datetime, timedelta
-from sql import generate_sql
+# from sql import generate_sql
+from SQL_NS import generate_sql
 
 # Tracking
 from tracking import time_tracker
@@ -62,11 +63,14 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
             f"추가 설명: {explain}\n\n"
             f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
         )
+
+        ### Not Used anymore! ###
         # docs_list : 사용자에게 보여줄 정보(List)
-        docs_list = [
-            {"title": title, "data": table_json},
-            {"title": "시각화 차트", "data": chart_json},
-        ]
+        # docs_list = [
+        #     {"title": title, "data": table_json},
+        #     {"title": "시각화 차트", "data": chart_json},
+        # ]
+        docs_list = None
         print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
         return PROMPT, docs_list
 
@@ -81,6 +85,127 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
         docs, docs_list = retrieve(KE, filtered_data, config.N, embed_model, embed_tokenizer)
         return docs, docs_list
 
+### RAG와 다르게 SQL내에서도 vLLM 모델을 사용해야 하므로 따로 정의 ###
+@time_tracker
+async def execute_sql(QU, KE, TA, TI, **kwargs):
+    from SQL_NS import get_metadata, run_sql_unno
+
+    print("[SANGJE]: execute_sql : 진입")
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    embed_model = kwargs.get("embed_model")
+    embed_tokenizer = kwargs.get("embed_tokenizer")
+    data = kwargs.get("data")
+    config = kwargs.get("config")
+
+    metadata_location, metadata_unno = get_metadata(config)
+    print(f"✅ Metadata loaded:{metadata_location[:100]}")
+    PROMPT =\
+f'''
+<bos>
+<system>
+"YourRole": "질문으로 부터 조건을 추출하는 역할",
+"YourJob": "아래 요구 사항에 맞추어 'unno', 'class', 'pol_port', 'pod_port' 정보를 추출하여, 예시처럼 답변을 구성해야 합니다.",
+"Requirements": [
+    unno: UNNO Number는 4개의 숫자로 이루어진 위험물 번호 코드야. 
+    class : UN Class는 2.1, 6.0,,, 의 숫자로 이루어진 코드야.
+    pol_port, pod_port: 항구 코드는 5개의 알파벳 또는 나라의 경우 2개의 알파벳과 %로 이루어져 있어. 다음은 항구 코드에 대한 메타데이터야 {metadata_location}. 여기에서 매칭되는 코드만을 사용해야 해. 항구는 항구코드, 나라는 2개의 나라코드와 %를 사용해.
+    unknown : 질문에서 찾을 수 없는 정보는 NULL을 출력해줘.
+]
+
+"Examples": [
+    "질문": "UN 번호 1689 화물의 부산에서 미즈시마로의 선적 가능 여부를 확인해 주세요.",
+    "답변": "<unno/>1689<unno>\\n<class/>NULL<class>\\n<pol_port/>KRPUS<pol_port>\\n<pod_port/>JPMIZ<pod_port>"
+
+    "질문": "UN 클래스 2.1 화물의 한국에서 일본으로의 선적 가능 여부를 확인해 주세요.",
+    "답변": "<unno/>NULL<unno>\\n<class/>2.1<class>\\n<pol_port/>KR%<pol_port>\\n<pod_port/>JP%<pod_port>"
+]
+- 최종 출력은 반드시 다음 4가지 항목을 포함해야 합니다:
+    <unno/>...<unno>
+    <class/>...<class>
+    <pol_port/>...<pol_port>
+    <pod_port/>...<pod_port>
+</system>
+
+<user>
+질문: "{QU}"
+</user>
+
+<assistant>
+답변:
+</assistant>
+'''
+
+    try:
+        from vllm import SamplingParams
+
+        sampling_params = SamplingParams(
+            max_tokens=config.model.max_new_tokens,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        accepted_request_id = str(uuid.uuid4())
+        outputs_result = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+        print(f"✅ SQL Model Outputs:{outputs_result}")
+
+        # Regular expression to extract content between <query/> and <query>
+        unno_pattern = r'<unno.*?>(.*?)<unno.*?>'
+        class_pattern = r'<class.*?>(.*?)<class.*?>'
+        pol_port_pattern = r'<pol_port.*?>(.*?)<pol_port.*?>'
+        pod_port_pattern = r'<pod_port.*?>(.*?)<pod_port.*?>'
+
+        UN_number = re.search(unno_pattern, outputs_result, re.DOTALL).group(1)
+        UN_class = re.search(class_pattern, outputs_result, re.DOTALL).group(1)
+        POL = re.search(pol_port_pattern, outputs_result, re.DOTALL).group(1)
+        POD = re.search(pod_port_pattern, outputs_result, re.DOTALL).group(1)
+
+        print(f"✅ UN_number:{UN_number}, UN_class:{UN_class}, POL:{POL}, POD:{POD}")
+        final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
+        
+        ### Temporary ###
+        title, explain, table_json, chart_json = (None,) * 4   
+        
+        result = final_sql_query, title, explain, result, chart_json
+
+    except Exception as e:
+        # 1) generate_sql() 자체가 도중에 예외를 던지는 경우
+        print("[ERROR] generate_sql() 도중 예외 발생:", e)
+        # 멈추지 않고, 에러 형식으로 데이터를 만들어 반환
+        docs = "테이블 조회 시도 중 예외가 발생했습니다. " \
+            "해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다."
+        docs_list = []
+        return docs, docs_list
+
+    # 2) 함수가 정상 실행됐지만 결과가 None인 경우(= SQL 쿼리 결과가 없거나 오류)
+    if result is None:
+        print("[WARNING] generate_sql()에서 None을 반환했습니다. " 
+            "SQL 수행 결과가 없거나 에러가 발생한 것일 수 있습니다.")
+        docs = "테이블 조회 결과가 비어 있습니다. " \
+            "조회할 데이터가 없거나 SQL 오류가 발생했습니다."
+        docs_list = []
+        return docs, docs_list
+
+    # 정상적인 경우(튜플 언패킹)
+    final_sql_query, title, explain, table_json, chart_json = result
+
+    # docs : LLM 입력용 (string)
+    PROMPT = (
+        f"다음은 SQL 추출에 사용된 쿼리문: {final_sql_query}\n\n"
+        f"추가 설명: {explain}\n\n"
+        f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
+    )
+
+    ### Not Used anymore! ###
+    # docs_list : 사용자에게 보여줄 정보(List)
+    # docs_list = [
+    #     {"title": title, "data": table_json},
+    #     {"title": "시각화 차트", "data": chart_json},
+    # ]
+    docs_list = None
+    print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
+    return PROMPT, docs_list
 
 @time_tracker
 async def generate_answer(query, docs, **kwargs):

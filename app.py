@@ -18,9 +18,11 @@ os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
 # GPU 단독 사용(박상제 연구원님이랑 분기점)
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+print("[[TEST]]")
 
 from flask import (
     Flask,
@@ -208,12 +210,17 @@ def query_stream_to_clt():
     query_id = body.get("qry_id", "")
     response_url = config.response_url
 
-    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', ID={query_id}, url={response_url}")
-    http_query = {"qry_contents": user_input}
+    print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', ID={query_id}")
+    
+    ### 수정 : SangJe ###
+    http_query = {"qry_contents": user_input,
+                  "request_id": query_id,
+                  "response_url":response_url}
+    
     print(f"[DEBUG] Built http_query={http_query}")
 
     # Obtain request_id from Ray
-    response = inference_handle.process_query_stream.remote(http_query, query_id=query_id, response_url=response_url)
+    response = inference_handle.process_query_stream.remote(http_query)
     obj_ref = response._to_object_ref_sync()
     request_id = ray.get(obj_ref)
 
