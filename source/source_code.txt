@@ -1,0 +1,4839 @@
+# Project Tree of RAG for company
+
+```
+├─ Dockerfile
+├─ RAG.py
+├─ app.py
+├─ config.yaml
+├─ data_control.py
+├─ prompt_rag.py
+├─ ray_setup.py
+├─ ray_utils.py
+├─ templates/chatroom.html
+└─ utils.py
+```
+
+--- config.yaml
+
+```yaml
+
+# config.yaml
+# Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
+### Model
+model_id : 'google/gemma-3-27b-it'
+response_url : "http://202.20.84.16:8083/responseToUI"
+# response_url : "http://192.222.54.254:6460/testResponse"
+
+ray:
+  actor_count: 1                  # 총 Actor 개수(same as num_replicas)
+  num_gpus: 1                     # 각 Actor(Node)가 점유하고 있는 GPU 갯수
+  num_cpus: 24                    # 각 Actor(Node)가 점유하고 있는 CPU 갯수 (1 actor 시에 gpu 48개, 2 actor 시에 gpu 24개 할당)
+  max_batch_size: 5               # max_concurrency(actor 최대 동시 처리량, default 1000)로 대체해도 됨
+  batch_wait_timeout: 0.05        
+  max_ongoing_requests: 100        # ray.serve에서 deployment setting으로 동시 요청 처리 갯수를 의미함(Batch랑 다름)
+
+use_vllm: True # vLLM 사용 여부
+vllm:
+  enable_prefix_caching: True
+  scheduler_delay_factor: 0.1
+  enable_chunked_prefill: True
+  tensor_parallel_size: 1         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
+  max_num_seqs: 192               # v1에 따른 상향
+  max_num_batched_tokens: 16384   # v1에 따른 상향
+  block_size: 128                 # 미적용
+  gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
+  disable_custom_all_reduce: true
+  enable_memory_defrag: True      # v1 신규 기능 활성화
+  # 추가할 설정
+  disable_sliding_window: True  # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
+  max_model_len: 30000
+
+model:
+  quantization_4bit : False # Quantize 4-bit
+  quantization_8bit : False # Quantize 8-bit
+  max_new_tokens : 2048      # 생성할 최대 토큰 수
+
+  do_sample : True # True 일때만 아래가 적용
+  temperature : 1.0          # 텍스트 다양성 조정: 높을수록 창의력 향상 (1.0)
+  top_k : 30                 # top-k 샘플링: 상위 k개의 후보 토큰 중 하나를 선택 (50)
+  top_p : 1.0                # top-p 샘플링: 누적 확률을 기준으로 후보 토큰을 선택 (1.0 보다 낮을수록 창의력 증가)
+  repetition_penalty : 1.0   # 같은 단어를 반복해서 출력하지 않도록 패널티를 부여 (1.0 보다 클수록 페널티 증가)
+embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
+# cache_dir : "D:/huggingface" # Windows Local
+# cache_dir : "/media/user/7340afbb-e4ce-4a38-8210-c6362e85eae7/RAG/RAG_application/huggingface" # Local
+cache_dir : "/workspace/huggingface"  # Docker
+
+### Data
+data_path : 'data/0228_DB_.json'     # VectorDB Path - New one (계약서 데이터 포함)
+# data_path : 'data/1104_NS_DB_old.json' # VectorDB Path - Old one
+metadata_path : 'data/Metadata.json' # Metadata.json Path
+sql_data_path : 'data/poc.db'        # SQLite 데이터베이스 Path
+
+### Retrieve
+N : 5 # Retrieve top N chunks
+
+### Others
+beep : '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+seed : 4734                     # Radom Seed
+k : 15                        # SQL Max Rows (None=MAX)
+
+```
+
+
+--- Dockerfile
+
+```dockerfile
+
+# 베이스 이미지 선택
+# FROM globeai/flux_ns:1.26
+FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
+
+# 2. 대화형 입력 없이 진행하도록 환경 변수 설정
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 작업 디렉토리 설정
+WORKDIR /workspace
+
+
+# Install necessary system packages and Python dependencies in one go (fewer layers)
+# combining apt-get calls for efficiency
+# Miniconda 설치에 필요한 시스템 패키지 설치
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    bzip2 \
+    ca-certificates \
+    curl \
+    git \
+    vim \
+    && rm -rf /var/lib/apt/lists/*
+
+# Miniconda (Python 3.11 버전용) 설치
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-py311_23.3.1-0-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p /opt/conda && \
+    rm /tmp/miniconda.sh
+
+# conda 설치 경로를 PATH에 추가
+ENV PATH=/opt/conda/bin:$PATH
+
+# Python 버전을 3.11.9로 업데이트하고, pip를 pip 24.0으로 업그레이드
+RUN conda install python=3.11.9 -y && \
+    pip install --upgrade pip==24.0
+
+# 버전 확인 (빌드 시 로그에 표시됨)
+RUN python --version && pip --version
+
+# (4) CUDA_HOME 환경변수 설정
+#     which nvcc 결과가 /usr/bin/nvcc 이고 실제 툴킷이 /usr/lib/nvidia-cuda-toolkit 내에 있으므로 해당 경로를 지정
+# ENV CUDA_HOME="/usr/lib/nvidia-cuda-toolkit"
+# ENV PATH="${CUDA_HOME}/bin:${PATH}"
+# ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
+
+# # Solve the C compier
+# RUN apt-get update && apt-get install build-essential -y
+
+# requirements.txt만 먼저 복사해서 종속성 설치 (캐시 활용)
+COPY requirements.txt .
+
+# pip 캐시 사용 안 함으로 설치 (임시 파일 최소화)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# gemma3.py 패치 파일 복사 (vLLM gemma3 파일 덮어쓰기)
+# COPY patches/vllm/gemma3.py /opt/conda/lib/python3.11/site-packages/vllm/model_executor/models/gemma3.py
+
+# Additional pip installations:
+RUN pip install ninja \
+    && pip install git+https://github.com/huggingface/transformers.git \
+    && pip install git+https://github.com/vllm-project/vllm.git
+
+# 현재 디렉토리의 모든 파일을 컨테이너의 /app 폴더로 복사
+COPY . /workspace
+
+# Flask 앱이 실행될 포트를 열어둠
+EXPOSE 5000
+# Ray Dashboard 포트 (8265)와 vLLM 관련 포트 필요 시 추가
+EXPOSE 8265
+# Expose port for the vLLM
+EXPOSE 8000
+
+# Flask 앱 실행 명령어
+CMD ["python", "app.py"]
+
+```
+
+
+--- app.py
+
+```python
+
+# app.py
+import os
+# Setting environment variable
+# os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
+os.environ["HF_HOME"] = "/workspace/huggingface"
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# For the Huggingface Token setting
+os.environ["HF_TOKEN_PATH"] = "/root/.cache/huggingface/token"
+# Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA),
+# and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
+# OpenMP: Open-Multi-Processing API
+os.environ["MKL_THREADING_LAYER"] = "GNU"
+# Increase download timeout (in seconds)
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+# Use the vLLM as v1 version
+os.environ["VLLM_USE_V1"] = "1"
+os.environ["VLLM_STANDBY_MEM"] = "0"
+os.environ["VLLM_METRICS_LEVEL"] = "1"
+os.environ["VLLM_PROFILE_MEMORY"]= "1"
+# GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU)
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
+# 토크나이저 병렬 처리 명시적 비활성화
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+from flask import (
+    Flask,
+    request,
+    Response,
+    render_template,
+    jsonify,
+    g,
+    stream_with_context,
+)
+import json
+import yaml
+from box import Box
+from utils import random_seed, error_format, send_data_to_server, process_format_to_response
+from datetime import datetime
+
+# Import the Ray modules
+from ray_setup import init_ray
+from ray import serve
+from ray_utils import InferenceActor
+from ray_utils import InferenceService, SSEQueueManager
+
+# ------ checking process of the thread level
+import logging
+import threading
+
+# 로깅 설정: 요청 처리 시간과 현재 스레드 이름을 기록
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s [%(threadName)s] %(message)s'
+)
+
+import ray
+import uuid
+import asyncio
+import time
+
+# Configuration
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
+random_seed(config.seed)
+
+########## Ray Dashboard 8265 port ##########
+init_ray()  # Initialize the Ray
+sse_manager = SSEQueueManager.options(name="SSEQueueManager").remote()
+serve.start(detached=True)
+
+#### Ray-Actor 다중 ####
+inference_service = InferenceService.options(num_replicas=config.ray.actor_count).bind(config)
+serve.run(inference_service)
+inference_handle = serve.get_deployment_handle("inference", app_name="default")
+
+#### Ray-Actor 단독 ####
+# inference_actor = InferenceActor.options(num_cpus=config.ray.num_cpus, num_gpus=config.ray.num_gpus).remote(config)
+
+########## FLASK APP setting ##########
+app = Flask(__name__)
+content_type = "application/json; charset=utf-8"
+
+# 기본 페이지를 불러오는 라우트
+@app.route("/")
+def index():
+    return render_template("index.html")  # index.html을 렌더링
+
+# Test 페이지를 불러오는 라우트
+@app.route("/test")
+def test_page():
+    return render_template("index_test.html")
+
+# chatroomPage 페이지를 불러오는 라우트
+@app.route("/chat")
+def chat_page():
+    return render_template("chatroom.html")
+
+# data 관리
+from data_control import data_control_bp
+app.register_blueprint(data_control_bp, url_prefix="/data")
+
+# Query Endpoint (Non-streaming)
+@app.route("/query", methods=["POST"])
+async def query():
+    try:
+        # Log when the query is received
+        receive_time = datetime.now().isoformat()
+        print(f"[APP] Received /query request at {receive_time}")
+        
+        # Optionally, attach the client time if desired:
+        http_query = request.json  # 클라이언트로부터 JSON 요청 수신
+        
+        http_query["server_receive_time"] = receive_time
+        
+        # Ray Serve 배포된 서비스를 통해 추론 요청 (자동으로 로드밸런싱됨)
+        # result = await inference_actor.process_query.remote(http_query) # 단일
+        result = await inference_handle.query.remote(http_query) # 다중
+        if isinstance(result, dict):
+            result = json.dumps(result, ensure_ascii=False)
+        print("APP.py - 결과: ", result)
+        return Response(result, content_type=content_type)
+    except Exception as e:
+        error_resp = error_format(f"서버 처리 중 오류 발생: {str(e)}", 500)
+        return Response(error_resp, content_type=content_type)
+
+# --------------------- Streaming part ----------------------------
+
+# # Streaming Endpoint (POST 방식 SSE) → 동기식 뷰 함수로 변경
+# @app.route("/query_stream", methods=["POST"])
+# def query_stream():
+#     """
+#     POST 방식 SSE 스트리밍 엔드포인트.
+#     클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
+#     """
+#     body = request.json or {}
+#     user_input = body.get("input", "")
+#     # request_id 파트 추가
+#     client_request_id = body.get("request_id")
+#     print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', request_id='{client_request_id}'")
+    
+#     http_query = {"qry_contents": user_input}
+#     # request_id 파트 추가
+#     if client_request_id:
+#         http_query["request_id"] = client_request_id
+#     print(f"[DEBUG] Built http_query={http_query}")
+
+#     response = inference_handle.process_query_stream.remote(http_query)
+#     obj_ref = response._to_object_ref_sync()
+#     request_id = ray.get(obj_ref)
+    
+#     print(f"[DEBUG] streaming request_id={request_id}")
+    
+#     def sse_generator():
+#         try:
+#             while True:
+#                 # Retrieve token from SSEQueueManager
+#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
+#                 if token is None or token == "[[STREAM_DONE]]":
+#                     break
+#                 yield f"data: {token}\n\n"
+#         except Exception as e:
+#             error_token = json.dumps({"type": "error", "message": str(e)})
+#             yield f"data: {error_token}\n\n"
+#         finally:
+#             # Cleanup: close the SSE queue after streaming is done
+#             try:
+#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+#                 ray.get(obj_ref)
+#             except Exception as ex:
+#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+#             print("[DEBUG] SSE closed.")
+
+#     return Response(sse_generator(), mimetype="text/event-stream")
+
+# --------------------- Streaming part TEST for API format matching ----------------------------
+
+@app.route("/query_stream", methods=["POST"])
+def query_stream():
+    """
+    POST 방식 SSE 스트리밍 엔드포인트.
+    클라이언트가 아래 필드들을 포함한 JSON을 보내면:
+      - qry_id, user_id, page_id, auth_class, qry_contents, qry_time
+    auth_class는 내부적으로 'admin'으로 통일합니다.
+    """
+    body = request.json or {}
+    # 새로운 필드 추출
+    qry_id = body.get("qry_id")
+    user_id = body.get("user_id")
+    page_id = body.get("page_id")
+    auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
+    qry_contents = body.get("qry_contents", "")
+    qry_time = body.get("qry_time")  # 클라이언트 측 타임스탬프
+
+    print(f"[DEBUG] /query_stream called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{qry_contents}', qry_time='{qry_time}'")
+    
+    # 새로운 http_query 생성 – 내부 로직에서는 page_id를 채팅방 id로 사용
+    http_query = {
+        "qry_id": qry_id,
+        "user_id": user_id,
+        "page_id": page_id if page_id else str(uuid.uuid4()),
+        "auth_class": auth_class,
+        "qry_contents": qry_contents,
+        "qry_time": qry_time
+    }
+    
+    # 기존 request_id 대신 page_id를 SSE queue key로 사용
+    print(f"[DEBUG] Built http_query: {http_query}")
+    
+    # Ray Serve를 통한 streaming 호출 (변경 없음, 내부 인자는 수정된 http_query)
+    response = inference_handle.process_query_stream.remote(http_query)
+    obj_ref = response._to_object_ref_sync()
+    chat_id = ray.get(obj_ref)  # chat_id는 page_id
+    print(f"[DEBUG] streaming chat_id={chat_id}")
+    
+    def sse_generator():
+        try:
+            while True:
+                # SSEQueueManager에서 토큰을 가져옴 (chat_id 사용)
+                token = ray.get(sse_manager.get_token.remote(chat_id, 120))
+                if token is None or token == "[[STREAM_DONE]]":
+                    break
+                yield f"data: {token}\n\n"
+        except Exception as e:
+            error_token = json.dumps({"type": "error", "message": str(e)})
+            yield f"data: {error_token}\n\n"
+        finally:
+            try:
+                obj_ref = inference_handle.close_sse_queue.remote(chat_id)._to_object_ref_sync()
+                ray.get(obj_ref)
+            except Exception as ex:
+                print(f"[DEBUG] Error closing SSE queue for {chat_id}: {str(ex)}")
+            print("[DEBUG] SSE closed.")
+
+    return Response(sse_generator(), mimetype="text/event-stream")
+
+# --------------------- CLT Streaming part ----------------------------
+
+# --------------------- CLT Streaming part ----------------------------
+@app.route("/queryToSLLM", methods=["POST"])
+def query_stream_to_clt():
+    """
+    POST 방식 SSE 스트리밍 엔드포인트.
+    클라이언트가 {"qry_id": "...", "user_id": "...", "page_id": "...", "qry_contents": "...", "qry_time": "..." }
+    형태의 JSON을 보내면, 내부 Ray Serve SSE 스트림을 통해 처리한 후 지정된 response_url로 SSE 청크를 전송합니다.
+    """
+    # POST 요청 파라미터 파싱
+    body = request.json or {}
+    qry_id = body.get("qry_id", "")
+    user_id = body.get("user_id", "")
+    page_id = body.get("page_id", "")
+    auth_class = "admin"  # 모든 요청을 'admin'으로 처리
+    user_input = body.get("qry_contents", "")
+    qry_time = body.get("qry_time", "")
+    
+    response_url = config.response_url
+
+    print(f"[DEBUG] /queryToSLLM called with qry_id='{qry_id}', user_id='{user_id}', "
+          f"page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
+    
+    # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
+    http_query = {
+        "qry_id": qry_id,
+        "user_id": user_id,
+        "page_id": page_id if page_id else str(uuid.uuid4()),
+        "auth_class": auth_class,
+        "qry_contents": user_input,
+        "qry_time": qry_time,
+        "response_url": response_url
+    }
+    print(f"[DEBUG] Built http_query={http_query}")
+
+    # Ray Serve에 SSE 스트리밍 요청 보내기
+    response = inference_handle.process_query_stream.remote(http_query)
+    obj_ref = response._to_object_ref_sync()
+    request_id = ray.get(obj_ref)
+    print(f"[DEBUG] streaming request_id={request_id}")
+    
+    def sse_generator(request_id, response_url):
+        token_buffer = []  # To collect tokens (for answer tokens only)
+        last_sent_time = time.time()  # To track the last time data was sent
+        answer_counter = 1  # 답변 업데이트 순번
+        try:
+            while True:
+                token = ray.get(sse_manager.get_token.remote(request_id, 120))
+                if token is None:
+                    print("[DEBUG] 토큰이 None 반환됨. 종료합니다.")
+                    break
+
+                if isinstance(token, str):
+                    token = token.strip()
+                if token == "[[STREAM_DONE]]":
+                    print("[DEBUG] 종료 토큰([[STREAM_DONE]]) 수신됨. 스트림 종료.")
+                    break
+
+                try:
+                    token_dict = json.loads(token) if isinstance(token, str) else token
+                except Exception as e:
+                    print(f"[ERROR] JSON 파싱 실패: {e}. 원시 토큰: '{token}'")
+                    continue
+
+                # If token is a reference token, send it immediately
+                if token_dict.get("type") == "reference":
+                    print(f"[DEBUG] Reference token details: {token_dict}")
+                    ref_format = process_format_to_response([token_dict], qry_id, continue_="C", update_index=answer_counter)
+                    print(f"[DEBUG] Sending reference data: {json.dumps(ref_format, ensure_ascii=False, indent=2)}")
+                    send_data_to_server(ref_format, response_url)
+                    continue
+
+                # Otherwise, accumulate answer tokens
+                token_buffer.append(token_dict)
+                current_time = time.time()
+                # If 1 second has passed, flush the accumulated answer tokens
+                if current_time - last_sent_time >= 1:
+                    if len(token_buffer) > 0:
+                        # Check if any token in the buffer signals termination.
+                        final_continue = "E" if any(t.get("continue") == "E" for t in token_buffer) else "C"
+                        print(f"[DEBUG] Flushing {len(token_buffer)} tokens with continue flag: {final_continue}")
+                        buffer_format = process_format_to_response(token_buffer, qry_id, continue_=final_continue, update_index=answer_counter)
+                        send_data_to_server(buffer_format, response_url)
+                        token_buffer = []  # Reset the buffer
+                        last_sent_time = current_time  # Update the last sent time
+                        answer_counter += 1
+                if token_dict.get("continue") == "E":
+                    # Immediately flush the buffer with termination flag if needed
+                    if len(token_buffer) > 0:
+                        print(f"[DEBUG] Immediate flush due to termination flag in buffer (size {len(token_buffer)}).")
+                        buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
+                        send_data_to_server(buffer_format, response_url)
+                        token_buffer = []
+                    break
+            # After loop: if tokens remain, flush them with termination flag
+            if len(token_buffer) > 0:
+                print(f"[DEBUG] Final flush of remaining {len(token_buffer)} tokens with end flag.")
+                buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
+                send_data_to_server(buffer_format, response_url)
+        except Exception as e:
+            print(f"[ERROR] sse_generator encountered an error: {e}")
+        finally:
+            try:
+                obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+                ray.get(obj_ref)
+            except Exception as ex:
+                print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+            print("[DEBUG] SSE closed.")
+
+    
+    # 별도의 스레드에서 SSE generator 실행
+    job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
+    job.start()
+
+    # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
+    return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
+
+
+# @app.route("/queryToSLLM", methods=["POST"])
+# def query_stream_to_clt():
+#     """
+#     POST 방식 SSE 스트리밍 엔드포인트.
+#     클라이언트가 {"qry_id": "...", "user_id": "...", "page_id": "...", "qry_contents": "...", "qry_time": "..." }
+#     형태의 JSON을 보내면, 내부 Ray Serve SSE 스트림을 통해 처리한 후 지정된 response_url로 SSE 청크를 전송합니다.
+#     """
+#     # POST 요청 파라미터 파싱
+#     body = request.json or {}
+#     qry_id = body.get("qry_id", "")
+#     user_id = body.get("user_id", "")
+#     page_id = body.get("page_id", "")
+#     auth_class = "admin"  # 모든 요청을 'admin'으로 처리
+#     user_input = body.get("qry_contents", "")
+#     qry_time = body.get("qry_time", "")
+    
+#     response_url = config.response_url
+
+#     print(f"[DEBUG] /query_stream_to_clt called with qry_id='{qry_id}', user_id='{user_id}', "
+#           f"page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
+    
+#     # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
+#     http_query = {
+#         "qry_id": qry_id,
+#         "user_id": user_id,
+#         "page_id": page_id if page_id else str(uuid.uuid4()),
+#         "auth_class": auth_class,
+#         "qry_contents": user_input,
+#         "qry_time": qry_time,
+#         "response_url": response_url
+#     }
+#     print(f"[DEBUG] Built http_query={http_query}")
+
+#     # Ray Serve에 SSE 스트리밍 요청 보내기
+#     response = inference_handle.process_query_stream.remote(http_query)
+#     obj_ref = response._to_object_ref_sync()
+#     request_id = ray.get(obj_ref)
+#     print(f"[DEBUG] streaming request_id={request_id}")
+    
+#     def sse_generator(request_id, response_url):
+#         token_buffer = []  # To collect tokens
+#         last_sent_time = time.time()  # To track the last time data was sent
+#         answer_counter = 1  # 답변 업데이트 순번
+#         try:
+#             while True:
+#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
+#                 if token is None:
+#                     print("[DEBUG] 토큰이 None 반환됨. 종료합니다.")
+#                     break
+
+#                 if isinstance(token, str):
+#                     token = token.strip()
+#                 if token == "[[STREAM_DONE]]":
+#                     print("[DEBUG] 종료 토큰([[STREAM_DONE]]) 수신됨. 스트림 종료.")
+#                     break
+
+#                 try:
+#                     token_dict = json.loads(token) if isinstance(token, str) else token
+#                 except Exception as e:
+#                     print(f"[ERROR] JSON 파싱 실패: {e}. 원시 토큰: '{token}'")
+#                     continue
+
+#                 token_buffer.append(token_dict)
+#                 current_time = time.time()
+#                 # If 1 second has passed, send the accumulated tokens
+#                 if current_time - last_sent_time >= 1:
+#                     if len(token_buffer) > 0:
+#                         # Check if any token in the buffer signals termination.
+#                         final_continue = "E" if any(t.get("continue") == "E" for t in token_buffer) else "C"
+#                         buffer_format = process_format_to_response(token_buffer, qry_id, continue_=final_continue, update_index=answer_counter)
+#                         send_data_to_server(buffer_format, response_url)
+#                         token_buffer = []  # Reset the buffer
+#                         last_sent_time = current_time  # Update the last sent time
+#                         answer_counter += 1
+#                 if token_dict.get("continue") == "E":
+#                     # Immediately send the buffer with end flag if not already sent
+#                     if len(token_buffer) > 0:
+#                         buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
+#                         send_data_to_server(buffer_format, response_url)
+#                         token_buffer = []
+#                     break
+#             # After loop: if tokens remain, send them with continue_="E"
+#             if len(token_buffer) > 0:
+#                 buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
+#                 send_data_to_server(buffer_format, response_url)
+#         except Exception as e:
+#             print(f"[ERROR] sse_generator encountered an error: {e}")
+#         finally:
+#             try:
+#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+#                 ray.get(obj_ref)
+#             except Exception as ex:
+#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+#             print("[DEBUG] SSE closed.")
+    
+#     # 별도의 스레드에서 SSE generator 실행
+#     job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
+#     job.start()
+
+#     # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
+#     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
+
+# @app.route("/queryToSLLM", methods=["POST"])
+# def query_stream_to_clt():
+#     """
+#     POST 방식 SSE 스트리밍 엔드포인트.
+#     클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
+#     """
+#     # POST 요청 params
+#     body = request.json or {}
+    
+#     # CLT 통신과 맞는 규격
+#     qry_id = body.get("qry_id", "")
+#     user_id = body.get("user_id", "")
+#     page_id = body.get("page_id", "")
+#     auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
+#     user_input = body.get("qry_contents", "")
+#     qry_time = body.get("qry_time", "")
+    
+#     response_url = config.response_url
+
+#     print(f"[DEBUG] /query_stream_to_clt called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
+#     # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
+#     http_query = {
+#         "qry_id": qry_id,
+#         "user_id": user_id,
+#         "page_id": page_id if page_id else str(uuid.uuid4()),
+#         "auth_class": auth_class,
+#         "qry_contents": user_input,
+#         "qry_time": qry_time,
+#         "response_url": response_url
+#     }
+#     print(f"[DEBUG] Built http_query={http_query}")
+
+#     # Obtain request_id from Ray
+#     response = inference_handle.process_query_stream.remote(http_query)
+#     obj_ref = response._to_object_ref_sync()
+#     request_id = ray.get(obj_ref)
+
+#     print(f"[DEBUG] streaming request_id={request_id}")
+    
+#     def sse_generator(request_id, response_url):
+#         try:
+#             token_buffer = []  # To collect tokens
+#             last_sent_time = time.time()  # To track the last time data was sent
+
+#             answer_counter = 1  # 답변 업데이트 순번 (답변1, 답변2, ...)
+            
+#             while True:
+#                 # Retrieve token from SSEQueueManager
+#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
+#                 token_dict = json.loads(token) if isinstance(token, str) else token
+                
+#                 token_buffer.append(token_dict)  # Collect token
+                
+#                 current_time = time.time()
+
+#                 # If 1 second has passed, send the accumulated tokens
+#                 if current_time - last_sent_time >= 1:
+#                     # Send the accumulated tokens
+#                     buffer_format = process_format_to_response(token_buffer, qry_id, update_index=answer_counter)
+#                     send_data_to_server(buffer_format, response_url)
+#                     token_buffer = []  # Reset the buffer
+#                     last_sent_time = current_time  # Update the last sent time
+#                     answer_counter += 1  # 순번 증가
+                
+#                 # If "continue" is "E", send the accumulated tokens with END signal
+#                 elif token_dict.get("continue") == "E":
+#                     # Send the accumulated tokens --- EXCEPT LAST END TOKEN
+#                     buffer_format = process_format_to_response(token_buffer[:-1], qry_id, continue_="E", update_index=answer_counter)
+#                     send_data_to_server(buffer_format, response_url)
+#                     token_buffer = []  # Reset the buffer
+#                     last_sent_time = current_time  # Update the last sent time
+
+#                 # If the "continue" key indicates to stop, break the loop
+#                 if token_dict.get("continue") == "E":
+#                     break
+
+#         except Exception as e:
+#             # error_token = json.dumps({"type": "error", "message": str(e)})
+#             # yield f"data: {error_token}\n\n"
+#             print(e)
+
+#         finally:
+#             # Cleanup: close the SSE queue after streaming is done
+#             try:
+#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
+#                 ray.get(obj_ref)
+#             except Exception as ex:
+#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+#             print("[DEBUG] SSE closed.")
+    
+#     job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
+#     job.start()
+
+#     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
+
+# ------------------------------------------------
+
+# 새로 추가1: request_id로 대화 기록을 조회하는 API 엔드포인트
+@app.route("/history", methods=["GET"])
+def conversation_history():
+    request_id = request.args.get("request_id", "")
+    last_index = request.args.get("last_index")
+    if not request_id:
+        error_resp = error_format("request_id 파라미터가 필요합니다.", 400)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
+    
+    try:
+        last_index = int(last_index) if last_index is not None else None
+        response = inference_handle.get_history.remote(request_id, last_index=last_index)
+        # DeploymentResponse를 ObjectRef로 변환
+        obj_ref = response._to_object_ref_sync()
+        history_data = ray.get(obj_ref)
+        return jsonify(history_data)
+    except Exception as e:
+        print(f"[ERROR /history] {e}")
+        error_resp = error_format(f"대화 기록 조회 오류: {str(e)}", 500)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
+
+
+# 새로 추가2: request_id로 해당 답변의 참고자료를 볼 수 있는 API
+@app.route("/reference", methods=["GET"])
+def get_reference():
+    request_id = request.args.get("request_id", "")
+    msg_index_str = request.args.get("msg_index", "")
+    if not request_id or not msg_index_str:
+        error_resp = error_format("request_id와 msg_index 파라미터가 필요합니다.", 400)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
+    
+    try:
+        msg_index = int(msg_index_str)
+        # 먼저 history를 가져옴
+        response = inference_handle.get_history.remote(request_id)
+        obj_ref = response._to_object_ref_sync()
+        history_data = ray.get(obj_ref)
+        
+        history_list = history_data.get("history", [])
+        if msg_index < 0 or msg_index >= len(history_list):
+            return jsonify({"error": "유효하지 않은 메시지 인덱스"}), 400
+        
+        message = history_list[msg_index]
+        if message.get("role") != "ai":
+            return jsonify({"error": "해당 메시지는 AI 응답이 아닙니다."}), 400
+        
+        chunk_ids = message.get("references", [])
+        if not chunk_ids:
+            return jsonify({"references": []})
+        
+        # chunk_ids에 해당하는 실제 참조 데이터 조회
+        ref_response = inference_handle.get_reference_data.remote(chunk_ids)
+        ref_obj_ref = ref_response._to_object_ref_sync()
+        references = ray.get(ref_obj_ref)
+        return jsonify({"references": references})
+    except Exception as e:
+        print(f"[ERROR /reference] {e}")
+        error_resp = error_format(f"참조 조회 오류: {str(e)}", 500)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
+
+
+# Flask app 실행
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)
+
+```
+
+
+--- ray_setup.py
+
+```python
+
+# ray_setup.py
+import ray
+from ray import serve
+
+########## Starting Banner ############
+from colorama import init, Fore, Style
+init(autoreset=True)
+
+BANNER = Fore.GREEN + r"""
+'########:'##:::::::'##::::'##:'##::::'##::::::::::'##::: ##::'######::
+ ##.....:: ##::::::: ##:::: ##:. ##::'##::::::::::: ###:: ##:'##... ##:
+ ##::::::: ##::::::: ##:::: ##::. ##'##:::::::::::: ####: ##: ##:::..::
+ ######::: ##::::::: ##:::: ##:::. ###::::::::::::: ## ## ##:. ######::
+ ##...:::: ##::::::: ##:::: ##::: ## ##:::::::::::: ##. ####::..... ##:
+ ##::::::: ##::::::: ##:::: ##:: ##:. ##::::::::::: ##:. ###:'##::: ##:
+ ##::::::: ########:. #######:: ##:::. ##:'#######: ##::. ##:. ######::
+..::::::::........:::.......:::..:::::..::.......::..::::..:::......:::
+"""
+
+def init_ray():
+    print(BANNER)
+    # Ray-Dashboard - GPU 상태, 사용 통계 등을 제공하는 모니터링 툴, host 0.0.0.0로 외부 접속을 허용하고, Default 포트인 8265으로 설정
+    ray.init(
+        include_dashboard=True,
+        dashboard_host="0.0.0.0" # External IP accessable
+        # dashboard_port=8265
+    )
+    print("Ray initialized. DashBoard running at http://192.222.54.254:8265") # New Server(2xH100)
+
+```
+
+
+--- ray_utils.py
+
+```python
+
+# ray_utils.py
+import ray  # Ray library
+from ray import serve
+import json
+import asyncio  # async I/O process module
+from concurrent.futures import ProcessPoolExecutor  # 스레드 컨트롤
+import uuid  # --- NEW OR MODIFIED ---
+import time
+from typing import Dict, Optional  # --- NEW OR MODIFIED ---
+import threading  # To find out the usage of thread
+import datetime
+
+from RAG import (
+    query_sort,
+    execute_rag,
+    generate_answer,
+    generate_answer_stream,
+)  # hypothetically
+from utils import (
+    load_model,
+    load_data,
+    process_format_to_response,
+    process_to_format,
+    error_format,
+)
+# from summarizer import summarize_conversation
+from summarizer import summarize_conversation
+from debug_tracking import log_batch_info, log_system_info
+
+# 랭체인 도입
+from langchain.memory import ConversationBufferMemory
+from langchain.schema import HumanMessage, AIMessage
+
+# =============================================================================
+# Custom Conversation Memory to store extra metadata (e.g., chunk_ids)
+# =============================================================================
+class CustomConversationBufferMemory(ConversationBufferMemory):
+    """대화 저장 시 추가 메타데이터를 함께 기록"""
+    def save_context(self, inputs: dict, outputs: dict) -> None:
+        """
+        inputs, outputs 예시:
+            inputs = {
+                "qry_contents": "사용자 질문",
+                "qry_id": "...",
+                "user_id": "...",
+                "auth_class": "...",
+                "qry_time": "..."
+            }
+            outputs = {
+                "output": "AI의 최종 답변",
+                "chunk_ids": [...참조 chunk_id 리스트...]
+            }
+        """
+        try:
+            user_content = inputs.get("qry_contents", "")
+            human_msg = HumanMessage(
+                content=user_content,
+                additional_kwargs={
+                    "qry_id": inputs.get("qry_id"),
+                    "user_id": inputs.get("user_id"),
+                    "auth_class": inputs.get("auth_class"),
+                    "qry_time": inputs.get("qry_time")
+                }
+            )
+            ai_content = outputs.get("output", "")
+            ai_msg = AIMessage(
+                content=ai_content,
+                additional_kwargs={
+                    "chunk_ids": outputs.get("chunk_ids", []),
+                    "qry_id": inputs.get("qry_id"),
+                    "user_id": inputs.get("user_id"),
+                    "auth_class": inputs.get("auth_class"),
+                    "qry_time": inputs.get("qry_time")
+                }
+            )
+
+            self.chat_memory.messages.append(human_msg)
+            self.chat_memory.messages.append(ai_msg)
+        except Exception as e:
+            print(f"[ERROR in save_context] {e}")
+        
+    def load_memory_variables(self, inputs: dict) -> dict:
+        """
+        랭체인 규약에 의해 {"history": [메시지 리스트]} 형태 리턴
+        """
+        try:
+            return {"history": self.chat_memory.messages}
+        except Exception as e:
+            print(f"[ERROR in load_memory_variables] {e}")
+            return {"history": []}
+
+# Serialization function for messages
+def serialize_message(msg):
+    """
+    HumanMessage -> {"role": "human", "content": ...}
+    AIMessage    -> {"role": "ai", "content": ..., "references": [...]}
+    """
+    try:
+        if isinstance(msg, HumanMessage):
+            return {"role": "human", "content": msg.content}
+        elif isinstance(msg, AIMessage):
+            refs = msg.additional_kwargs.get("chunk_ids", [])
+            # 디버그 출력
+            print(f"[DEBUG serialize_message] AI refs: {refs}")
+            return {"role": "ai", "content": msg.content, "references": refs}
+        else:
+            return {
+                "role": "unknown",
+                "content": getattr(msg, "content", str(msg))
+            }
+    except Exception as e:
+        print(f"[ERROR in serialize_message] {e}")
+        return {"role": "error", "content": str(e)}
+    
+# =============================================================================
+# =============================================================================
+
+@ray.remote  # From Decorator, Each Actor is allocated 1 GPU
+class InferenceActor:
+    async def __init__(self, config):
+        self.config = config
+        # 액터 내부에서 모델 및 토크나이저를 새로 로드 (GPU에 한 번만 로드)
+        self.model, self.tokenizer, self.embed_model, self.embed_tokenizer = load_model(
+            config
+        )
+        # 데이터는 캐시 파일을 통해 로드
+        self.data = load_data(config.data_path)
+        # 비동기 큐와 배치 처리 설정 (마이크로 배칭)
+        self.request_queue = asyncio.Queue()
+        self.max_batch_size = config.ray.max_batch_size  # 최대 배치 수
+        self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간
+
+        # Actor 내부에서 ProcessPoolExecutor 생성 (직렬화 문제 회피)
+        max_workers = int(min(config.ray.num_cpus * 0.8, (26*config.ray.actor_count)-4))
+        self.process_pool = ProcessPoolExecutor(max_workers)
+
+        # --- SSE Queue Manager ---
+        # A dictionary to store SSE queues for streaming requests
+        # Key = request_id, Value = an asyncio.Queue of partial token strings
+        self.queue_manager = ray.get_actor("SSEQueueManager")
+        self.active_sse_queues: Dict[str, asyncio.Queue] = {}
+
+        self.batch_counter = 0  # New counter to track batches
+
+        
+        self.memory_map = {}
+
+        # Micro-batching로 바꾸기(아래 주석 해체)
+        # asyncio.create_task(self._batch_processor())
+        
+        # In-flight batching까지 추가 적용(Micro 사용할 경우 주석)
+        asyncio.create_task(self._in_flight_batch_processor())
+
+
+    def get_memory_for_session(self, request_id: str) -> CustomConversationBufferMemory:
+        """
+        세션별 Memory를 안전하게 가져오는 헬퍼 메서드.
+        만약 memory_map에 request_id가 없으면 새로 생성해 저장 후 반환.
+        """
+        if request_id not in self.memory_map:
+            print(f"[DEBUG] Creating new CustomConversationBufferMemory for session={request_id}")
+            self.memory_map[request_id] = CustomConversationBufferMemory(return_messages=True)
+        return self.memory_map[request_id]
+
+    # -------------------------------------------------------------------------
+    # Micro_batch_processor - OLD METHOD
+    # -------------------------------------------------------------------------
+    async def _batch_processor(self):
+        """
+        Continuously processes queued requests in batches (micro-batching).
+        We add new logic for streaming partial tokens if a request has an SSE queue.
+        """
+        while True:
+            batch = []
+            batch_start_time = time.time()
+            # 1) get first request from the queue
+            print("=== _batch_processor waiting for request_queue item... ===")
+            item = await self.request_queue.get()
+            print(
+                f"[DEBUG] 첫 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: 1)"
+            )
+            batch.append(item)
+
+            print(f"[DEBUG] Received first request at {time.strftime('%H:%M:%S')}")
+
+            # 2) try to fill the batch up to batch_size or until timeout
+            try:
+                while len(batch) < self.max_batch_size:
+                    print("현재 배치 사이즈 : ", len(batch))
+                    print("최대 배치 사이즈 : ", self.max_batch_size)
+                    item = await asyncio.wait_for(
+                        self.request_queue.get(), timeout=self.batch_wait_timeout
+                    )
+
+                    batch.append(item)
+                    print(
+                        f"[DEBUG] 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})"
+                    )
+            except asyncio.TimeoutError:
+                elapsed = time.time() - batch_start_time
+                print(
+                    f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})"
+                )
+                pass
+
+            print(
+                f"=== _batch_processor: 배치 사이즈 {len(batch)} 처리 시작 ({time.strftime('%H:%M:%S')}) ==="
+            )
+
+            # 각 요청 처리 전후에 로그 추가
+            start_proc = time.time()
+            await asyncio.gather(
+                *(
+                    self._process_single_query(req, fut, sse_queue)
+                    for (req, fut, sse_queue) in batch
+                )
+            )
+            proc_time = time.time() - start_proc
+            print(f"[DEBUG] 해당 배치 처리 완료 (처리시간: {proc_time:.2f}초)")
+            
+    # -------------------------------------------------------------------------
+    # In-flight BATCH PROCESSOR
+    # -------------------------------------------------------------------------
+    async def _in_flight_batch_processor(self):
+        while True:
+            # Wait for the first item (blocking until at least one is available)
+            print(
+                "=== [In-Flight Batching] Waiting for first item in request_queue... ==="
+            )
+            first_item = await self.request_queue.get()
+            batch = [first_item]
+            batch_start_time = time.time()
+
+            print(
+                "[In-Flight Batching] Got the first request. Attempting to fill a batch..."
+            )
+
+            # Attempt to fill up the batch until we hit max_batch_size or batch_wait_timeout
+            while len(batch) < self.max_batch_size:
+                try:
+                    remain_time = self.batch_wait_timeout - (
+                        time.time() - batch_start_time
+                    )
+                    if remain_time <= 0:
+                        print(
+                            "[In-Flight Batching] Timed out waiting for more requests; proceeding with current batch."
+                        )
+                        break
+                    item = await asyncio.wait_for(
+                        self.request_queue.get(), timeout=remain_time
+                    )
+                    batch.append(item)
+                    print(
+                        f"[In-Flight Batching] +1 request => batch size now {len(batch)} <<< {self.max_batch_size}"
+                    )
+                except asyncio.TimeoutError:
+                    print(
+                        "[In-Flight Batching] Timeout reached => proceeding with the batch."
+                    )
+                    break
+            self.batch_counter += 1
+            
+            # 현재 배치 정보 로깅
+            log_batch_info(batch)
+            log_system_info("배치 처리 전 상태")
+
+            # We have a batch of items: each item is ( http_query_or_stream_dict, future, sse_queue )
+            # We'll process them concurrently.
+            tasks = []
+            for request_tuple in batch:
+                request_obj, fut, sse_queue = request_tuple
+                tasks.append(self._process_single_query(request_obj, fut, sse_queue))
+
+            # Actually run them all concurrently
+            await asyncio.gather(*tasks)
+            log_system_info("배치 처리 후 상태")
+
+    async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
+        """
+        Process a single query from the micro-batch. If 'sse_queue' is given,
+        we do partial-token streaming. Otherwise, normal final result.
+        """
+        # 스트리밍 요청인 경우 request_id를 미리 초기화
+        request_id = None
+        print(
+            f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}"
+        )
+        try:
+            # 1) 스트리밍 구분
+            if (isinstance(http_query_or_stream_dict, dict)
+                and "request_id" in http_query_or_stream_dict):
+                # 스트리밍
+                request_id = http_query_or_stream_dict["request_id"]
+                http_query = http_query_or_stream_dict["http_query"]
+                is_streaming = True
+                print(f"[STREAM] _process_single_query: request_id={request_id}")
+            else:
+                # Non-스트리밍
+                request_id = None
+                http_query = http_query_or_stream_dict
+                is_streaming = False
+                print("[NORMAL] _process_single_query started...")
+                
+            # 2) Memory 객체 가져오기 (없으면 새로 생성)
+            page_id = http_query.get("page_id", request_id)
+            memory = self.get_memory_for_session(page_id)
+
+            # 3) 유저가 현재 입력한 쿼리 가져오기
+            user_input = http_query.get("qry_contents", "")
+            
+            # 4) LangChain Memory에서 이전 대화 이력(history) 추출
+            past_context = memory.load_memory_variables({}).get("history", [])
+            # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
+            if isinstance(past_context, list):
+                recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
+                past_context = "\n\n".join(recent_messages)
+            else:
+                # 문자열인 경우, 메시지 구분자를 "\n\n"으로 가정하여 분리
+                messages = str(past_context).split("\n\n")
+                recent_messages = messages[-5:]
+                past_context = "\n\n".join(recent_messages)
+            
+            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
+            # past_tokens = self.tokenizer.tokenize(str(past_context))
+            # if len(past_tokens) > 4000:
+            #     past_tokens = past_tokens[-4000:]
+            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
+            
+            # ★ 토큰 수 계산 코드 추가 ★
+            # retrieval 자료는 dict나 리스트일 수 있으므로 문자열로 변환하여 토큰화합니다.
+            # 각 입력값을 명시적으로 str()로 변환합니다.
+            past_tokens = self.tokenizer.tokenize(str(past_context))
+            query_tokens = self.tokenizer.tokenize(str(user_input))
+            total_tokens = len(past_tokens) + len(query_tokens)
+            print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, 사용자 입력 질문: {len(query_tokens)}, 총합: {total_tokens}")
+            
+            # # To Calculate the token
+            # tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
+            # print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
+
+            # 5) 필요하다면 데이터를 다시 로드(1.16version 유지)
+            self.data = load_data(
+                self.config.data_path
+            )  # if you want always-latest, else skip
+
+            # 6) 현재 사용중인 Thread 확인
+            print("   ... calling query_sort() ...")
+            # print(
+            #     f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}"
+            # )
+            # 7) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
+            #    방법 1) query_sort() 전에 past_context를 참조해 query를 확장
+            #    방법 2) generate_answer()에서 Prompt 앞부분에 붙임
+            # 여기서는 예시로 “query_sort”에 past_context를 넘겨
+            # 호출부 수정
+            params = {
+                "user_input": f"{past_context}\n사용자 질문: {user_input}",
+                "model": self.model,
+                "tokenizer": self.tokenizer,
+                "embed_model": self.embed_model,
+                "embed_tokenizer": self.embed_tokenizer,
+                "data": self.data,
+                "config": self.config,
+            }
+            QU, KE, TA, TI = await query_sort(params)
+            print(f"   ... query_sort => QU={QU}, KE={KE}, TA={TA}, TI={TI}")
+
+            # 4) RAG
+            if TA == "yes":
+                try:
+                    docs, docs_list = execute_rag(
+                        QU,
+                        KE,
+                        TA,
+                        TI,
+                        model=self.model,
+                        tokenizer=self.tokenizer,
+                        embed_model=self.embed_model,
+                        embed_tokenizer=self.embed_tokenizer,
+                        data=self.data,
+                        config=self.config,
+                    )
+                    try:
+                        retrieval, chart = process_to_format(docs_list, type="SQL")
+                    except Exception as e:
+                        print("[ERROR] process_to_format (SQL) failed:", str(e))
+                        retrieval, chart = [], None
+
+                    # If streaming => partial tokens
+                    if is_streaming:
+                        print(
+                            f"[STREAM] Starting partial generation for request_id={request_id}"
+                        )
+                        await self._stream_partial_answer(
+                            QU, docs, retrieval, chart, request_id, future, user_input
+                        )
+                    else:
+                        # normal final result
+                        output = await generate_answer(
+                            QU,
+                            docs,
+                            model=self.model,
+                            tokenizer=self.tokenizer,
+                            config=self.config,
+                        )
+                        answer = process_to_format([output, chart], type="Answer")
+                        final_data = [retrieval, answer]
+                        outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                        
+                        # >>> Record used chunk IDs
+                        # 변경 후: retrieval 결과에서 추출
+                        chunk_ids_used = []
+                        print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
+                        for doc in retrieval.get("rsp_data", []):
+                            if "chunk_id" in doc:
+                                chunk_ids_used.append(doc["chunk_id"])
+                                                        
+                        # >>> CHANGED: summarize the conversation
+                        # loop = asyncio.get_event_loop()
+                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
+                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
+                        # updated_conversation = prev_summary + "\n" + new_entry
+                        # # Summarized CPU 사용
+                        # # import concurrent.futures
+
+                        # # Create a dedicated pool with more workers (e.g., 4)
+                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+
+                        # # Later, when calling the summarization function:
+                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        # # # After obtaining 'summarized' in _process_single_query:
+                        # # if not summarized:
+                        # #     print("[ERROR] Summarization returned an empty string.")
+                        # # else:
+                        # #     print(f"[CHECK] Summarized conversation: {summarized}")
+                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
+                                            # 메모리에 저장
+                        try:
+                            memory.save_context(
+                                {
+                                    "qry_contents": user_input,
+                                    "qry_id": http_query.get("qry_id"),
+                                    "user_id": http_query.get("user_id"),
+                                    "auth_class": http_query.get("auth_class"),
+                                    "qry_time": http_query.get("qry_time")
+                                },
+                                {
+                                    "output": output,
+                                    "chunk_ids": chunk_ids_used
+                                }
+                            )
+                        except Exception as e:
+                            print(f"[ERROR memory.save_context] {e}")
+                        # >>> CHANGED -----------------------------------------------------
+                        future.set_result(outputs)
+
+                except Exception as e:
+                    outputs = error_format("내부 Excel 에 해당 자료가 없습니다.", 551)
+                    future.set_result(outputs)
+
+            else:
+                try:
+                    print("[SOOWAN] TA is No, before make a retrieval")
+                    docs, docs_list = execute_rag(
+                        QU,
+                        KE,
+                        TA,
+                        TI,
+                        model=self.model,
+                        tokenizer=self.tokenizer,
+                        embed_model=self.embed_model,
+                        embed_tokenizer=self.embed_tokenizer,
+                        data=self.data,
+                        config=self.config,
+                    )
+                    retrieval = process_to_format(docs_list, type="Retrieval")
+                    print("[SOOWAN] TA is No, and make a retrieval is successed")
+                    if is_streaming:
+                        print(
+                            f"[STREAM] Starting partial generation for request_id={request_id}"
+                        )
+                        await self._stream_partial_answer(
+                            QU, docs, retrieval, None, request_id, future, user_input
+                        )
+                    else:
+                        output = await generate_answer(
+                            QU,
+                            docs,
+                            model=self.model,
+                            tokenizer=self.tokenizer,
+                            config=self.config,
+                        )
+                        print("process_to_format 이후에 OUTPUT 생성 완료")
+                        answer = process_to_format([output], type="Answer")
+                        print("process_to_format 이후에 ANSWER까지 생성 완료")
+                        final_data = [retrieval, answer]
+                        outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                        
+                        # >>> CHANGED: Record used chunk ID
+                        chunk_ids_used = []
+                        print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
+                        for doc in retrieval.get("rsp_data", []):
+                            if "chunk_id" in doc:
+                                chunk_ids_used.append(doc["chunk_id"])
+                                
+                        
+                        # loop = asyncio.get_event_loop()
+                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
+                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
+                        # updated_conversation = prev_summary + "\n" + new_entry
+                        # # # Summarized CPU 사용
+                        # # import concurrent.futures
+                        
+                        # # # Create a dedicated pool with more workers (e.g., 4)
+                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
+                        
+                        # # Later, when calling the summarization function:
+                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
+                        
+                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
+                                            # 메모리 저장
+                        try:
+                            memory.save_context(
+                                {
+                                    "qry_contents": user_input,
+                                    "qry_id": http_query.get("qry_id"),
+                                    "user_id": http_query.get("user_id"),
+                                    "auth_class": http_query.get("auth_class"),
+                                    "qry_time": http_query.get("qry_time")
+                                },
+                                {
+                                    "output": output,
+                                    "chunk_ids": chunk_ids_used
+                                }
+                            )
+                        except Exception as e:
+                            print(f"[ERROR memory.save_context] {e}")
+                        # --------------------------------------------------------------------
+                        
+                        future.set_result(outputs)
+
+                except Exception as e:
+                    # ====== 이 부분에서 SSE를 즉시 닫고 스트리밍 종료 ======
+                    err_msg = f"[ERROR] 처리 중 오류 발생: {str(e)}"
+                    print(err_msg)
+
+                    # SSE 전송 (error 이벤트)
+                    if request_id:
+                        try:
+                            error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                            await self.queue_manager.put_token.remote(request_id, error_token)
+                            # 스트리밍 종료
+                            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                        except Exception as e2:
+                            print(f"[ERROR] SSE 전송 중 추가 예외 발생: {str(e2)}")
+                        finally:
+                            # SSEQueue 정리
+                            await self.close_sse_queue(request_id)
+
+                    # Future 응답도 에러로
+                    future.set_result(error_format(str(e), 500))
+                    return
+                
+        except Exception as e:
+            err_msg = f"[ERROR] 처리 중 오류 발생: {str(e)}"
+            print("[ERROR]", err_msg)
+            # SSE 스트리밍인 경우 error 토큰과 종료 토큰 전송
+            if request_id:
+                try:
+                    error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                    await self.queue_manager.put_token.remote(request_id, error_token)
+                except Exception as e2:
+                    print(f"[ERROR] SSE 전송 중 추가 예외 발생: {str(e2)}")
+            future.set_result(error_format(err_msg, 500))
+        finally:
+            # 스트리밍 요청인 경우 반드시 SSE 큐에 종료 토큰을 넣고 큐를 정리한다.
+            if request_id:
+                try:
+                    await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                except Exception as ex:
+                    print(f"[DEBUG] Error putting STREAM_DONE: {str(ex)}")
+                await self.close_sse_queue(request_id)
+
+    # ------------------------------------------------------------
+    # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
+    # ------------------------------------------------------------
+    async def _stream_partial_answer(
+        self, QU, docs, retrieval, chart, request_id, future, user_input
+    ):
+        """
+        Instead of returning a final string, we generate partial tokens
+        and push them to the SSE queue in real time.
+        We'll do a "delta" approach so each chunk is only what's newly added.
+        """
+        print(
+            f"[STREAM] _stream_partial_answer => request_id={request_id}, chart={chart}"
+        )
+
+        # 단일
+        # queue = self.active_sse_queues.get(request_id)
+        # if not queue:
+        #     print(f"[STREAM] SSE queue not found => fallback to normal final (request_id={request_id})")
+        #     # fallback...
+        #     return
+
+        # This will hold the entire text so far. We'll yield only new pieces.
+        
+        # 먼저, 참조 데이터 전송: type을 "reference"로 명시
+        reference_json = json.dumps({
+            "type": "reference",
+            "status_code": 200,
+            "result": "OK",
+            "detail": "Reference data",
+            "evt_time": datetime.datetime.now().isoformat(),
+            "data_list": [retrieval]
+        }, ensure_ascii=False)
+        # Debug: print the reference JSON before sending
+        print(f"[DEBUG] Prepared reference data: {reference_json}")
+        await self.queue_manager.put_token.remote(request_id, reference_json)
+        
+        print(f"[STREAM] Sent reference data for request_id={request_id}")
+             
+        # 1) 메모리 가져오기 (없으면 생성)
+        try:
+            memory = self.get_memory_for_session(request_id)
+        except Exception as e:
+            msg = f"[STREAM] Error retrieving memory for {request_id}: {str(e)}"
+            print(msg)
+            # 에러 응답을 SSE로 전송하고 종료
+            error_token = json.dumps({"type":"error","message":msg}, ensure_ascii=False)
+            await self.queue_manager.put_token.remote(request_id, error_token)
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+            future.set_result(error_format(msg, 500))
+            return
+        
+        # 2) 과거 대화 이력 로드
+        try:
+            past_context = memory.load_memory_variables({})["history"]
+            # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
+            if isinstance(past_context, list):
+                recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
+                past_context = "\n\n".join(recent_messages)
+            else:
+                # 문자열인 경우, 메시지 구분자를 "\n\n"으로 가정하여 분리
+                messages = str(past_context).split("\n\n")
+                recent_messages = messages[-5:]
+                past_context = "\n\n".join(recent_messages)
+            
+            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
+            # past_tokens = self.tokenizer.tokenize(str(past_context))
+            # if len(past_tokens) > 4000:
+            #     past_tokens = past_tokens[-4000:]
+            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
+        except KeyError:
+            # 만약 "history" 키가 없으면 빈 문자열로 처리
+            print(f"[STREAM] No 'history' in memory for {request_id}, using empty.")
+            past_context = ""
+        except Exception as e:
+            msg = f"[STREAM] load_memory_variables error for {request_id}: {str(e)}"
+            print(msg)
+            error_token = json.dumps({"type":"error","message":msg}, ensure_ascii=False)
+            await self.queue_manager.put_token.remote(request_id, error_token)
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+            future.set_result(error_format(msg, 500))
+            return
+
+        # 3) 최종 프롬프트 구성
+        final_query = f"{past_context}\n\n[사용자 질문]\n{QU}"
+        print(f"[STREAM] final_query = \n{final_query}")
+        
+        # ★ 토큰 수 계산 코드 추가 ★
+        # retrieval 자료는 dict나 리스트일 수 있으므로 문자열로 변환하여 토큰화합니다.
+        retrieval_str = str(retrieval)
+        # 각 입력값을 명시적으로 str()로 변환합니다.
+        past_tokens = self.tokenizer.tokenize(str(past_context))
+        query_tokens = self.tokenizer.tokenize(str(QU))
+        retrieval_tokens = self.tokenizer.tokenize(retrieval_str)
+        total_tokens = len(self.tokenizer.tokenize(str(final_query))) + len(retrieval_tokens)
+        print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, RAG 검색 자료: {len(retrieval_tokens)}, 사용자 구체화 질문: {len(query_tokens)}, 총합: {total_tokens}")
+        
+        partial_accumulator = ""
+
+        try:
+            print(
+                f"[STREAM] SSE: calling generate_answer_stream for request_id={request_id}"
+            )
+            async for partial_text in generate_answer_stream(
+                final_query, docs, self.model, self.tokenizer, self.config
+            ):
+                # print(f"[STREAM] Received partial_text: {partial_text}")
+                new_text = partial_text[len(partial_accumulator) :]
+                partial_accumulator = partial_text
+                if not new_text.strip():
+                    continue
+                    # Wrap answer tokens in a JSON object with type "answer"
+                answer_json = json.dumps({
+                    "type": "answer",
+                    "answer": new_text
+                }, ensure_ascii=False)
+                # Use the central SSEQueueManager to put tokens
+                # print(f"[STREAM] Sending token: {answer_json}")
+                await self.queue_manager.put_token.remote(request_id, answer_json)
+            final_text = partial_accumulator
+            # # 이제 memory에 저장 (이미 request_id를 알고 있다고 가정) # 랭체인
+            # try:
+            #     memory.save_context({"input": user_input}, {"output": final_text})
+            # except Exception as e:
+            #     msg = f"[STREAM] memory.save_context failed: {str(e)}"
+            #     print(msg)
+                
+                
+            # >>> CHANGED: Update conversation summary in streaming branch as well
+            chunk_ids_used = []
+            print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
+            for doc in retrieval.get("rsp_data", []):
+                if "chunk_id" in doc:
+                    chunk_ids_used.append(doc["chunk_id"])
+                    
+            # memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used})
+            
+            # 메모리 저장
+            try:
+                memory.save_context(
+                    {
+                        "qry_contents": user_input,
+                        "qry_id": "",  # 필요한 경우 http_query에 있는 값을 넣음
+                    },
+                    {
+                        "output": final_text,
+                        "chunk_ids": chunk_ids_used
+                    }
+                )
+            except Exception as e:
+                print(f"[ERROR memory.save_context in stream] {e}")
+            
+            print("메시지 저장 직후 chunk_id 확인 : ", memory)
+            # >>> CHANGED: -------------------------------------------------------
+            
+            # 최종 응답 구조
+            if chart is not None:
+                ans = process_to_format([final_text, chart], type="Answer")
+                final_res = process_format_to_response(retrieval, ans)
+            else:
+                ans = process_to_format([final_text], type="Answer")
+                final_res = process_format_to_response(retrieval, ans)
+                
+            # 담아서 보내기
+            future.set_result(final_res)
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+            print(
+                f"[STREAM] done => placed [[STREAM_DONE]] for request_id={request_id}"
+            )
+        except Exception as e:
+            msg = f"[STREAM] error in partial streaming => {str(e)}"
+            print(msg)
+            future.set_result(error_format(msg, 500))
+            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+
+    # --------------------------------------------------------
+    # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
+    # --------------------------------------------------------
+    async def process_query(self, http_query):
+        """
+        Existing synchronous method. Returns final string/dict once done.
+        """
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        # There's no SSE queue for normal queries
+        sse_queue = None
+        await self.request_queue.put((http_query, future, sse_queue))
+        # print("self.request_queue : ", self.request_queue)
+        return await future
+    # ----------------------
+    # 1) Streaming Entrypoint
+    # ----------------------
+    async def process_query_stream(self, http_query: dict) -> str:
+        """
+        /query_stream 호출 시 page_id(채팅방 id)를 기반으로 SSE queue 생성하고,
+        대화 저장에 활용할 수 있도록 합니다.
+        """
+        # page_id를 채팅방 id로 사용 (없으면 생성)
+        chat_id = http_query.get("page_id")
+        if not chat_id:
+            chat_id = str(uuid.uuid4())
+        http_query["page_id"] = chat_id  # 강제 할당
+        await self.queue_manager.create_queue.remote(chat_id)
+        print(f"[STREAM] process_query_stream => chat_id={chat_id}, http_query={http_query}")
+
+        loop = asyncio.get_event_loop()
+        final_future = loop.create_future()
+
+        sse_queue = asyncio.Queue()
+        self.active_sse_queues[chat_id] = sse_queue
+        print(f"[STREAM] Created SSE queue for chat_id={chat_id}")
+
+        # 기존과 동일하게 micro-batch queue에 푸시 (http_query에 새 필드들이 포함됨)
+        queued_item = {
+            "request_id": chat_id,   # 내부적으로 page_id를 request_id처럼 사용
+            "http_query": http_query,
+        }
+
+        print(f"[STREAM] Putting item into request_queue for chat_id={chat_id}")
+        await self.request_queue.put((queued_item, final_future, sse_queue))
+        print(f"[STREAM] Done putting item in queue => chat_id={chat_id}")
+
+        return chat_id
+
+
+    # ----------------------
+    # 2) SSE token popping
+    # ----------------------
+    async def pop_sse_token(self, request_id: str) -> Optional[str]:
+        """
+        The SSE route calls this repeatedly to get partial tokens.
+        If no token is available, we block up to 120s, else return None.
+        """
+        if request_id not in self.active_sse_queues:
+            print(
+                f"[STREAM] pop_sse_token => no SSE queue found for request_id={request_id}"
+            )
+            return None
+
+        queue = self.active_sse_queues[request_id]
+        try:
+            token = await asyncio.wait_for(queue.get(), timeout=120.0)
+            # print(f"[STREAM] pop_sse_token => got token from queue: {token}")
+            return token
+        except asyncio.TimeoutError:
+            print(
+                f"[STREAM] pop_sse_token => timed out waiting for token, request_id={request_id}"
+            )
+            return None
+
+    # ----------------------
+    # 3) SSE queue cleanup
+    # ----------------------
+    async def close_sse_queue(self, request_id: str):
+        """
+        Called by the SSE route after finishing.
+        Remove the queue from memory.
+        """
+        if request_id in self.active_sse_queues:
+            print(
+                f"[STREAM] close_sse_queue => removing SSE queue for request_id={request_id}"
+            )
+            del self.active_sse_queues[request_id]
+        else:
+            print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
+    
+    # ----------------------
+    # /history | 대화 기록 가져오기
+    # ----------------------
+    async def get_conversation_history(self, request_id: str) -> dict:
+        """
+        Returns the conversation history for the given request_id.
+        The messages are serialized into a JSON-friendly format.
+        """
+        try:
+            if request_id in self.memory_map:
+                memory = self.memory_map[request_id]
+                history_obj = memory.load_memory_variables({})
+                if "history" in history_obj and isinstance(history_obj["history"], list):
+                    # 직렬화
+                    serialized = [serialize_message(msg) for msg in history_obj["history"]]
+                    print("[HISTORY] 대화 기록 반환(직렬화) : ", serialized)
+                    return {"history": serialized}
+                else:
+                    print("[HISTORY] 대화 기록 반환(직렬화X) : ", history_obj)
+                    return {"history": []}
+            else:
+                return {"history": []}
+        except Exception as e:
+            print(f"[ERROR get_conversation_history] {e}")
+            return {"history": []}
+        
+    # ----------------------
+    # /reference | 해당 답변의 출처 가져오기
+    # ----------------------
+    async def get_reference_data(self, chunk_ids: list):
+        try:
+            result = []
+            data = self.data
+            for cid in chunk_ids:
+                if cid in data["chunk_ids"]:
+                    idx = data["chunk_ids"].index(cid)
+                    record = {
+                        "file_name": data["file_names"][idx],
+                        "title": data["titles"][idx],
+                        "text": data["texts_vis"][idx],
+                        "date": str(data["times"][idx])
+                    }
+                    result.append(record)
+            return result
+        except Exception as e:
+            print(f"[ERROR get_reference_data] {e}")
+            return []
+
+# Ray Serve를 통한 배포
+@serve.deployment(name="inference", max_ongoing_requests=100)
+class InferenceService:
+    def __init__(self, config):
+        self.config = config
+        self.actor = InferenceActor.options(
+            num_gpus=config.ray.num_gpus, 
+            num_cpus=config.ray.num_cpus
+        ).remote(config)
+
+    async def query(self, http_query: dict):
+        result = await self.actor.process_query.remote(http_query)
+        return result
+
+    async def process_query_stream(self, http_query: dict) -> str:
+        req_id = await self.actor.process_query_stream.remote(http_query)
+        return req_id
+
+    async def pop_sse_token(self, req_id: str) -> str:
+        token = await self.actor.pop_sse_token.remote(req_id)
+        return token
+
+    async def close_sse_queue(self, req_id: str) -> str:
+        await self.actor.close_sse_queue.remote(req_id)
+        return "closed"
+    
+    # /history
+    async def get_history(self, request_id: str, last_index: int = None):
+        result = await self.actor.get_conversation_history.remote(request_id)
+        if last_index is not None and isinstance(result.get("history"), list):
+            result["history"] = result["history"][last_index+1:]
+        return result
+
+    # /reference
+    async def get_reference_data(self, chunk_ids: list):
+        result = await self.actor.get_reference_data.remote(chunk_ids)
+        return result
+
+
+# Ray의 요청을 비동기적으로 관리하기 위해 도입하는 큐-매니저
+@ray.remote
+class SSEQueueManager:
+    def __init__(self):
+        self.active_queues = {}
+        self.lock = asyncio.Lock()
+
+    async def create_queue(self, request_id):
+        async with self.lock:
+            self.active_queues[request_id] = asyncio.Queue()
+            return True
+
+    async def get_queue(self, request_id):
+        return self.active_queues.get(request_id)
+
+    async def get_token(self, request_id, timeout: float):
+        queue = self.active_queues.get(request_id)
+        if queue:
+            try:
+                token = await asyncio.wait_for(queue.get(), timeout=timeout)
+                return token
+            except asyncio.TimeoutError:
+                return None
+        return None
+
+    async def put_token(self, request_id, token):
+        async with self.lock:
+            if request_id in self.active_queues:
+                await self.active_queues[request_id].put(token)
+                return True
+            return False
+
+    async def delete_queue(self, request_id):
+        async with self.lock:
+            if request_id in self.active_queues:
+                del self.active_queues[request_id]
+                return True
+            return False
+
+```
+
+
+--- utils.py
+
+```python
+
+# utils.py
+import json
+import numpy as np
+import torch
+import random
+import shutil
+from datetime import datetime, timedelta
+from transformers import (
+    AutoModel,
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
+    AutoConfig,
+)
+
+import os
+import requests
+
+# 전역 캐시 변수 - 데이터의 변화를 감지하기 위한
+_cached_data = None
+_cached_data_mtime = 0
+
+# Import vLLM utilities
+from vllm.engine.arg_utils import AsyncEngineArgs
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+
+# Define the minimum valid file size (e.g., 10MB)
+MIN_WEIGHT_SIZE = 10 * 1024 * 1024
+
+# For tracking execution time of functions
+from tracking import time_tracker
+
+# Logging
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+
+# Gemma3Config 전역 패치: vocab_size 속성이 없으면 추가합니다.
+try:
+    from transformers.models.gemma3.configuration_gemma3 import Gemma3Config
+    if not hasattr(Gemma3Config, "vocab_size"):
+        Gemma3Config.vocab_size = 32000  # 또는 embed_tokenizer를 통해 동적으로 결정한 값
+        print("Gemma3Config에 vocab_size 패치 완료.")
+except Exception as e:
+    print("Gemma3Config 패치 실패:", e)
+
+# -------------------------------------------------
+# Function: find_weight_directory - 허깅페이스 권한 문제 해결 후에 잘 사용되지 아니함
+# -------------------------------------------------
+# Recursively searches for weight files (safetensors or pytorch_model.bin) in a given base path.
+# This method Find the files searching the whole directory
+# Because, vLLM not automatically find out the model files.
+# -------------------------------------------------
+@time_tracker
+def find_weight_directory(base_path):
+    # ---- Recursively searches for weight files in a given base path ----
+    for root, dirs, files in os.walk(base_path):
+        for file in files:
+            if ".safetensors" in file or "pytorch_model.bin" in file:
+                file_path = os.path.join(root, file)
+                try:
+                    if os.path.getsize(file_path) >= MIN_WEIGHT_SIZE:
+                        return root, "safetensors" if ".safetensors" in file else "pt"
+                    else:
+                        logging.debug(
+                            f"파일 {file_path}의 크기가 너무 작음: {os.path.getsize(file_path)} bytes"
+                        )
+                except Exception as ex:
+                    logging.debug(f"파일 크기 확인 실패: {file_path} - {ex}")
+    return None, None
+
+# -------------------------------------------------
+# Function: load_model
+# -------------------------------------------------
+@time_tracker
+def load_model(config):
+    # Loads the embedding model and the main LLM model (using vLLM if specified in the config).
+    
+    # Get the HF token from the environment variable.
+    logging.info("Starting model loading...")
+    token = os.getenv("HF_TOKEN_PATH")
+    # Check if token is likely a file path.
+    if token is not None and not token.startswith("hf_"):
+        if os.path.exists(token) and os.path.isfile(token):
+            try:
+                with open(token, "r") as f:
+                    token = f.read().strip()
+            except Exception as e:
+                print("DEBUG: Exception while reading token file:", e)
+                logging.warning("Failed to read token from file: %s", e)
+                token = None
+        else:
+            logging.warning("The HF_TOKEN path does not exist: %s", token)
+            token = None
+    else:
+        print("DEBUG: HF_TOKEN appears to be a token string; using it directly:")
+
+    if token is None or token == "":
+        logging.warning("HF_TOKEN is not set. Access to gated models may fail.")
+        token = None
+
+    # -------------------------------
+    # Load the embedding model and tokenizer.
+    # -------------------------------
+    print("Loading embedding model")
+    try:
+        embed_model = AutoModel.from_pretrained(
+            config.embed_model_id,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True,
+            token=token,  # using 'token' parameter
+        )
+    except Exception as e:
+        raise e
+    try:
+        embed_tokenizer = AutoTokenizer.from_pretrained(
+            config.embed_model_id,
+            cache_dir=config.cache_dir,
+            trust_remote_code=True,
+            token=token,
+        )
+    except Exception as e:
+        raise e
+    print(":Embedding tokenizer loaded successfully.")
+    embed_model.eval()
+    embed_tokenizer.model_max_length = 4096
+
+    # -------------------------------
+    # Load the main LLM model via vLLM.
+    # -------------------------------
+    if config.use_vllm:
+        print("vLLM mode enabled. Starting to load main LLM model via vLLM.")
+        if config.model.quantization_4bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
+            print("Using 4-bit quantization.")
+        elif config.model.quantization_8bit:
+            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+            print("Using 8-bit quantization.")
+        else:
+            bnb_config = None
+            print("Using pure option of Model(No quantization)")
+
+        local_model_path = os.path.join(
+            config.cache_dir, "models--" + config.model_id.replace("/", "--")
+        )
+        local_model_path = os.path.abspath(local_model_path)
+
+        config_file = os.path.join(local_model_path, "config.json")
+        need_patch = False
+
+        if not os.path.exists(config_file):
+            os.makedirs(local_model_path, exist_ok=True)
+            try:
+                hf_config = AutoConfig.from_pretrained(
+                    config.model_id,
+                    cache_dir=config.cache_dir,
+                    trust_remote_code=True,
+                    token=token,
+                )
+            except Exception as e:
+                raise e
+            # 패치: vocab_size 속성이 없으면 embed_tokenizer의 값을 사용하여 추가
+            if not hasattr(hf_config, "vocab_size"):
+                print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다.")
+                hf_config.vocab_size = getattr(embed_tokenizer, "vocab_size", 32000)
+            config_dict = hf_config.to_dict()
+            if not config_dict.get("architectures"):
+                print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
+                config_dict["architectures"] = ["Gemma2ForCausalLM"]
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump(config_dict, f)
+        else:
+            # 이미 config_file이 존재하는 경우
+            with open(config_file, "r", encoding="utf-8") as f:
+                config_dict = json.load(f)
+
+            if "vocab_size" not in config_dict:
+                # embed_tokenizer의 vocab_size가 존재하면 사용하고, 없으면 기본값 30522로 설정
+                config_dict["vocab_size"] = getattr(embed_tokenizer, "vocab_size", 30522)
+                print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다:", config_dict["vocab_size"])
+                with open(config_file, "w", encoding="utf-8") as f:
+                    json.dump(config_dict, f)
+            if not config_dict.get("architectures"):
+                print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
+                config_dict["architectures"] = ["Gemma2ForCausalLM"]
+                with open(config_file, "w", encoding="utf-8") as f:
+                    json.dump(config_dict, f)
+
+        weight_dir, weight_format = find_weight_directory(local_model_path)
+        if weight_dir is None:
+            print("DEBUG: No model weights found. Attempting to download model snapshot.")
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    print(f"DEBUG: Snapshot download attempt {attempt+1}...")
+                    # Attempt to download the model snapshot using the Hugging Face hub function.
+                    from huggingface_hub import snapshot_download
+                    snapshot_download(config.model_id, cache_dir=config.cache_dir, token=token)
+                    break  # If download succeeds, break out of the loop.
+                except Exception as e:
+                    print(f"DEBUG: Snapshot download attempt {attempt+1} failed:", e)
+                    if attempt < max_retries - 1:
+                        print("DEBUG: Retrying snapshot download...")
+                    else:
+                        raise RuntimeError(f"Snapshot download failed after {max_retries} attempts: {e}")
+            # After download, try to find the weights again.
+            weight_dir, weight_format = find_weight_directory(local_model_path)
+            if weight_dir is None:
+                raise RuntimeError(f"Unable to find model weights even after snapshot download in {local_model_path}.")
+
+        snapshot_config = os.path.join(weight_dir, "config.json")
+        if not os.path.exists(snapshot_config):
+            shutil.copy(config_file, snapshot_config)
+        engine_args = AsyncEngineArgs(
+            model=weight_dir,
+            tokenizer=config.model_id,
+            download_dir=config.cache_dir,
+            trust_remote_code=True,
+            config_format="hf",
+            load_format=weight_format,
+        )
+        
+        vllm_conf = config.get("vllm", {})
+        
+        engine_args.enable_prefix_caching = False
+        engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
+        engine_args.enable_chunked_prefill = True
+        engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
+        # engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
+        engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
+        # engine_args.block_size = vllm_conf.get("block_size", 128)
+        engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization")
+        
+        if vllm_conf.get("disable_custom_all_reduce", False):
+            engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
+            
+        # # 새로 추가: disable_sliding_window 옵션 확인
+        # if vllm_conf.get("disable_sliding_window", False):
+        #     engine_args.sliding_window = (-1, -1)
+        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
+        
+        # engine_args.enable_memory_defrag = True # v1 새로운 기능
+        # engine_args.max_model_len = vllm_conf.get("max_model_len") # Context Length
+        
+        # # ★★ 추가: 슬라이딩 윈도우 비활성화 옵션 적용 ★★
+        # if vllm_conf.get("disable_sliding_window", False):
+        #     # cascade attention에서는 슬라이딩 윈도우가 (-1, -1)이어야 함
+        #     engine_args.sliding_window = (-1, -1)
+        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
+        
+        # print("Final EngineArgs:", engine_args)
+        
+        #         # ── 여기서 unified_attention 호출 추적을 위한 monkey-patch ──
+        # try:
+        #     if hasattr(torch.ops.vllm, "unified_attention_with_output"):
+        #         orig_unified_attention = torch.ops.vllm.unified_attention_with_output
+        #         def tracking_unified_attention(*args, **kwargs):
+        #             logging.info("Called unified_attention_with_output with args: %s, kwargs: %s", args, kwargs)
+        #             return orig_unified_attention(*args, **kwargs)
+        #         torch.ops.vllm.unified_attention_with_output = tracking_unified_attention
+        #         logging.info("Monkey-patched unified_attention_with_output for tracking.")
+        # except Exception as e:
+        #     logging.warning("Failed to monkey-patch unified_attention_with_output: %s", e)
+        
+        # # ── 끝 ──
+
+        print("EngineArgs setting be finished")
+        
+        try:
+            # --- v1 구동 해결책: 현재 스레드가 메인 스레드가 아니면 signal 함수를 임시 패치 ---
+            import threading, signal
+            if threading.current_thread() is not threading.main_thread():
+                original_signal = signal.signal
+                signal.signal = lambda s, h: None  # signal 설정 무시
+                print("비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.")
+            # --- v1 구동 해결책: ------------------------------------------------------ ---
+            engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
+            # v1 구동 해결책: 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) ----------------- ---
+            if threading.current_thread() is not threading.main_thread():
+                signal.signal = original_signal
+            # --- v1 구동 해결책: ------------------------------------------------------ ---
+            print("DEBUG: vLLM engine successfully created.") # Original
+            
+        except Exception as e:
+            print("DEBUG: Exception during engine creation:", e)
+            if "HeaderTooSmall" in str(e):
+                print("DEBUG: Falling back to PyTorch weights.")
+                fallback_dir = None
+                for root, dirs, files in os.walk(local_model_path):
+                    for file in files:
+                        if (
+                            "pytorch_model.bin" in file
+                            and os.path.getsize(os.path.join(root, file))
+                            >= MIN_WEIGHT_SIZE
+                        ):
+                            fallback_dir = root
+                            break
+                    if fallback_dir:
+                        break
+                if fallback_dir is None:
+                    logging.error(
+                        "DEBUG: No PyTorch weight file found in", local_model_path
+                    )
+                    raise e
+                engine_args.load_format = "pt"
+                engine_args.model = fallback_dir
+                print("DEBUG: New EngineArgs for fallback:", engine_args)
+                engine = AsyncLLMEngine.from_engine_args(engine_args)
+                print("DEBUG: vLLM engine created with PyTorch fallback.")
+            else:
+                logging.error("DEBUG: Engine creation failed:", e)
+                raise e
+
+        engine.is_vllm = True
+
+        print("DEBUG: Loading main LLM tokenizer with token authentication.")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                config.model_id,
+                cache_dir=config.cache_dir,
+                trust_remote_code=True,
+                token=token,
+                local_files_only=True  # Force loading from local cache to avoid hub requests
+            )
+        except Exception as e:
+            print("DEBUG: Exception loading main tokenizer:", e)
+            raise e
+        tokenizer.model_max_length = 4024
+        return engine, tokenizer, embed_model, embed_tokenizer
+
+    else:
+        print("DEBUG: vLLM is not used. Loading model via standard HF method.")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                config.model_id,
+                cache_dir=config.cache_dir,
+                trust_remote_code=True,
+                token=token,
+            )
+        except Exception as e:
+            print("DEBUG: Exception loading tokenizer:", e)
+            raise e
+        tokenizer.model_max_length = 4024
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                config.model_id,
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+                cache_dir=config.cache_dir,
+                quantization_config=bnb_config,
+                trust_remote_code=True,
+                token=token,
+            )
+        except Exception as e:
+            print("DEBUG: Exception loading model:", e)
+            raise e
+        model.eval()
+        return model, tokenizer, embed_model, embed_tokenizer
+
+# -------------------------------------------------
+# Function: load_data
+# -------------------------------------------------
+@time_tracker
+def load_data(data_path):
+    global _cached_data, _cached_data_mtime
+    try:
+        current_mtime = os.path.getmtime(data_path)
+    except Exception as e:
+        print("파일 수정 시간 확인 실패:", e)
+        return None
+
+    # 캐시가 비어있거나 파일 수정 시간이 변경된 경우 데이터 재로드
+    if _cached_data is None or current_mtime != _cached_data_mtime:
+        with open(data_path, "r", encoding="utf-8") as json_file:
+            data = json.load(json_file)
+
+        # --- 디버그 함수: 벡터 포맷 검사 ---
+        debug_vector_format(data)
+
+        # 데이터 전처리 (예: 리스트 변환 및 numpy, torch 변환)
+        file_names = []
+        chunk_ids = []  # >>> CHANGED: Added to record each chunk's ID
+        titles = []
+        times = []
+        vectors = []
+        texts = []
+        texts_short = []
+        texts_vis = []
+        missing_time = 0
+
+        for file_obj in data:
+            for chunk in file_obj["chunks"]:
+                file_names.append(file_obj["file_name"])
+                chunk_ids.append(chunk.get("chunk_id", 0))  # >>> CHANGED: Record chunk_id
+                try:
+                    arr = np.array(chunk["vector"])
+                    vectors.append(arr)
+                except Exception as e:
+                    logging.warning(f"[load_data] 벡터 변환 오류: {e} → 빈 벡터로 대체")
+                    vectors.append(np.zeros((1, 768), dtype=np.float32))  # 임의로 1x768 형식
+                
+                titles.append(chunk["title"])
+                
+                # 날짜 파싱
+                if chunk["date"]:
+                    try:
+                        times.append(datetime.strptime(chunk["date"], "%Y-%m-%d"))
+                    except ValueError:
+                        logging.warning(f"잘못된 날짜 형식: {chunk['date']} → 기본 날짜로 대체")
+                        times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+                        missing_time += 1
+                else:
+                    missing_time += 1
+                    times.append(datetime.strptime("2023-10-31", "%Y-%m-%d"))
+
+                texts.append(chunk["text"])
+                texts_short.append(chunk["text_short"])
+                texts_vis.append(chunk["text_vis"])
+
+        # 실제 텐서로 변환
+        try:
+            vectors = np.array(vectors)
+            vectors = torch.from_numpy(vectors).to(torch.float32)
+        except Exception as e:
+            logging.error(f"[load_data] 최종 벡터 텐서 변환 오류: {str(e)}")
+            # 필요 시 추가 처리
+
+        _cached_data = {
+            "file_names": file_names,
+            "chunk_ids": chunk_ids,  # >>> CHANGED: Saved chunk IDs here
+            "titles": titles,
+            "times": times,
+            "vectors": vectors,
+            "texts": texts,
+            "texts_short": texts_short,
+            "texts_vis": texts_vis,
+        }
+        _cached_data_mtime = current_mtime
+        print(f"Data loaded! Length: {len(titles)}, Missing times: {missing_time}")
+    else:
+        print("Using cached data")
+
+    return _cached_data
+
+# -------------------------------------------------
+# Function: debug_vector_format
+# -------------------------------------------------
+def debug_vector_format(data):
+    """
+    data(List[Dict]): load_data에서 JSON으로 로드된 객체.
+    각 file_obj에 대해 chunks 리스트를 순회하며 vector 형식을 디버깅 출력.
+    """
+    print("\n[DEBUG] ===== 벡터 형식 검사 시작 =====")
+    for f_i, file_obj in enumerate(data):
+        file_name = file_obj.get("file_name", f"Unknown_{f_i}")
+        chunks = file_obj.get("chunks", [])
+        for c_i, chunk in enumerate(chunks):
+            vector_data = chunk.get("vector", None)
+            if vector_data is None:
+                # print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 없음(None)")
+                continue
+            # 자료형, 길이, shape 등 확인
+            vector_type = type(vector_data)
+            # shape을 안전하게 얻기 위해 np.array 변환 시도
+            try:
+                arr = np.array(vector_data)
+                shape = arr.shape
+                # print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector_type={vector_type}, shape={shape}")
+            except Exception as e:
+                print(f"[DEBUG] file={file_name}, chunk_index={c_i} → vector 변환 실패: {str(e)}")
+    print("[DEBUG] ===== 벡터 형식 검사 종료 =====\n")
+
+# -------------------------------------------------
+# Function: random_seed
+# -------------------------------------------------
+@time_tracker
+def random_seed(seed):
+    # Set random seed for Python's built-in random module
+    random.seed(seed)
+
+    # Set random seed for NumPy
+    np.random.seed(seed)
+
+    # Set random seed for PyTorch
+    torch.manual_seed(seed)
+
+    # Ensure the same behavior on different devices (CPU vs GPU)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # If using multi-GPU.
+
+    # Enable deterministic algorithms
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+# -------------------------------------------------
+# Function: process_to_format
+# -------------------------------------------------
+@time_tracker
+def process_to_format(qry_contents, type):
+    # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
+    # 예제 응답 형식
+    ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
+    print("[SOOWAN] process_to_format 진입")
+    if type == "Retrieval":
+        print("[SOOWAN] 타입 : 리트리버")
+        tmp_format = {"rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []}
+        for i, form in enumerate(qry_contents):
+            tmp_format_ = {
+                "rsp_tit": f"{i+1}번째 검색데이터: {form['title']} (출처:{form['file_name']})",
+                "rsp_data": form["contents"],
+                "chunk_id": form.get("chunk_id"),
+            }
+            tmp_format["rsp_data"].append(tmp_format_)
+        return tmp_format
+
+    elif type == "SQL":
+        print("[SOOWAN] 타입 : SQL")
+        tmp_format = {
+            "rsp_type": "R",
+            "rsp_tit": "남성 내부 데이터",
+            "rsp_data": [{"rsp_tit": "SQL Query 결과표", "rsp_data": []}],
+        }
+        tmp_format_sql = {
+            "rsp_type": "TB",
+            "rsp_tit": qry_contents[0]["title"],
+            "rsp_data": qry_contents[0]["data"],
+        }
+        tmp_format_chart = {
+            "rsp_type": "CT",
+            "rsp_tit": qry_contents[1]["title"],
+            "rsp_data": {"chart_tp": "BAR", "chart_data": qry_contents[1]["data"]},
+        }
+        tmp_format["rsp_data"][0]["rsp_data"].append(tmp_format_sql)
+        # tmp_format['rsp_data'].append(tmp_format_chart)
+        return tmp_format, tmp_format_chart
+
+    elif type == "Answer":
+        print("[SOOWAN] 타입 : 대답")
+        tmp_format = {"rsp_type": "A", "rsp_tit": "답변", "rsp_data": []}
+        # for i, form in enumerate(qry_contents):
+            # if i == 0:
+        tmp_format_ = {"rsp_type": "TT", "rsp_data": qry_contents}
+        tmp_format["rsp_data"].append(tmp_format_)
+            # elif i == 1:
+            #     tmp_format["rsp_data"].append(form)
+            # else:
+            #     None
+
+        return tmp_format
+
+    else:
+        print("Error! Type Not supported!")
+        return None
+
+# @time_tracker
+# def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
+#     # Get multiple formats to tuple
+
+#     ans_format = {
+#         "status_code": 200,
+#         "result": "OK",
+#         "detail": "",
+#         "continue":continue_,
+#         "qry_id": qry_id,
+#         "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+#         "data_list": [],
+#     }
+
+#     # 누적된 토큰을 하나의 문자열로 결합합니다.
+#     aggregated_answer = "".join(token.get("answer", "") for token in formats)
+#     ans_format["data_list"].append({
+#         "rsp_type": "A",
+#         "rsp_tit": f"답변{update_index}",
+#         "rsp_data": [
+#             {
+#                 "rsp_type": "TT",
+#                 "rsp_data": aggregated_answer
+#             }
+#         ]
+#     })
+    
+#     # Validate JSON before returning
+#     try:
+#         json.dumps(ans_format, ensure_ascii=False)  # Test JSON validity
+#     except Exception as e:
+#         print(f"[ERROR] Invalid JSON structure: {str(e)}")
+#         ans_format["status_code"] = 500
+#         ans_format["result"] = "ERROR"
+#         ans_format["detail"] = f"JSON Error: {str(e)}"
+
+#     # for format in formats:
+#     #     ans_format["data_list"].append(format)
+
+#     # return json.dumps(ans_format, ensure_ascii=False)
+#     return ans_format
+
+@time_tracker
+def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
+    # If there are any reference tokens, return only them.
+    reference_tokens = [token for token in formats if token.get("type") == "reference"]
+    if reference_tokens:
+        # For this example, we'll use the first reference token.
+        ref = reference_tokens[0]
+        # Add the extra keys.
+        ref["qry_id"] = qry_id
+        ref["continue"] = continue_
+        ref["rsp_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        # Ensure that a "rsp_tit" key exists to satisfy downstream requirements.
+        if "rsp_tit" not in ref:
+            ref["rsp_tit"] = "Reference"
+        return ref
+
+    # Otherwise, aggregate the normal answer tokens.
+    normal_tokens = [token.get("answer", "") for token in formats if token.get("type") != "reference"]
+    aggregated_answer = "".join(normal_tokens)
+    
+    ans_format = {
+        "status_code": 200,
+        "result": "OK",
+        "detail": "",
+        "continue": continue_,
+        "qry_id": qry_id,
+        "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+        "data_list": [{
+            "rsp_type": "A",
+            "rsp_tit": f"답변{update_index}",
+            "rsp_data": [{
+                "rsp_type": "TT",
+                "rsp_data": aggregated_answer
+            }]
+        }]
+    }
+    
+    # Validate JSON structure before returning.
+    try:
+        json.dumps(ans_format, ensure_ascii=False)
+    except Exception as e:
+        print(f"[ERROR] Invalid JSON structure: {str(e)}")
+        ans_format["status_code"] = 500
+        ans_format["result"] = "ERROR"
+        ans_format["detail"] = f"JSON Error: {str(e)}"
+    
+    return ans_format
+
+
+
+# @time_tracker
+# def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
+#     # 누적된 토큰들을 하나의 문자열로 결합합니다.
+#     aggregated_answer = "".join(token.get("answer", "") for token in formats)
+    
+#     # retrieval과 동일한 구조를 위해, 답변 데이터는 내부 data_list가 딕셔너리 형태로 구성됩니다.
+#     answer = {
+#         "rsp_type": "A",                # Answer
+#         "rsp_tit": f"답변{update_index}",
+#         "rsp_data": [                    # 바로 텍스트 응답 리스트를 구성
+#             {
+#                 "rsp_tit": f"답변{update_index}",
+#                 "rsp_data": [
+#                     {
+#                         'rsp_type': 'TT',
+#                         'rsp_tit': '',
+#                         'rsp_data': aggregated_answer,
+#                     }
+#                 ]
+                
+#             }
+#         ]
+#     }
+    
+#     # 최종 응답 구조: 최상위에 data_list는 리스트이고, 내부에 딕셔너리로 답변 데이터를 포함합니다.
+#     ans_format = {
+#         "status_code": 200,
+#         "result": "OK",
+#         "detail": "Answer",
+#         "continue": continue_,
+#         "qry_id": qry_id,
+#         "rsp_time": datetime.now().isoformat(),
+#         "data_list": [
+#             {
+#                 "type": "answer",               # 응답 타입 answer
+#                 "status_code": 200,
+#                 "result": "OK",
+#                 "detail": "Answer",
+#                 "evt_time": datetime.now().isoformat(),
+#                 "data_list": answer              # retrieval의 data_list와 동일하게 딕셔너리 형태
+#             }
+#         ]
+#     }
+#     return ans_format
+
+@time_tracker
+def error_format(message, status, qry_id=""):
+    ans_format = {
+        "status_code": status,
+        "result": message,
+        "qry_id": qry_id,  # 추가: qry_id 포함
+        "detail": "",
+        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+    }
+    return json.dumps(ans_format)
+
+# @time_tracker
+# def send_data_to_server(data, url):
+#     headers = {
+#         "Content-Type": "application/json; charset=utf-8"
+#     }
+#     try:
+#         # 다른 서버로 데이터를 전송 (POST 요청)
+#         response = requests.post(url, json=data, headers=headers)
+#         if response.status_code == 200:
+#             print(f"Data sent successfully: {data}")
+#         else:
+#             print(f"Failed to send data: {response.status_code}")
+#             print(f"Failed data: {data}")
+#     except requests.exceptions.RequestException as e:
+#         print(f"Error sending data: {e}")
+@time_tracker     
+def send_data_to_server(data, url):
+    try:
+        if not data or "data_list" not in data:
+            print("[ERROR] Empty or Invalid data structure")
+            return
+        # Log reference data if present
+        for item in data["data_list"]:
+            if item.get("rsp_type") == "A" and "references" in str(item):
+                print(f"[DEBUG] Sending reference data: {json.dumps(data, ensure_ascii=False, indent=2)}")
+        response = requests.post(url, json=data, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"[ERROR] Failed to send data: {response.status_code}, {response.text}")
+        
+        return response
+
+    except Exception as e:
+        print(f"[ERROR] send_data_to_server encountered an error: {str(e)}")
+
+
+# ---------------------- 벡터화 -----------------------
+
+import yaml
+from box import Box
+# Configuration
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
+
+# 임베딩 모델 및 토크나이저 (청크 벡터화를 위해 별도 로드)
+embedding_model = AutoModel.from_pretrained(config.embed_model_id, cache_dir=config.cache_dir)
+embedding_tokenizer = AutoTokenizer.from_pretrained(config.embed_model_id, cache_dir=config.cache_dir)
+embedding_model.eval()
+
+# -------------------- 벡터화 함수 --------------------
+@time_tracker
+def vectorize_content(content):
+    try:
+        inputs = embedding_tokenizer(content, padding=True, truncation=True, return_tensors="pt")
+        with torch.no_grad():
+            outputs = embedding_model(**inputs, return_dict=False)
+        # 첫 토큰의 임베딩을 사용 (1D 벡터)
+        vector = outputs[0][:, 0, :].squeeze(0).tolist()
+        
+        # 벡터 일관성 확인
+        expected_dim = 768  # 임베딩 모델 차원에 맞게 조정
+        
+        # 리스트가 아닌 경우 변환 시도
+        if not isinstance(vector, list):
+            print(f"경고: 벡터가 리스트가 아님, 타입: {type(vector)}")
+            try:
+                vector = list(vector)
+            except Exception as e:
+                print("오류: 벡터를 리스트로 변환 실패:", e)
+                vector = [0.0] * expected_dim  # 기본 벡터 제공
+        
+        # 벡터 차원 확인 및 조정
+        if len(vector) != expected_dim:
+            print(f"경고: 벡터 차원 불일치. 예상: {expected_dim}, 실제: {len(vector)}")
+            if len(vector) < expected_dim:
+                # 부족한 차원은 0으로 패딩
+                vector.extend([0.0] * (expected_dim - len(vector)))
+            else:
+                # 초과 차원은 자르기
+                vector = vector[:expected_dim]
+        
+        # 기존 파일 형식과 일치하도록 항상 2차원 배열 형식으로 반환 ([[...] 형태])
+        if vector and not isinstance(vector[0], list):
+            return [vector]
+        return vector
+    except Exception as e:
+        print(f"vectorize_content 함수 오류: {str(e)}")
+        # 오류 시 기본 벡터 반환 (2차원 형식)
+        return [[0.0] * 768]
+
+# -------------------- 텍스트 출력 필드 정규화 함수 --------------------
+def normalize_text_vis(text_vis):
+    """
+    text_vis가 이미 올바른 리스트-딕셔너리 구조이면 그대로 반환하고,
+    그렇지 않은 경우 기본 구조로 감싸서 반환합니다.
+    """
+    if isinstance(text_vis, list) and len(text_vis) > 0 and isinstance(text_vis[0], dict):
+        # 필요한 키가 존재하는지 확인
+        if all(k in text_vis[0] for k in ("rsp_type", "rsp_tit", "rsp_data")):
+            return text_vis
+    if isinstance(text_vis, str):
+        return [{
+            "rsp_type": "TT",
+            "rsp_tit": "",
+            "rsp_data": text_vis
+        }]
+    return [{
+        "rsp_type": "TT",
+        "rsp_tit": "",
+        "rsp_data": str(text_vis)
+    }]
+
+# -------------------- 데이터셋 진단 및 수정 도구 --------------------
+# 데이터셋 진단 및 복구 함수 (utils.py 또는 별도 파일에 추가)
+def diagnose_and_fix_dataset(data_path, output_path=None):
+    """
+    데이터셋의 벡터 차원 문제를 진단하고 수정합니다.
+    """
+    try:
+        print(f"데이터셋 진단 중: {data_path}")
+        with open(data_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        print(f"데이터셋 내 파일 수: {len(data)}")
+        dimensions = {}
+        fixed_count = 0
+        problem_count = 0
+        
+        # 1단계: 가장 흔한 차원 찾기
+        for file_idx, file in enumerate(data):
+            file_name = file.get("file_name", f"Unknown-{file_idx}")
+            for chunk_idx, chunk in enumerate(file.get("chunks", [])):
+                if "vector" in chunk and chunk["vector"]:
+                    vector = chunk["vector"]
+                    try:
+                        if isinstance(vector, list):
+                            dim = len(vector)
+                            dimensions[dim] = dimensions.get(dim, 0) + 1
+                        else:
+                            print(f"벡터가 리스트가 아님: {file_name}, 청크 {chunk_idx}")
+                            problem_count += 1
+                    except Exception as e:
+                        print(f"벡터 길이 확인 실패: {file_name}, 청크 {chunk_idx} - {str(e)}")
+                        problem_count += 1
+        
+        if dimensions:
+            # 가장 흔한 차원 찾기
+            expected_dim = max(dimensions.items(), key=lambda x: x[1])[0]
+            print(f"가장 흔한 벡터 차원: {expected_dim} (총 {dimensions[expected_dim]}개 발견)")
+            print(f"발견된 모든 차원: {dimensions}")
+        else:
+            print("데이터셋에서 유효한 벡터를 찾을 수 없습니다!")
+            return False
+        
+        # 2단계: 잘못된 차원의 벡터 수정
+        for file_idx, file in enumerate(data):
+            file_name = file.get("file_name", f"Unknown-{file_idx}")
+            for chunk_idx, chunk in enumerate(file.get("chunks", [])):
+                if "vector" in chunk and chunk["vector"]:
+                    vector = chunk["vector"]
+                    try:
+                        if not isinstance(vector, list):
+                            print(f"리스트가 아닌 벡터 수정 시도: {file_name}, 청크 {chunk_idx}")
+                            try:
+                                vector = list(vector)
+                                chunk["vector"] = vector
+                                fixed_count += 1
+                            except:
+                                # 변환 실패 시 빈 벡터 생성
+                                chunk["vector"] = [0.0] * expected_dim
+                                fixed_count += 1
+                                print(f"리스트 변환 실패, 기본 벡터 사용")
+                        
+                        dim = len(vector)
+                        if dim != expected_dim:
+                            print(f"벡터 차원 수정: {file_name}, 청크 {chunk_idx} (차원: {dim})")
+                            if dim < expected_dim:
+                                # 0으로 패딩
+                                chunk["vector"] = vector + [0.0] * (expected_dim - dim)
+                            else:
+                                # 자르기
+                                chunk["vector"] = vector[:expected_dim]
+                            fixed_count += 1
+                    except Exception as e:
+                        print(f"벡터 처리 중 오류: {file_name}, 청크 {chunk_idx} - {str(e)}")
+                        problem_count += 1
+        
+        print(f"고정된 벡터 수: {fixed_count}, 문제 벡터 수: {problem_count}")
+        
+        # 수정된 데이터셋 저장
+        if output_path is None:
+            output_path = data_path
+        
+        # 덮어쓰기 전 백업 생성
+        if output_path == data_path:
+            backup_path = f"{data_path}.bak"
+            print(f"백업 생성: {backup_path}")
+            with open(backup_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        print(f"수정된 데이터셋 저장: {output_path}")
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        return True
+    
+    except Exception as e:
+        print(f"데이터셋 진단 중 오류: {str(e)}")
+        return False
+
+```
+
+
+--- RAG.py
+
+```python
+
+# RAG.py
+import torch
+import re
+import numpy as np
+import rank_bm25
+import random
+import uuid
+import logging
+from datetime import datetime, timedelta
+from sql import generate_sql
+
+# Tracking
+from tracking import time_tracker
+
+# Import the vLLM to use the AsyncLLMEngine
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+
+# In RAG.py (at the top, add an import for prompts)
+from prompt_rag import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE
+
+global beep
+beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+
+@time_tracker
+def execute_rag(QU, KE, TA, TI, **kwargs):
+    print("[SOOWAN]: execute_rag : 진입")
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    embed_model = kwargs.get("embed_model")
+    embed_tokenizer = kwargs.get("embed_tokenizer")
+    data = kwargs.get("data")
+    config = kwargs.get("config")
+
+    if TA == "yes":  # Table 이 필요하면
+        print("[SOOWAN]: execute_rag : 테이블 필요 (TA == yes). SQL 생성 시작합니다.")
+        try:
+            result = generate_sql(QU, model, tokenizer, config)
+        except Exception as e:
+            # 1) generate_sql() 자체가 도중에 예외를 던지는 경우
+            print("[ERROR] generate_sql() 도중 예외 발생:", e)
+            # 멈추지 않고, 에러 형식으로 데이터를 만들어 반환
+            docs = "테이블 조회 시도 중 예외가 발생했습니다. " \
+                "해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다."
+            docs_list = []
+            return docs, docs_list
+
+        # 2) 함수가 정상 실행됐지만 결과가 None인 경우(= SQL 쿼리 결과가 없거나 오류)
+        if result is None:
+            print("[WARNING] generate_sql()에서 None을 반환했습니다. " 
+                "SQL 수행 결과가 없거나 에러가 발생한 것일 수 있습니다.")
+            docs = "테이블 조회 결과가 비어 있습니다. " \
+                "조회할 데이터가 없거나 SQL 오류가 발생했습니다."
+            docs_list = []
+            return docs, docs_list
+
+        # 정상적인 경우(튜플 언패킹)
+        final_sql_query, title, explain, table_json, chart_json = result
+
+        # docs : LLM 입력용 (string)
+        PROMPT = (
+            f"다음은 SQL 추출에 사용된 쿼리문: {final_sql_query}\n\n"
+            f"추가 설명: {explain}\n\n"
+            f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
+        )
+        # docs_list : 사용자에게 보여줄 정보(List)
+        docs_list = [
+            {"title": title, "data": table_json},
+            {"title": "시각화 차트", "data": chart_json},
+        ]
+        print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
+        return PROMPT, docs_list
+
+    else:
+        print("[SOOWAN]: execute_rag : 테이블 필요없음")
+        # 적응형 시간 필터링으로 RAG 실행
+        filtered_data = expand_time_range_if_needed(TI, data, min_docs=50)
+        
+        # 디버깅을 위해 문서 수 로깅
+        print(f"[RETRIEVE] 검색에 사용되는 문서 수: {len(filtered_data.get('vectors', []))}")
+        
+        docs, docs_list = retrieve(KE, filtered_data, config.N, embed_model, embed_tokenizer)
+        return docs, docs_list
+
+
+@time_tracker
+async def generate_answer(query, docs, **kwargs):
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    config = kwargs.get("config")
+    
+    answer = await generate(docs, query, model, tokenizer, config)
+    return answer
+
+
+@time_tracker
+async def query_sort(params):
+    max_attempts = 3
+    attempt = 0
+    while attempt < max_attempts:
+        # params: 딕셔너리로 전달된 값들
+        query = params["user_input"]
+        model = params["model"]
+        tokenizer = params["tokenizer"]
+        embed_model = params["embed_model"]
+        embed_tokenizer = params["embed_tokenizer"]
+        data = params["data"]
+        config = params["config"]
+        
+        # 프롬프트 생성
+        PROMPT = QUERY_SORT_PROMPT.format(user_query=query)
+        print("##### query_sort is starting, attempt:", attempt+1, "#####")
+        
+        # Get Answer from LLM
+        if config.use_vllm:  # use_vllm = True case 
+            from vllm import SamplingParams
+
+            sampling_params = SamplingParams(
+                max_tokens=config.model.max_new_tokens,
+                temperature=config.model.temperature,
+                top_k=config.model.top_k,
+                top_p=config.model.top_p,
+                repetition_penalty=config.model.repetition_penalty,
+            )
+            accepted_request_id = str(uuid.uuid4())
+            answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+        else:
+            input_ids = tokenizer(
+                PROMPT, return_tensors="pt", truncation=True, max_length=4024
+            ).to("cuda")
+            token_count = input_ids["input_ids"].shape[1]
+            outputs = model.generate(
+                **input_ids,
+                max_new_tokens=config.model.max_new_tokens,
+                do_sample=config.model.do_sample,
+                temperature=config.model.temperature,
+                top_k=config.model.top_k,
+                top_p=config.model.top_p,
+                repetition_penalty=config.model.repetition_penalty,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+            answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
+
+        print("[DEBUG query_sort] Generated answer:")
+        print(answer)
+        
+        # Regular expressions for tags
+        query_pattern = r"<query.*?>(.*?)<query.*?>"
+        keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
+        table_pattern = r"<table.*?>(.*?)<table.*?>"
+        time_pattern = r"<time.*?>(.*?)<time.*?>"
+        
+        # [DEBUG-CHANGE]: Check each match before calling group(1)
+        m_query = re.search(query_pattern, answer, re.DOTALL)
+        m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
+        m_table = re.search(table_pattern, answer, re.DOTALL)
+        m_time = re.search(time_pattern, answer, re.DOTALL)
+        
+        if m_query and m_keyword and m_table and m_time:
+            QU = m_query.group(1).strip()
+            KE = m_keyword.group(1).strip()
+            TA = m_table.group(1).strip()
+            TI = m_time.group(1).strip()
+            if TI == "all":
+                TI = "1900-01-01:2099-01-01"
+            print(beep)
+            print(f"구체화 질문: {QU}, 키워드 : {KE}, 테이블 필요 유무: {TA}, 시간: {TI}")
+            print(beep)
+            return QU, KE, TA, TI
+        else:
+            print("[ERROR query_sort] 필요한 태그들이 누락되었습니다. 재시도합니다.")
+            attempt += 1
+    
+    # 3회 재시도 후에도 실패하면 에러 발생
+    raise ValueError("LLM이 올바른 태그 형식의 답변을 생성하지 못했습니다.")
+
+
+# @time_tracker
+# def sort_by_time(time_bound, data):
+#     date_format = "%Y-%m-%d"
+#     target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
+#     target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
+
+#     matching_indices = [
+#         i
+#         for i, date in enumerate(data["times"])
+#         if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
+#     ]
+
+#     (
+#         data["file_names"],
+#         data["titles"],
+#         data["times"],
+#         data["vectors"],
+#         data["texts"],
+#         data["texts_short"],
+#         data["texts_vis"],
+#     ) = (
+#         [lst[i] for i in matching_indices]
+#         for lst in (
+#             data["file_names"],
+#             data["titles"],
+#             data["times"],
+#             data["vectors"],
+#             data["texts"],
+#             data["texts_short"],
+#             data["texts_vis"],
+#         )
+#     )
+#     return data
+
+
+# @time_tracker
+# def retrieve(query, data, N, embed_model, embed_tokenizer):
+#     print("[SOOWAN] retrieve : 진입")
+#     print("[SOOWAN] retrieve : 진입 정보 :", query)
+    
+#     sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
+#     print("[SOOWAN] retrieve : sim_score :", sim_score)
+    
+#     try:
+#         bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
+#     except Exception as e:
+#         print("[SOOWAN] retrieve : BM25 score exception, using zeros", e)
+#         bm25_score = np.zeros(len(data["texts_short"]))
+#     print("[SOOWAN] retrieve : bm25_score")
+    
+#     scaled_sim_score = min_max_scaling(sim_score)
+#     scaled_bm25_score = min_max_scaling(bm25_score)
+#     score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+#     top_k = score[:, 0, 0].argsort()[-N:][::-1]
+#     documents = ""
+#     documents_list = []
+#     for i, index in enumerate(top_k):
+#         documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}\n"
+#         documents_list.append({
+#             "file_name": data["file_names"][index],
+#             "title": data["titles"][index],
+#             "contents": data["texts_vis"][index],
+#         })
+#         print("\n" + beep)
+#     print("-------------자료 검색 성공--------------")
+#     return documents, documents_list
+
+@time_tracker
+def sort_by_time(time_bound, data):
+    """
+    원본 데이터는 유지하고 필터링된 복사본을 반환하는 함수
+    """
+    # 원본 문서 수 로깅
+    original_count = len(data["times"])
+    print(f"[시간 필터 전] 문서 수: {original_count}")
+    
+    # "all" 시간 범위 특별 처리
+    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
+        print(f"[시간 필터] 전체 기간 사용 - 모든 문서 포함")
+        return data  # 원본 데이터 그대로 반환
+    
+    # 시간 범위 파싱
+    date_format = "%Y-%m-%d"
+    target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
+    target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
+    
+    # 시간 범위에 맞는 문서 인덱스 찾기
+    matching_indices = [
+        i
+        for i, date in enumerate(data["times"])
+        if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
+    ]
+    
+    filtered_count = len(matching_indices)
+    print(f"[시간 필터 후] 문서 수: {filtered_count}, 기간: {time_bound}")
+    
+    # 너무 적은 문서가 남은 경우 경고 로그
+    if filtered_count < 50 and filtered_count < original_count * 0.1:
+        print(f"[경고] 시간 필터로 인해 문서가 크게 줄었습니다: {original_count} → {filtered_count}")
+    
+    # 필터링된 데이터를 새로운 딕셔너리에 복사
+    filtered_data = {}
+    filtered_data["file_names"] = [data["file_names"][i] for i in matching_indices]
+    filtered_data["titles"] = [data["titles"][i] for i in matching_indices]
+    filtered_data["times"] = [data["times"][i] for i in matching_indices]
+    filtered_data["chunk_ids"] = [data["chunk_ids"][i] for i in matching_indices]  # 추가된 부분
+    
+    # 벡터 타입에 따른 다른 처리
+    if isinstance(data["vectors"], torch.Tensor):
+        filtered_data["vectors"] = data["vectors"][matching_indices]
+    else:
+        filtered_data["vectors"] = [data["vectors"][i] for i in matching_indices]
+    
+    filtered_data["texts"] = [data["texts"][i] for i in matching_indices]
+    filtered_data["texts_short"] = [data["texts_short"][i] for i in matching_indices]
+    filtered_data["texts_vis"] = [data["texts_vis"][i] for i in matching_indices]
+    
+    return filtered_data
+
+@time_tracker
+def retrieve(query, data, N, embed_model, embed_tokenizer):
+    print("[SOOWAN] retrieve : 진입")
+    logging.info(f"Retrieval for query: '{query}'")
+    logging.info(f"Available documents: {len(data['vectors'])}")
+    
+    try:
+        sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
+        logging.info(f"Similarity score shape: {sim_score.shape}")
+        
+        bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
+        logging.info(f"BM25 score shape: {bm25_score.shape}")
+        
+        scaled_sim_score = min_max_scaling(sim_score)
+        scaled_bm25_score = min_max_scaling(bm25_score)
+        
+        # Combined score (0.4 semantic + 0.6 lexical)
+        score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+        score_values = score[:, 0, 0]
+        top_k = score[:, 0, 0].argsort()[-N:][::-1]
+        
+        # Log top results for debugging
+        logging.info(f"Top {N} document indices: {top_k}")
+        logging.info(f"Top {N} document scores: {[score[:, 0, 0][i] for i in top_k]}")
+        logging.info(f"Top document titles: {[data['titles'][i] for i in top_k]}")
+        documents = ""
+        documents_list = []
+        for i, index in enumerate(top_k):
+            score_str = f"{score_values[index]:.4f}"
+            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}, , Score: {score_str}\n"
+            documents_list.append({
+                "file_name": data["file_names"][index],
+                "title": data["titles"][index],
+                "contents": data["texts_vis"][index],
+                "chunk_id": data["chunk_ids"][index],
+            })
+        print("-------------자료 검색 성공--------------")
+        print("-------", documents_list, "-------")
+        print("---------------------------------------")
+        return documents, documents_list
+        
+        # Continue with document assembly...
+    except Exception as e:
+        logging.error(f"Retrieval error: {str(e)}", exc_info=True)
+        return "", []
+
+@time_tracker
+def expand_time_range_if_needed(time_bound, data, min_docs=50):
+    """
+    시간 필터링 결과가 너무 적은 경우 자동으로 시간 범위를 확장하는 함수
+    """
+    # "all" 시간 범위는 그대로 사용
+    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
+        print(f"[시간 범위] 전체 기간 사용")
+        return data
+    
+    # 원래 시간 범위로 먼저 시도
+    filtered_data = sort_by_time(time_bound, data)
+    filtered_count = len(filtered_data.get("times", []))
+    
+    # 필터링된 문서 수가 충분하면 바로 반환
+    if filtered_count >= min_docs:
+        print(f"[시간 범위] 원래 범위로 충분한 문서 확보: {filtered_count}개")
+        return filtered_data
+    
+    # 시간 범위 확장 시도
+    print(f"[시간 범위 확장] 원래 범위는 {filtered_count}개 문서만 제공 (최소 필요: {min_docs}개)")
+    
+    # 원래 날짜 파싱
+    date_format = "%Y-%m-%d"
+    try:
+        start_date = datetime.strptime(time_bound.split(":")[0], date_format)
+        end_date = datetime.strptime(time_bound.split(":")[1], date_format)
+    except Exception as e:
+        print(f"[시간 범위 오류] 날짜 형식 오류: {time_bound}, 오류: {e}")
+        return data  # 오류 시 원본 데이터 반환
+    
+    # 점진적으로 더 넓은 범위 시도
+    expansions = [
+        (3, "3개월"),
+        (6, "6개월"),
+        (12, "1년"),
+        (24, "2년"),
+        (60, "5년")
+    ]
+    
+    for months, label in expansions:
+        # 양방향으로 균등하게 확장
+        new_start = start_date - timedelta(days=30*months//2)
+        new_end = end_date + timedelta(days=30*months//2)
+        
+        new_range = f"{new_start.strftime(date_format)}:{new_end.strftime(date_format)}"
+        print(f"[시간 범위 확장] {label} 확장 시도: {new_range}")
+        
+        expanded_data = sort_by_time(new_range, data)
+        expanded_count = len(expanded_data.get("times", []))
+        
+        if expanded_count >= min_docs:
+            print(f"[시간 범위 확장] {label} 확장으로 {expanded_count}개 문서 확보")
+            return expanded_data
+    
+    # 모든 확장이 실패하면 전체 데이터셋 사용
+    print(f"[시간 범위 확장] 모든 확장 시도 실패, 전체 데이터셋 사용")
+    return data
+
+@time_tracker
+def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
+    print("[SOOWAN] cal_sim_score : 진입 / query : ", query)
+    query_V = embed(query, embed_model, embed_tokenizer)
+    print("[SOOWAN] cal_sim_score : query_V 생산 완료")
+    if len(query_V.shape) == 1:
+        query_V = query_V.unsqueeze(0)
+        print("[SOOWAN] cal_sim_score : query_V.shape == 1")
+    score = []
+    for chunk in chunks:
+        if len(chunk.shape) == 1:
+            chunk = chunk.unsqueeze(0)
+        query_norm = query_V / query_V.norm(dim=1)[:, None]
+        chunk_norm = chunk / chunk.norm(dim=1)[:, None]
+        tmp = torch.mm(query_norm, chunk_norm.transpose(0, 1)) * 100
+        score.append(tmp.detach())
+    return np.array(score)
+
+
+# @time_tracker
+# def cal_bm25_score(query, indexes, embed_tokenizer):
+#     print("[SOOWAN] cal_bm25_score : 진입")
+#     try:
+#         tokenized_corpus = [
+#             embed_tokenizer(
+#                 text,
+#                 return_token_type_ids=False,
+#                 return_attention_mask=False,
+#                 return_offsets_mapping=False,
+#             )
+#             for text in indexes
+#         ]
+#         tokenized_corpus = [
+#             embed_tokenizer.convert_ids_to_tokens(corpus["input_ids"])
+#             for corpus in tokenized_corpus
+#         ]
+#         print(f"[SOOWAN] cal_bm25_score : Tokenized corpus (first 2 items): {tokenized_corpus[:2]}")
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error tokenizing corpus: {str(e)}")
+#         return np.zeros(len(indexes))
+#     if not tokenized_corpus or all(len(tokens) == 0 for tokens in tokenized_corpus):
+#         print("[SOOWAN] cal_bm25_score: Empty tokenized corpus, returning zeros.")
+#         return np.zeros(len(indexes))
+#     try:
+#         bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error initializing BM25: {str(e)}")
+#         return np.zeros(len(indexes))
+#     try:
+#         tokenized_query = embed_tokenizer(query)
+#         tokenized_query = embed_tokenizer.convert_ids_to_tokens(tokenized_query["input_ids"])
+#         print(f"[SOOWAN] cal_bm25_score : Tokenized query: {tokenized_query}")
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error tokenizing query: {str(e)}")
+#         return np.zeros(len(indexes))
+#     try:
+#         bm25_score = bm25.get_scores(tokenized_query)
+#         print(f"[SOOWAN] cal_bm25_score : BM25 score: {bm25_score}")
+#     except Exception as e:
+#         print(f"[SOOWAN ERROR BM25] Error computing BM25 scores: {str(e)}")
+#         return np.zeros(len(indexes))
+#     return np.array(bm25_score)
+@time_tracker
+def cal_bm25_score(query, indexes, embed_tokenizer):
+    logging.info(f"Starting BM25 calculation for query: {query}")
+    logging.info(f"Document count: {len(indexes)}")
+    
+    if not indexes:
+        logging.warning("Empty document list provided to BM25")
+        return np.zeros(0)
+        
+    # Process documents individually to isolate failures
+    tokenized_corpus = []
+    for i, text in enumerate(indexes):
+        try:
+            tokens = embed_tokenizer(text, return_token_type_ids=False,
+                                    return_attention_mask=False,
+                                    return_offsets_mapping=False)
+            tokens = embed_tokenizer.convert_ids_to_tokens(tokens["input_ids"])
+            if len(tokens) == 0:
+                logging.warning(f"Document {i} tokenized to empty list")
+                tokens = ["<empty>"]  # Placeholder to avoid BM25 errors
+            tokenized_corpus.append(tokens)
+        except Exception as e:
+            logging.error(f"Failed to tokenize document {i}: {str(e)}")
+            tokenized_corpus.append(["<error>"])  # Placeholder
+    
+    try:
+        bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
+        tokenized_query = embed_tokenizer.convert_ids_to_tokens(
+            embed_tokenizer(query)["input_ids"]
+        )
+        scores = bm25.get_scores(tokenized_query)
+        
+        # Check for valid scores
+        if np.isnan(scores).any() or np.isinf(scores).any():
+            logging.warning("BM25 produced NaN/Inf scores - replacing with zeros")
+            scores = np.nan_to_num(scores)
+            
+        logging.info(f"BM25 scores: min={scores.min():.4f}, max={scores.max():.4f}, mean={scores.mean():.4f}")
+        return scores
+    except Exception as e:
+        logging.error(f"BM25 scoring failed: {str(e)}")
+        return np.zeros(len(indexes))
+
+
+
+@time_tracker
+def embed(query, embed_model, embed_tokenizer):
+    print("[SOOWAN] embed: 진입")
+    inputs = embed_tokenizer(query, padding=True, truncation=True, return_tensors="pt")
+    embeddings, _ = embed_model(**inputs, return_dict=False)
+    print("[SOOWAN] embed: 완료")
+    return embeddings[0][0]
+
+
+@time_tracker
+def min_max_scaling(arr):
+    arr_min = arr.min()
+    arr_max = arr.max()
+    if arr_max == arr_min:
+        print("[SOOWAN] min_max_scaling: Zero range detected, returning zeros.")
+        return np.zeros_like(arr)
+    return (arr - arr_min) / (arr_max - arr_min)
+
+
+@time_tracker
+async def generate(docs, query, model, tokenizer, config):
+    PROMPT = GENERATE_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    print("Inference steps")
+    if config.use_vllm:
+        from vllm import SamplingParams
+        sampling_params = SamplingParams(
+            max_tokens=config.model.max_new_tokens,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        accepted_request_id = str(uuid.uuid4())
+        answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+    else:
+        input_ids = tokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
+        token_count = input_ids["input_ids"].shape[1]
+        outputs = model.generate(
+            **input_ids,
+            max_new_tokens=config.model.max_new_tokens,
+            do_sample=config.model.do_sample,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        generated_tokens = outputs[0].shape[0]
+        answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
+        print(answer)
+        print(">>> decode done, returning answer")
+    return answer
+
+
+@time_tracker
+async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id):
+    import asyncio, concurrent.futures
+    outputs = []
+    async for output in model.generate(PROMPT, request_id=accepted_request_id, sampling_params=sampling_params):
+        outputs.append(output)
+    if not outputs:
+        raise RuntimeError("No outputs were generated by the model.")
+    final_output = next((o for o in outputs if getattr(o, "finished", False)), outputs[-1])
+    answer = "".join([getattr(comp, "text", "") for comp in getattr(final_output, "outputs", [])])
+    return answer
+
+
+@time_tracker
+async def generate_answer_stream(query, docs, model, tokenizer, config):
+    prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    print("최종 LLM 추론용 prompt 생성 : ", prompt)
+    if config.use_vllm:
+        from vllm import SamplingParams
+        sampling_params = SamplingParams(
+            max_tokens=config.model.max_new_tokens,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        request_id = str(uuid.uuid4())
+        async for partial_chunk in collect_vllm_text_stream(prompt, model, sampling_params, request_id):
+            # print(f"[STREAM] generate_answer_stream yielded: {partial_chunk}")
+            yield partial_chunk
+    else:
+        import torch
+        from transformers import TextIteratorStreamer
+        input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
+        streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
+        generation_kwargs = dict(
+            **input_ids,
+            streamer=streamer,
+            max_new_tokens=config.model.max_new_tokens,
+            do_sample=config.model.do_sample,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        import threading
+        t = threading.Thread(target=model.generate, kwargs=generation_kwargs)
+        t.start()
+        for new_token in streamer:
+            yield new_token
+
+@time_tracker
+async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_params, request_id) -> str:
+    async for request_output in engine.generate(prompt, request_id=request_id, sampling_params=sampling_params):
+        if not request_output.outputs:
+            continue
+        for completion in request_output.outputs:
+            # print(f"[STREAM] collect_vllm_text_stream yielding: {completion.text}")
+            yield completion.text
+
+
+if __name__ == "__main__":
+    import asyncio
+    # engine = AsyncLLMEngine.from_engine_args(engine_args, start_engine_loop=False)
+    # if not engine.is_running:
+    #     engine.start_background_loop()
+    
+    async def main():
+        status = True
+        while status:
+            query = input("질문 : ")
+            QU, TA, TI = await query_sort({"user_input": query, "model": None, "tokenizer": None, "embed_model": None, "embed_tokenizer": None, "data": None, "config": None})
+            print("query_sort result done")
+            if TA == "yes":
+                print("\n" + beep)
+                SQL_results = generate_sql(QU)
+                answer = await generate(SQL_results, query)
+                print(answer)
+                print("\n" + beep)
+            else:
+                file_names, titles, times, vectors, texts, texts_short = sort_by_time(TI, file_names, titles, times, vectors, texts, texts_short)
+                print("\n" + beep)
+                docs = retrieve(QU, vectors, texts, texts_short, file_names, N)
+                print("\n" + beep)
+                answer = await generate(docs, query)
+                print(answer)
+                print("\n" + beep)
+    asyncio.run(main())
+
+```
+
+
+--- prompt_rag.py
+
+```python
+
+# prompts/prompt_rag.py
+from datetime import datetime
+
+# Get today's date (this is computed when the module is loaded)
+TODAY = datetime.today()
+
+# Prompt for query sorting
+QUERY_SORT_PROMPT = f"""
+<bos><start_of_turn>user
+너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. 
+query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. 
+keyword는 질문의 키워드를 뽑는거야. 
+table은 질문에 대한 답을 할때 표형식 데이터가 필요한지 여부야, 현재는 매출액 관련 질문만 대응 가능하니 이때만 yes로 답해줘.
+time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는 {TODAY.year}년 {TODAY.month}월 {TODAY.day}일). 
+시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) 
+또한, '최근'이라는 말이 들어가면 2024-06-01:{TODAY.year}-{TODAY.month}-{TODAY.day}로 설정해줘.
+
+내가 먼저 예시를 줄게
+
+질문: 최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?
+답변:
+<query/>최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?<query>
+<keyword/>일본발 베트남착 매출 기여도 화주 고객<keyword>
+<table/>yes<table>
+<time/>2024-08-01:2024-{TODAY.month}-{TODAY.day}<time>
+
+질문: 올해 3월에 중국 시장 전망에 대해 조사했던 내용을 정리해줘
+답변:
+<query/>2024년 3월 중국시장 전망에 대한 조사내용을 알려주고 정리해줘<query>
+<keyword/>2024년 3월 중국시장 전망<keyword>
+<table/>no<table>
+<time/>2024-02-01:2024-05-01<time>
+
+질문: 부산발 인도네시아착 경쟁사 서비스 및 항차수를 알려줘
+답변:
+<query/>부산 출발 인도네시아 도착 경쟁사 서비스 및 항차수<query>
+<keyword/>부산발 인도네시아착 경쟁사 서비스 항차수<keyword>
+<table/>no<table>
+<time/>all<time>
+
+질문: 남성해운의 인도 대리점 선정 과정은 어떻게 돼?
+답변:
+<query/>인도 대리점 선정과정을 보기 좋게 정리해줘<query>
+<keyword/>인도 대리점 선정과정<keyword>
+<table/>no<table>
+<time/>all<time>
+
+### 아래 구분자를 추가하여 실제 사용자 질문을 명확히 구분합니다.
+### 새로운 질문: {{user_query}}<end_of_turn>
+<start_of_turn>model
+답변:
+"""
+
+# Template for generating an answer based on internal documents
+GENERATE_PROMPT_TEMPLATE = """
+<bos><start_of_turn>user
+너는 남성해운의 도움을 주는 데이터 분석가야.
+주어진 내부 자료에 기반해서 내 질문에 대답해줘. 답변 형식은 보고서처럼 길고 자세하며 논리정연하게 사실만을 가지고 작성해줘.
+만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
+또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
+내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
+문단 구분을 확실하게 해줘.
+답변 형식은 markdown 형식으로 작성해줘.
+내부 자료: {docs}
+질문: {query}<end_of_turn>
+<start_of_turn>model
+답변:
+"""
+
+# Template for the streaming version of answer generation
+STREAM_PROMPT_TEMPLATE = """
+<bos><start_of_turn>user
+너는 남성해운의 도움을 주는 데이터 분석가야.
+주어진 내부 자료에 기반해서 내 질문에 대답해줘. 답변 형식은 보고서처럼 길고 자세하며 논리정연하게 사실만을 가지고 작성해줘.
+만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
+또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
+내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
+문단 구분을 확실하게 해줘.
+답변 형식은 markdown 형식으로 작성해줘.
+내부 자료: {docs}
+질문: {query}<end_of_turn>
+<start_of_turn>model
+답변:
+"""
+
+```
+
+
+--- data_control.py
+
+```python
+
+# data_control.py
+
+import os
+import json
+import datetime
+import torch
+import numpy as np
+from umap import UMAP
+from flask import Blueprint, request, jsonify, render_template
+from transformers import AutoModel, AutoTokenizer
+from utils import vectorize_content, normalize_text_vis  # Assumes you have defined vectorize_content in utils.py
+
+# For PPTX extraction
+from pptx import Presentation
+
+# For PDF extraction
+import PyPDF2
+
+# For visualization we use Plotly
+import plotly.express as px
+import pandas as pd
+
+# Configuration
+import yaml
+from box import Box
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
+
+DATA_PATH = config.data_path
+print("현재 사용 중인 데이터 : ", DATA_PATH)
+
+# 임베딩 모델 로드 (필요한 경우 캐싱 고려)
+embedding_model = AutoModel.from_pretrained("BM-K/KoSimCSE-roberta-multitask")
+embedding_tokenizer = AutoTokenizer.from_pretrained("BM-K/KoSimCSE-roberta-multitask")
+embedding_model.eval()
+
+data_control_bp = Blueprint("data_manager", __name__, template_folder="templates")
+
+
+# --------------------------------------------------------
+# HELPER FUNCTIONS
+# --------------------------------------------------------
+
+def extract_text_from_pptx(file_path):
+    """PPTX 파일에서 텍스트를 추출합니다."""
+    prs = Presentation(file_path)
+    texts = []
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text:
+                texts.append(shape.text)
+    return "\n".join(texts)
+
+def extract_text_from_pdf(file_path):
+    """PDF 파일에서 텍스트를 추출합니다."""
+    pdf_text = ""
+    with open(file_path, "rb") as f:
+        reader = PyPDF2.PdfReader(f)
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                pdf_text += page_text + "\n"
+    return pdf_text
+
+def chunk_text(text, chunk_size=400, chunk_overlap=50):
+    """
+    긴 텍스트를 chunk_size 단위로 분할합니다.
+    오버랩(겹침) 길이는 chunk_overlap으로 지정합니다.
+    """
+    text = text.strip()
+    chunks = []
+    
+    start = 0
+    text_length = len(text)
+    while start < text_length:
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk)
+        
+        if end >= text_length:
+            break
+        start = end - chunk_overlap
+    
+    return chunks
+
+# --------------------------------------------------------
+# ROUTES
+# --------------------------------------------------------
+
+@data_control_bp.route("/manager")
+def data_control_page():
+    return render_template("data_manager.html")
+
+
+@data_control_bp.route("/upload", methods=["POST"])
+def data_upload():
+    """
+    사용자가 업로드한 (txt/json/pptx/pdf) 파일을 받아서
+    데이터를 JSON으로 유지하고, 각 chunk를 벡터화합니다.
+    파일이 큰 경우, chunk_text 함수를 이용해 여러 청크로 나눕니다.
+    
+    print 함수를 통해 업로드/벡터화 프로세스를 상세히 기록합니다.
+    """
+    if "dataFile" not in request.files:
+        print("[Upload] 파일이 업로드되지 않았습니다.")
+        return jsonify({"message": "파일이 업로드되지 않았습니다."}), 400
+    
+    files = request.files.getlist("dataFile")
+    if not files:
+        print("[Upload] 업로드할 파일이 없습니다.")
+        return jsonify({"message": "업로드할 파일이 없습니다."}), 400
+
+    # 기존 데이터 로드
+    if os.path.exists(DATA_PATH):
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            existing_data = json.load(f)
+    else:
+        existing_data = []
+        
+    # 모든 파일에 걸쳐 현재까지의 최대 chunk_id 찾기
+    max_chunk_id = 0
+    for entry in existing_data:
+        for chunk in entry.get("chunks", []):
+            max_chunk_id = max(max_chunk_id, chunk.get("chunk_id", 0))
+    
+    print(f"[Upload] 기존 데이터의 최대 chunk_id: {max_chunk_id}")
+    
+    messages = []
+    for file in files:
+        if file.filename == "":
+            messages.append("파일 이름이 없습니다.")
+            print("[Upload] 파일 이름이 없습니다.")
+            continue
+        
+        ext = os.path.splitext(file.filename)[1].lower()
+        print(f"[Upload] '{file.filename}' 파일 업로드 시작 (확장자: {ext})")
+        
+        try:
+            # 1. 파일 내용을 텍스트로 변환
+            content = ""
+            if ext == ".txt":
+                content = file.read().decode("utf-8")
+                print(f"[Upload] TXT 파일 내용 추출 완료 (길이: {len(content)})")
+            elif ext == ".pptx":
+                temp_path = os.path.join("temp", file.filename)
+                os.makedirs("temp", exist_ok=True)
+                file.save(temp_path)
+                content = extract_text_from_pptx(temp_path)
+                os.remove(temp_path)
+                print(f"[Upload] PPTX 텍스트 추출 완료 (길이: {len(content)})")
+            elif ext == ".pdf":
+                temp_path = os.path.join("temp", file.filename)
+                os.makedirs("temp", exist_ok=True)
+                file.save(temp_path)
+                content = extract_text_from_pdf(temp_path)
+                os.remove(temp_path)
+                print(f"[Upload] PDF 텍스트 추출 완료 (길이: {len(content)})")
+            elif ext == ".json":
+                print(f"[Upload] JSON 파일, 별도 처리 진행 예정.")
+                # JSON 파일은 이후 별도 처리
+            else:
+                if ext != ".json":
+                    msg_unsupported = f"{file.filename}: 지원되지 않는 파일 형식입니다."
+                    messages.append(msg_unsupported)
+                    print("[Upload]", msg_unsupported)
+                continue
+            
+            # 2. JSON이 아닌 파일(txt/pptx/pdf)은 chunk_text -> 벡터화
+            if ext != ".json":
+                if not content.strip():
+                    msg_no_content = f"{file.filename}: 내용이 없습니다."
+                    messages.append(msg_no_content)
+                    print("[Upload]", msg_no_content)
+                    continue
+                
+                # chunk_text
+                splitted_contents = chunk_text(content, chunk_size=1000, chunk_overlap=200)
+                print(f"[Upload] 총 {len(splitted_contents)}개 청크로 분할 완료. (파일: {file.filename})")
+                
+                # 기존 entry 확인
+                existing_entry = next((entry for entry in existing_data if entry.get("file_name") == file.filename), None)
+                if not existing_entry:
+                    existing_entry = {
+                        "file_name": file.filename,
+                        "chunks": []
+                    }
+                    existing_data.append(existing_entry)
+                
+                # 각 청크를 벡터화
+                for idx_ch, ch in enumerate(splitted_contents):
+                    preview_text = ch[:100].replace("\n", " ")
+                    print(f"\n[Upload] 청크 {idx_ch+1}/{len(splitted_contents)}")
+                    print(f" - chunk_id 예정: {max_chunk_id + 1}")
+                    print(f" - 청크 내용(앞 100자): {preview_text}...")
+                    print(f" - 청크 전체 길이: {len(ch)}")
+                    
+                    max_chunk_id += 1
+                    vector = vectorize_content(ch)
+                    print(f" - 벡터화 완료 (768차원 여부는 utils 참고)")
+                    
+                    new_chunk = {
+                        "chunk_id": max_chunk_id,
+                        "title": os.path.splitext(file.filename)[0],
+                        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+                        "type": ext.replace(".", ""),  # "txt", "pptx", "pdf"
+                        "text": ch,
+                        "text_short": ch[:200],
+                        "vector": vector,
+                        "text_vis": normalize_text_vis(ch),
+                    }
+                    existing_entry["chunks"].append(new_chunk)
+                
+                success_msg = f"{file.filename}: 업로드 및 벡터화 성공 (총 {len(splitted_contents)}개 청크)."
+                messages.append(success_msg)
+                print("[Upload]", success_msg)
+            
+            else:
+                # 3. JSON 파일 처리
+                json_data = json.load(file)
+                print(f"[Upload] JSON 로드 완료.")
+                
+                if not isinstance(json_data, list):
+                    json_data = [json_data]
+                
+                for entry_obj in json_data:
+                    if "chunks" not in entry_obj:
+                        continue
+                    for idx_ck, chunk in enumerate(entry_obj["chunks"]):
+                        text = chunk.get("text", "")
+                        print(f"\n[Upload][JSON] 청크 {idx_ck+1}/{len(entry_obj['chunks'])} 처리 중.")
+                        print(f" - 기존 chunk_id: {chunk.get('chunk_id', 'None')}")
+                        print(f" - text 길이: {len(text)}")
+                        
+                        if not chunk.get("vector"):
+                            # vector가 없을 경우 새로 벡터화
+                            if text:
+                                chunk["vector"] = vectorize_content(text)
+                                print(" - 벡터화 완료(신규).")
+                            else:
+                                # 텍스트가 없다면 0벡터 할당
+                                chunk["vector"] = [0.0] * 768
+                                print(" - 텍스트 없음 -> 0벡터 할당.")
+                        else:
+                            # 벡터가 이미 존재한다면 차원 보정
+                            vector = chunk["vector"]
+                            expected_dim = 768
+                            if not isinstance(vector, list):
+                                # 잘못된 형식 -> 재벡터화
+                                chunk["vector"] = vectorize_content(text) if text else [0.0]*expected_dim
+                                print(" - 벡터 형식 이상 -> 재벡터화 처리.")
+                            elif len(vector) != expected_dim and isinstance(vector[0], (int, float)):
+                                # 길이가 맞지 않는 경우 -> 보정
+                                if len(vector) > expected_dim:
+                                    chunk["vector"] = vector[:expected_dim]
+                                    print(" - 벡터가 너무 길어 잘라냄.")
+                                else:
+                                    chunk["vector"] = vector + [0.0]*(expected_dim - len(vector))
+                                    print(" - 벡터가 짧아 0으로 패딩.")
+                            else:
+                                print(" - 기존 벡터 유지.")
+                        
+                        # text_vis 없는 경우 생성
+                        if not chunk.get("text_vis"):
+                            chunk["text_vis"] = normalize_text_vis(text)
+                            print(" - text_vis 필드 생성.")
+                
+                # JSON 파일에 담긴 entry를 전체 데이터에 추가
+                for entry_obj in json_data:
+                    # chunk_id 업데이트
+                    for chunk in entry_obj.get("chunks", []):
+                        max_chunk_id += 1
+                        chunk["chunk_id"] = max_chunk_id
+                        print(f" - JSON 파일 chunk_id 할당: {max_chunk_id}")
+                    existing_data.append(entry_obj)
+                
+                success_json_msg = f"{file.filename}: JSON 업로드 및 벡터화/보완 완료."
+                messages.append(success_json_msg)
+                print("[Upload]", success_json_msg)
+        
+        except Exception as e:
+            error_msg = f"{file.filename}: 업로드 실패: {str(e)}"
+            messages.append(error_msg)
+            print("[Upload]", error_msg)
+
+    # 모든 처리가 끝난 뒤, 업데이트된 데이터 저장
+    try:
+        with open(DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(existing_data, f, ensure_ascii=False, indent=2)
+        print(f"[Upload] 모든 데이터 저장 완료 -> {DATA_PATH}")
+    except Exception as save_err:
+        print("[Upload] 데이터 저장 중 오류:", str(save_err))
+        return jsonify({"message": f"데이터 저장 실패: {str(save_err)}"}), 500
+    
+    return jsonify({"message": "\n".join(messages)})
+
+
+@data_control_bp.route("/list", methods=["GET"])
+def data_list():
+    """
+    데이터 목록을 페이지네이션해서 보여줍니다.
+    한 페이지에 30개씩.
+    """
+    try:
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                data_entries = json.load(f)
+        else:
+            data_entries = []
+        
+        summary = []
+        for idx, entry in enumerate(data_entries):
+            if "chunks" in entry and entry["chunks"]:
+                chunk = entry["chunks"][0]
+                summary.append({
+                    "index": idx,
+                    "file_name": entry.get("file_name", ""),
+                    "title": chunk.get("title", ""),
+                    "date": chunk.get("date", "")
+                })
+            else:
+                summary.append({
+                    "index": idx,
+                    "file_name": entry.get("file_name", ""),
+                    "title": "",
+                    "date": ""
+                })
+        
+        page = request.args.get("page", 1, type=int)
+        per_page = 30
+        total = len(summary)
+        start = (page - 1) * per_page
+        end = start + per_page
+        paginated = summary[start:end]
+        
+        return jsonify({
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "data": paginated
+        })
+    except Exception as e:
+        return jsonify({"message": f"데이터 목록 불러오기 실패: {str(e)}"}), 500
+
+
+@data_control_bp.route("/detail/<int:index>", methods=["GET"])
+def data_detail(index):
+    """
+    주어진 index에 해당하는 데이터의 상세 정보를 조회합니다.
+    """
+    try:
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                data_entries = json.load(f)
+        else:
+            return jsonify({"message": "데이터 파일이 존재하지 않습니다."}), 404
+        
+        if index < 0 or index >= len(data_entries):
+            return jsonify({"message": "유효하지 않은 인덱스입니다."}), 400
+        
+        return jsonify(data_entries[index])
+    except Exception as e:
+        return jsonify({"message": f"데이터 상세 보기 실패: {str(e)}"}), 500
+
+
+@data_control_bp.route("/delete", methods=["POST"])
+def data_delete():
+    """
+    주어진 index에 해당하는 엔트리를 삭제합니다.
+    """
+    try:
+        req = request.get_json()
+        index = req.get("index")
+        if index is None:
+            return jsonify({"message": "삭제할 인덱스가 제공되지 않았습니다."}), 400
+        
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                data_entries = json.load(f)
+        else:
+            return jsonify({"message": "데이터 파일이 존재하지 않습니다."}), 404
+        
+        if not (0 <= index < len(data_entries)):
+            return jsonify({"message": "유효하지 않은 인덱스입니다."}), 400
+        
+        del data_entries[index]
+        
+        with open(DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(data_entries, f, ensure_ascii=False, indent=2)
+        
+        return jsonify({"message": "데이터 삭제가 완료되었습니다."})
+    except Exception as e:
+        return jsonify({"message": f"데이터 삭제 실패: {str(e)}"}), 500
+
+
+@data_control_bp.route("/search", methods=["GET"])
+def search_data():
+    """
+    파일명 또는 chunks[0].title 기준 간단 검색.
+    """
+    query = request.args.get("q", "").lower()
+    if os.path.exists(DATA_PATH):
+        with open(DATA_PATH, "r", encoding="utf-8") as f:
+            data_entries = json.load(f)
+    else:
+        data_entries = []
+    
+    results = []
+    for idx, entry in enumerate(data_entries):
+        file_name = entry.get("file_name", "").lower()
+        title = ""
+        if "chunks" in entry and entry["chunks"]:
+            title = entry["chunks"][0].get("title", "").lower()
+        
+        if query in file_name or query in title:
+            results.append({
+                "index": idx,
+                "file_name": entry.get("file_name", ""),
+                "title": title,
+            })
+    
+    return jsonify(results)
+
+
+@data_control_bp.route("/api/umap_data", methods=["GET"])
+def get_umap_data():
+    """
+    UMAP으로 2차원 임베딩한 뒤,
+    nodes, edges 형태로 반환하여 시각화를 지원합니다.
+    """
+    try:
+        if os.path.exists(DATA_PATH):
+            with open(DATA_PATH, "r", encoding="utf-8") as f:
+                data_entries = json.load(f)
+        else:
+            return jsonify({"error": "데이터 파일을 찾을 수 없습니다."}), 404
+        
+        vectors = []
+        metadata = []
+        for entry in data_entries:
+            for chunk in entry.get("chunks", []):
+                if "vector" in chunk and chunk["vector"]:
+                    vectors.append(chunk["vector"])
+                    metadata.append({
+                        "id": f"{entry.get('file_name', 'unknown')}_{chunk.get('chunk_id', '0')}",
+                        "file_name": entry.get("file_name", "Unknown"),
+                        "title": chunk.get("title", ""),
+                        "date": chunk.get("date", ""),
+                        "text_short": chunk.get("text_short", "")[:100] + "..."
+                    })
+        
+        if not vectors:
+            return jsonify({"error": "벡터 데이터가 없습니다."}), 404
+
+        # 너무 많은 벡터를 처리하면 성능 문제가 있을 수 있음 -> downsample
+        MAX_VECTORS = 10000
+        if len(vectors) > MAX_VECTORS:
+            indices = np.random.choice(len(vectors), MAX_VECTORS, replace=False)
+            vectors = [vectors[i] for i in indices]
+            metadata = [metadata[i] for i in indices]
+
+        vectors_array = np.array(vectors)
+        vectors_array = np.squeeze(vectors_array)
+        
+        # UMAP
+        n_neighbors = min(15, len(vectors) - 1)
+        umap_model = UMAP(
+            n_components=2,
+            n_neighbors=n_neighbors,
+            min_dist=0.1,
+            metric='cosine',
+            random_state=42
+        )
+        embedding = umap_model.fit_transform(vectors_array)
+        
+        nodes = []
+        for i, (x, y) in enumerate(embedding):
+            nodes.append({
+                "id": metadata[i]["id"],
+                "x": float(x),
+                "y": float(y),
+                "file_name": metadata[i]["file_name"],
+                "title": metadata[i]["title"],
+                "date": metadata[i]["date"],
+                "text_short": metadata[i]["text_short"]
+            })
+        
+        # (Optional) edges 계산 -> 큰 데이터셋에서는 비추천(매우 느림)
+        edges = []
+        if len(vectors) > 1:
+            from sklearn.metrics.pairwise import cosine_similarity
+            similarity = cosine_similarity(vectors_array)
+            threshold = 0.7
+            for i in range(len(vectors)):
+                for j in range(i+1, len(vectors)):
+                    if similarity[i, j] > threshold:
+                        edges.append({
+                            "source": metadata[i]["id"],
+                            "target": metadata[j]["id"],
+                            "value": float(similarity[i, j])
+                        })
+        
+        return jsonify({
+            "nodes": nodes,
+            "edges": edges
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"UMAP 시각화 처리 중 오류 발생: {str(e)}"}), 500
+
+```
+
+
+--- templates/chatroom.html
+
+```html
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FLUX_NS Chat</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/static/chat_styles.css">
+</head>
+<body>
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <h2>FLUX_NS</h2>
+      </div>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+    <button class="new-chat-btn" onclick="createNewChatFromSidebar()">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </svg>
+      New Chat
+    </button>
+    <ul id="chatRoomList" class="chat-room-list"></ul>
+  </div>
+
+  <!-- Main Container -->
+  <div class="main-container">
+    <!-- Chat Header -->
+    <div class="chat-header">
+      <button id="sidebarOpener" class="sidebar-opener" onclick="toggleSidebar()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+      <h2 id="chatRoomId">Chat Room: -</h2>
+      <div class="header-actions">
+        <button id="toggleRefBtn" class="toggle-ref-btn" onclick="toggleReferences()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ref-icon">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+          <span>Show References</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Reference Container -->
+    <div id="referenceContainer" class="reference-container"></div>
+
+    <!-- Chat Box -->
+    <div class="chat-box" id="chatBox">
+      <!-- Welcome content will be inserted here by JS -->
+    </div>
+
+    <!-- Input Container -->
+    <div class="input-container" id="inputContainer">
+      <div class="input-box">
+        <textarea 
+          id="userMessage" 
+          class="message-input" 
+          placeholder="메시지를 입력하세요..."
+          rows="1"
+          onkeydown="handleKeyDown(event)"
+        ></textarea>
+        <button id="sendButton" class="send-btn" onclick="sendMessage()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /************************************************************************
+     * Global Variables and Data Structures
+     ************************************************************************/
+    let currentRequestId = null; // 현재 활성 채팅방의 requestId
+    let chatRooms = []; // [{ requestId, messages: [{role, content, references?}] }]
+    let referenceList = []; // 현재 쿼리로부터 수집된 참조 데이터
+    let isProcessing = false; // 동시 요청 방지 플래그
+    let isMobileView = window.innerWidth <= 768;
+
+    // welcome 화면 HTML 템플릿 (id 대신 클래스만 사용)
+    const welcomeContentHTML = `
+      <div class="welcome-screen">
+        <div class="welcome-header">
+          <img src="/static/NS_LOGO_ONLY.svg?height=80&width=80" alt="FLUX_NS Logo" class="welcome-logo" />
+          <h1>Welcome to FLUX_NS</h1>
+          <p class="welcome-subtitle">Ask me anything about NS information</p>
+        </div>
+        <div class="welcome-content">
+          <div class="example-prompts">
+            <h2>Examples</h2>
+            <div class="example-cards">
+              <button class="example-card" onclick="fillExamplePrompt('디지털 기획팀의 우선과제가 어떻게 돼?')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span>디지털 기획팀의 우선과제가 어떻게 돼?</span>
+              </button>
+              <button class="example-card" onclick="fillExamplePrompt('UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span>UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.</span>
+              </button>
+              <button class="example-card" onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span>IOT 컨테이너 사업 근황에 대해서 알려줘</span>
+              </button>
+              <button class="example-card" onclick="fillExamplePrompt('최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span>최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.</span>
+              </button>
+            </div>
+          </div>
+          
+          <div class="features-container">
+            <div class="capabilities">
+              <h2>Capabilities</h2>
+              <ul class="capability-list">
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                  <span>최신 정보와 데이터 기반 응답</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                  <span>남성해운의 주간회의, 계약서, 인사규범 등에 대한 답변</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                  <span>상세한 답변 및 해설</span>
+                </li>
+              </ul>
+            </div>
+            <div class="limitations">
+              <h2>Limitations</h2>
+              <ul class="limitation-list">
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                  <span>현재 모든 정보를 가지고 있지 아니함</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                  <span>가끔 정확하지 않은 정보를 제공할 수 있음</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                  <span>민감한 요청에 대한 응답이 제한될 수 있음</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        
+        <div class="welcome-input-container">
+          <div class="input-prompt">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+            <span>질문을 입력하거나 위의 예시를 선택하세요</span>
+          </div>
+          <div class="welcome-input-box">
+            <textarea 
+              id="welcomeMessage" 
+              class="welcome-message-input" 
+              placeholder="메시지를 입력하세요..."
+              rows="1"
+              onkeydown="handleWelcomeKeyDown(event)"
+              oninput="autoResizeTextarea(this)"
+            ></textarea>
+            <button id="welcomeSendButton" class="welcome-send-btn" onclick="sendWelcomeMessage()">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    /************************************************************************
+     * Markdown Parser
+     ************************************************************************/
+    function parseMarkdown(text) {
+      if (!text) return '';
+      text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(match, language, code) {
+        return `<pre><code class="language-${language}">${escapeHtml(code.trim())}</code></pre>`;
+      });
+      text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+      text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+      text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
+      text = text.replace(/^### (.*$)/gm, '<h3>$1</h3>');
+      text = text.replace(/^## (.*$)/gm, '<h2>$1</h2>');
+      text = text.replace(/^# (.*$)/gm, '<h1>$1</h1>');
+      text = text.replace(/^\s*\* (.*$)/gm, '<li>$1</li>');
+      text = text.replace(/^\s*\d+\. (.*$)/gm, '<li>$1</li>');
+      text = text.replace(/<li>(.*)<\/li>/g, function(match) {
+        return '<ul>' + match + '</ul>';
+      });
+      text = text.replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>');
+      text = text.replace(/\n\s*\n/g, '</p><p>');
+      text = text.replace(/\n/g, '<br>');
+      if (!text.startsWith('<')) {
+        text = '<p>' + text + '</p>';
+      }
+      text = text.replace(/<\/p><p><ul>/g, '<ul>');
+      text = text.replace(/<\/ul><\/p>/g, '</ul>');
+      return text;
+    }
+    function escapeHtml(unsafe) {
+      return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    /************************************************************************
+     * Welcome Screen Rendering
+     ************************************************************************/
+    function renderWelcomeScreen() {
+      const chatBox = document.getElementById('chatBox');
+      chatBox.innerHTML = welcomeContentHTML;
+      
+      // Hide the regular input container when welcome screen is shown
+      document.getElementById('inputContainer').classList.add('hidden');
+      
+      // Auto-resize the welcome textarea
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      if (welcomeTextarea) {
+        welcomeTextarea.addEventListener('input', function() {
+          autoResizeTextarea(this);
+        });
+      }
+    }
+
+    /************************************************************************
+     * Function Definitions
+     ************************************************************************/
+    function createNewChatFromSidebar() {
+      createNewChatRoom();
+      if (isMobileView) {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebar').classList.add('collapsed');
+        updateSidebarOpenerVisibility();
+      }
+    }
+    
+    function fillExamplePrompt(text) {
+      // If welcome screen is visible, fill the welcome textarea
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      if (welcomeTextarea) {
+        welcomeTextarea.value = text;
+        autoResizeTextarea(welcomeTextarea);
+        welcomeTextarea.focus();
+      } else {
+        // Otherwise fill the regular textarea
+        const messageInput = document.getElementById('userMessage');
+        messageInput.value = text;
+        autoResizeTextarea(messageInput);
+        messageInput.focus();
+      }
+    }
+    
+    function autoResizeTextarea(textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+    }
+    
+    function handleWelcomeKeyDown(event) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendWelcomeMessage();
+      }
+    }
+    
+    function sendWelcomeMessage() {
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      if (welcomeTextarea && welcomeTextarea.value.trim()) {
+        const message = welcomeTextarea.value.trim();
+        // Copy the message to the regular input
+        document.getElementById('userMessage').value = message;
+        // Remove welcome screen
+        document.getElementById('inputContainer').classList.remove('hidden');
+        // Send the message
+        sendMessage();
+      }
+    }
+
+    /************************************************************************
+     * Page Load and Initialization
+     ************************************************************************/
+    window.addEventListener('load', () => {
+      createNewChatRoom();
+      setupTextareaAutoResize();
+      setupMobileMenu();
+      
+      // Check for mobile view
+      checkMobileView();
+      window.addEventListener('resize', checkMobileView);
+      
+      // Initialize sidebar state
+      if (isMobileView) {
+        document.getElementById('sidebar').classList.add('collapsed');
+        updateSidebarOpenerVisibility();
+      }
+    });
+    
+    function checkMobileView() {
+      isMobileView = window.innerWidth <= 768;
+      if (isMobileView) {
+        document.getElementById('sidebar').classList.add('collapsed');
+      } else {
+        document.getElementById('sidebar').classList.remove('collapsed');
+      }
+      updateSidebarOpenerVisibility();
+    }
+
+    function setupTextareaAutoResize() {
+      const textarea = document.getElementById('userMessage');
+      textarea.addEventListener('input', function() {
+        autoResizeTextarea(this);
+      });
+    }
+
+    function setupMobileMenu() {
+      document.addEventListener('click', (e) => {
+        const sidebar = document.getElementById('sidebar');
+        const sidebarOpener = document.getElementById('sidebarOpener');
+        
+        if (isMobileView && 
+            sidebar.classList.contains('open') &&
+            !sidebar.contains(e.target) &&
+            !sidebarOpener.contains(e.target)) {
+          sidebar.classList.remove('open');
+          sidebar.classList.add('collapsed');
+          updateSidebarOpenerVisibility();
+        }
+      });
+    }
+
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      
+      if (isMobileView) {
+        sidebar.classList.toggle('open');
+        sidebar.classList.toggle('collapsed');
+      } else {
+        sidebar.classList.toggle('collapsed');
+      }
+      
+      updateSidebarOpenerVisibility();
+    }
+    
+    function updateSidebarOpenerVisibility() {
+      const sidebar = document.getElementById('sidebar');
+      const opener = document.getElementById('sidebarOpener');
+      
+      if (sidebar.classList.contains('collapsed')) {
+        opener.style.display = 'flex';
+      } else {
+        opener.style.display = 'none';
+      }
+    }
+
+    /************************************************************************
+     * History Loading and Chat Room Rendering
+     ************************************************************************/
+    async function loadHistory(requestId) {
+      try {
+        const response = await fetch(`/history?request_id=${requestId}`);
+        if (response.ok) {
+          const historyData = await response.json();
+          const roomIndex = chatRooms.findIndex(r => r.requestId === requestId);
+          if (roomIndex !== -1) {
+            chatRooms[roomIndex].messages = historyData.history;
+          } else {
+            chatRooms.push({ requestId: requestId, messages: historyData.history });
+          }
+        } else {
+          console.error("History load error:", response.status);
+        }
+      } catch (error) {
+        console.error("Error loading history:", error);
+      }
+    }
+
+    // renderChatBox: 만약 해당 채팅방에 메시지가 없으면 무조건 환영 화면을 보여줍니다.
+    function renderChatBox(requestId) {
+      const chatBox = document.getElementById("chatBox");
+      chatBox.innerHTML = "";
+      const room = chatRooms.find(r => r.requestId === requestId);
+      
+      if (room && room.messages && room.messages.length > 0) {
+        // Show regular input container
+        document.getElementById('inputContainer').classList.remove('hidden');
+        
+        room.messages.forEach((msg, index) => {
+          let sender = msg.role === "human" ? "사용자" : "AI";
+          appendMessageToChatBox(sender, msg.content, index);
+        });
+      } else {
+        renderWelcomeScreen();
+      }
+      
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // setActiveChatRoom: 새로운 채팅방이면 바로 환영 화면, 기존 채팅방이면 history를 로드한 후 렌더링
+    async function setActiveChatRoom(requestId) {
+      currentRequestId = requestId;
+      document.getElementById("chatRoomId").innerText = `Chat Room: ${requestId}`;
+      let room = chatRooms.find(r => r.requestId === requestId);
+      if (!room) {
+        room = { requestId: requestId, messages: [] };
+        chatRooms.push(room);
+        renderWelcomeScreen();
+      } else {
+        await loadHistory(requestId);
+        renderChatBox(requestId);
+      }
+      renderChatRoomList();
+      clearReferenceData();
+      
+      if (isMobileView) {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebar').classList.add('collapsed');
+        updateSidebarOpenerVisibility();
+      }
+    }
+    
+    function handleKeyDown(event) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    }
+
+    /************************************************************************
+     * Chat Room Management
+     ************************************************************************/
+    function createNewChatRoom() {
+      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
+      // 새로운 채팅방은 messages 배열이 비어 있으므로 renderWelcomeScreen()에서 환영 화면이 나타납니다.
+      chatRooms.push({ requestId: newRequestId, messages: [] });
+      setActiveChatRoom(newRequestId);
+      renderChatRoomList();
+    }
+
+    function renderChatRoomList() {
+      const ul = document.getElementById("chatRoomList");
+      ul.innerHTML = "";
+      chatRooms.forEach((room) => {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        let chatName = "New Chat";
+        if (room.messages && room.messages.length > 0) {
+          const firstUserMsg = room.messages.find(msg => msg.role === "human");
+          if (firstUserMsg) {
+            chatName = firstUserMsg.content.substring(0, 20) + (firstUserMsg.content.length > 20 ? "..." : "");
+          }
+        }
+        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg> ${chatName}`;
+        if (room.requestId === currentRequestId) {
+          btn.classList.add("active");
+        }
+        btn.onclick = () => setActiveChatRoom(room.requestId);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+    }
+
+    /************************************************************************
+     * Chat Message Display Helpers
+     ************************************************************************/
+    function appendMessageToChatBox(sender, message, msgIndex = null) {
+      const chatBox = document.getElementById("chatBox");
+      // 만약 채팅창 내에 환영 화면(.welcome-screen)이 있다면 제거
+      const welcomeElem = chatBox.querySelector('.welcome-screen');
+      if (welcomeElem) {
+        chatBox.removeChild(welcomeElem);
+        // Show the regular input container when welcome screen is removed
+        document.getElementById('inputContainer').classList.remove('hidden');
+      }
+      
+      const msgDiv = document.createElement("div");
+      msgDiv.classList.add("message-line");
+      let messageClass = "";
+      let senderIcon = "";
+      
+      if (sender === "사용자") {
+        messageClass = "message-user";
+        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+          <circle cx="12" cy="7" r="4"></circle>
+        </svg>`;
+      } else if (sender === "AI") {
+        messageClass = "message-ai";
+        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+          <line x1="3" y1="9" x2="21" y2="9"></line>
+          <line x1="9" y1="21" x2="9" y2="9"></line>
+        </svg>`;
+        if (msgIndex !== null) {
+          msgDiv.style.cursor = "pointer";
+          msgDiv.title = "이 답변의 참조 보기";
+          msgDiv.onclick = () => {
+            document.querySelectorAll(".message-ai.selected").forEach(el => {
+              el.classList.remove("selected");
+            });
+            msgDiv.classList.add("selected");
+            loadReferenceForMessage(msgIndex);
+          };
+        }
+      } else {
+        messageClass = "message-system";
+        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" y1="8" x2="12" y2="12"></line>
+          <line x1="12" y1="16" x2="12.01" y2="16"></line>
+        </svg>`;
+      }
+      
+      const messageContent = sender === "AI" ? parseMarkdown(message) : escapeHtml(message);
+      msgDiv.classList.add(messageClass);
+      msgDiv.innerHTML = `
+        <div class="message-header">
+          ${senderIcon}
+          ${sender}
+        </div>
+        <div class="message-content">${messageContent}</div>
+      `;
+      chatBox.appendChild(msgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    /************************************************************************
+     * Streaming (SSE) Message Sending and Receiving
+     ************************************************************************/
+    async function sendMessage() {
+      const messageInput = document.getElementById("userMessage");
+      const message = messageInput.value.trim();
+      if (!message || isProcessing) return;
+      
+      isProcessing = true;
+      document.getElementById("sendButton").disabled = true;
+      
+      // 사용자가 메시지를 보내면 환영 화면은 더 이상 필요 없으므로 별도 처리 없이 메시지 추가 시 제거됨
+      
+      appendMessageToChatBox("사용자", message);
+      storeMessageInRoom(currentRequestId, "사용자", message);
+      messageInput.value = "";
+      messageInput.style.height = 'auto';
+      clearReferenceData();
+      
+      const originalRequestId = currentRequestId;
+      const payload = {
+        qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
+        user_id: "user123",
+        page_id: originalRequestId,
+        auth_class: "admin",
+        qry_contents: message,
+        qry_time: new Date().toISOString()
+      };
+      console.log("Sending payload:", payload);
+      
+      try {
+        const response = await fetch('/query_stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          throw new Error("Response error: " + response.status);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let sseBuffer = "";
+        let partialAnswer = "";
+        startAIStreamingMessage();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          sseBuffer += chunk;
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop();
+          for (let line of lines) {
+            line = line.trim();
+            if (!line) continue;
+            if (line.startsWith("data:")) {
+              const jsonStr = line.slice(5).trim();
+              if (jsonStr === "[[STREAM_DONE]]") {
+                finalizeAIMessage(partialAnswer, originalRequestId);
+                isProcessing = false;
+                document.getElementById("sendButton").disabled = false;
+                return;
+              }
+              try {
+                const sseData = JSON.parse(jsonStr);
+                if (sseData.type === "answer") {
+                  partialAnswer += sseData.answer;
+                  updateAIStreamingMessage(partialAnswer);
+                } else if (sseData.type === "reference") {
+                  addReferenceData(sseData);
+                } else {
+                  console.log("Other SSE data:", sseData);
+                }
+              } catch (err) {
+                partialAnswer += jsonStr;
+                updateAIStreamingMessage(partialAnswer);
+              }
+            }
+          }
+        }
+        finalizeAIMessage(partialAnswer, originalRequestId);
+        isProcessing = false;
+        document.getElementById("sendButton").disabled = false;
+      } catch (err) {
+        appendMessageToChatBox("시스템", "Error occurred: " + err.message);
+        storeMessageInRoom(currentRequestId, "시스템", "Error occurred: " + err.message);
+        isProcessing = false;
+        document.getElementById("sendButton").disabled = false;
+      }
+    }
+    
+    function storeMessageInRoom(requestId, sender, text) {
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (room) {
+        room.messages.push({ role: sender === "사용자" ? "human" : "ai", content: text });
+      }
+    }
+
+    /************************************************************************
+     * AI Streaming Display (Temporary Message)
+     ************************************************************************/
+    let tempAiMsgDiv = null;
+    function startAIStreamingMessage() {
+      const chatBox = document.getElementById("chatBox");
+      tempAiMsgDiv = document.createElement("div");
+      tempAiMsgDiv.classList.add("message-line", "message-ai");
+      tempAiMsgDiv.innerHTML = `
+        <div class="message-header">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="3" y1="9" x2="21" y2="9"></line>
+            <line x1="9" y1="21" x2="9" y2="9"></line>
+          </svg>
+          AI
+        </div>
+        <div class="message-content" id="aiTempText"></div>
+      `;
+      chatBox.appendChild(tempAiMsgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+    function updateAIStreamingMessage(text) {
+      if (!tempAiMsgDiv) return;
+      const contentDiv = tempAiMsgDiv.querySelector("#aiTempText");
+      if (contentDiv) {
+        contentDiv.innerHTML = parseMarkdown(text);
+      }
+      const chatBox = document.getElementById("chatBox");
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+    function finalizeAIMessage(finalText, queryRequestId) {
+      storeMessageInRoom(queryRequestId, "AI", finalText);
+      if (currentRequestId === queryRequestId) {
+        renderChatRoomList();
+        renderChatBox(queryRequestId);
+      }
+      if (referenceList.length > 0) {
+        document.getElementById("toggleRefBtn").style.display = "flex";
+      }
+    }
+    
+    /************************************************************************
+     * Reference Data Related Functions
+     ************************************************************************/
+    function addReferenceData(refData) {
+      referenceList.push(refData);
+      console.log("Reference data received:", refData);
+    }
+    function clearReferenceData() {
+      referenceList = [];
+      document.getElementById("toggleRefBtn").style.display = "none";
+      document.getElementById("referenceContainer").style.display = "none";
+      document.getElementById("referenceContainer").innerHTML = "";
+    }
+    function toggleReferences() {
+      const container = document.getElementById("referenceContainer");
+      const toggleBtn = document.getElementById("toggleRefBtn");
+      
+      if (container.style.display === "none" || container.style.display === "") {
+        container.style.display = "block";
+        if (!container.innerHTML.trim()) {
+          renderReferenceData();
+        }
+        toggleBtn.querySelector('span').textContent = "Hide References";
+      } else {
+        container.style.display = "none";
+        toggleBtn.querySelector('span').textContent = "Show References";
+      }
+    }
+    function renderReferenceData() {
+      const container = document.getElementById("referenceContainer");
+      container.innerHTML = "";
+      
+      if (referenceList.length === 0) {
+        container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
+        return;
+      }
+      
+      referenceList.forEach((refObj, idx) => {
+        const div = document.createElement("div");
+        div.className = "reference-item";
+        div.innerHTML = `
+          <div class="reference-header">
+            <h4>Reference #${idx + 1}</h4>
+          </div>
+          <pre>${JSON.stringify(refObj, null, 2)}</pre>
+        `;
+        container.appendChild(div);
+      });
+    }
+    function loadReferenceForMessage(msgIndex) {
+      const url = `/reference?request_id=${currentRequestId}&msg_index=${msgIndex}`;
+      fetch(url)
+        .then(response => response.json())
+        .then(data => {
+          if (data.error) {
+            alert(data.error);
+            return;
+          }
+          displayReferenceData(data.references);
+        })
+        .catch(err => {
+          console.error("참조 데이터 로딩 오류:", err);
+          alert("참조 데이터를 불러오는 중 오류 발생");
+        });
+    }
+    function displayReferenceData(refs) {
+      const container = document.getElementById("referenceContainer");
+      container.innerHTML = "";
+      
+      if (refs.length === 0) {
+        container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
+      } else {
+        refs.forEach((ref, idx) => {
+          const div = document.createElement("div");
+          div.className = "reference-item";
+          div.innerHTML = `
+            <div class="reference-header">
+              <h4>Reference #${idx + 1}</h4>
+            </div>
+            <pre>${JSON.stringify(ref, null, 2)}</pre>
+          `;
+          container.appendChild(div);
+        });
+      }
+      
+      container.style.display = "block";
+      document.getElementById("toggleRefBtn").style.display = "flex";
+      document.getElementById("toggleRefBtn").querySelector('span').textContent = "Hide References";
+    }
+  </script>
+</body>
+</html>
+
+```
+
+
+-----------------
+
+# Requirements
+
+
+Base-Knowledge:
+ - 위 파일들은 LLM 모델을 활용한 사내 RAG 서비스의 소스 코드입니다.
+ - 파일 트리와 각 파일의 내용이 코드 블록 내에 포함되어, 프로젝트의 현재 구조와 상태를 한눈에 파악할 수 있습니다.
+ - vLLM과 ray를 활용하여 사용성 및 추론 성능을 개선하였습니다.
+ - Langchain을 활용하여 reqeust_id별로 대화를 저장하고 활용할 수 있습니다.
+ - 에러 발생 시 로깅을 통해 문제를 추적할 수 있도록 설계되었습니다.
+
+Answer-Rule:
+ 1. 추후 소스 코드 개선, 구조 변경, 에러 로그 추가 등 다양한 요구사항을 반영할 수 있는 확장성을 고려합니다.
+ 2. 전체 코드는 한국어로 주석 및 설명이 포함되어, 이해와 유지보수가 용이하도록 작성됩니다.
+
+My-Requirements:
+ 1. User requirements.
+ 2. My requirements.
