@@ -2,14 +2,15 @@
 # Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
 ### Model
 model_id : 'google/gemma-2-27b-it'
-# response_url : "http://202.20.84.16:8083/responseToUI"
-response_url : "https://eo5smhcazmp1bqe.m.pipedream.net"
+response_url : "http://202.20.84.16:8083/responseToUI"
+# response_url : "https://eo5smhcazmp1bqe.m.pipedream.net"
+
 
 ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)
   num_gpus: 1                     # 각 Actor(Node)가 점유하고 있는 GPU 갯수
   num_cpus: 24                    # 각 Actor(Node)가 점유하고 있는 CPU 갯수 (1 actor 시에 gpu 48개, 2 actor 시에 gpu 24개 할당)
-  max_batch_size: 10              # max_concurrency(actor 최대 동시 처리량, default 1000)로 대체해도 됨
+  max_batch_size: 5               # max_concurrency(actor 최대 동시 처리량, default 1000)로 대체해도 됨
   batch_wait_timeout: 0.05        
   max_ongoing_requests: 100        # ray.serve에서 deployment setting으로 동시 요청 처리 갯수를 의미함(Batch랑 다름)
 
@@ -20,14 +21,15 @@ vllm:
   enable_chunked_prefill: True
   tensor_parallel_size: 1         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
   max_num_seqs: 192               # v1에 따른 상향
-  max_num_batched_tokens: 8192   # v1에 따른 상향
+  max_num_batched_tokens: 16384   # v1에 따른 상향
   block_size: 128                 # 미적용
-  gpu_memory_utilization: 0.95    # v0: 0.95 / v1: 0.99로 상향
+  gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
+  # v1에 따른 새로운 인자값
   disable_custom_all_reduce: true
-  enable_memory_defrag: True      # v1 신규 기능 활성화
-  # 추가할 설정
-  disable_sliding_window: True  # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
-  max_model_len: 8024
+  enable_memory_defrag: True      
+  disable_sliding_window: True    # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
+  # 모델 변경에 따른 추가된 설정
+  max_model_len: 30000            # For the new model
 
 model:
   quantization_4bit : True # Quantize 4-bit
