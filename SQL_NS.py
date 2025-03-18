@@ -1,3 +1,5 @@
+# SQL_NS.py
+
 import os
 import subprocess
 from tracking import time_tracker
@@ -66,7 +68,7 @@ def check_sqlplus():
     try:
         # sqlplus 버전 확인
         result = subprocess.run(['sqlplus', '-version'], capture_output=True, text=True, check=True)
-        print("✅SQL*Plus is working!")
+        print(" SQL*Plus is working!")
         print("Version info:\n", result.stdout)
     except subprocess.CalledProcessError as e:
         print(f"Error: {e.stderr}")
@@ -87,12 +89,12 @@ def check_db_connection():
         
         # SQL*Plus 결과 분석
         if "1" in result.stdout:
-            print("✅ Successfully connected to the Namsung database!")
+            print("  Successfully connected to the Namsung database!")
         else:
-            print("❌ Connection to the database failed!")
+            print(" Connection to the database failed!")
 
     except subprocess.CalledProcessError as e:
-        print(f"🔴 Error: {e.stderr}")
+        print(f" Error: {e.stderr}")
 
 # 스키마 별 테이블 목록 출력
 @time_tracker
@@ -130,18 +132,18 @@ def get_all_schema_tables():
 
         # 결과 출력
         if schema_tables:
-            print("✅ 스키마별 테이블 목록:")
+            print("  스키마별 테이블 목록:")
             for schema, tables in schema_tables.items():
                 print(f"\n🔹 스키마: {schema}")
                 for table in tables:
                     print(f"  - {table}")
         else:
-            print("❌ 테이블이 존재하지 않습니다.")
+            print(" 테이블이 존재하지 않습니다.")
 
         return schema_tables
 
     except subprocess.CalledProcessError as e:
-        print(f"🔴 Error: {e.stderr}")
+        print(f" Error: {e.stderr}")
         return {}
 
 # OPRAIMDG에서 메타데이터 만들기.
@@ -165,13 +167,13 @@ def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
     try:
         # SQL*Plus 실행 및 결과 캡처
         result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
-        print(f"✅ RESULT: \n{str(result)[:1000]}")
+        print(f"  RESULT: \n{str(result)[:1000]}")
         output = result.stdout
-        print(f"✅ OUTPUT: \n{str(output)[:1000]}")
+        print(f"  OUTPUT: \n{str(output)[:1000]}")
         
         # 결과 파싱
         lines = output.strip().split("\n")
-        print(f"✅ LINE: \n{str(lines)[:1000]}")
+        print(f"  LINE: \n{str(lines)[:1000]}")
         metadata = []
         
         for line in lines[:-1]:
@@ -192,17 +194,17 @@ def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
         with open(json_filename, "w", encoding="utf-8") as json_file:
             json.dump(metadata, json_file, indent=4, ensure_ascii=False)
         
-        print(f"✅ Metadata saved to {json_filename}")
+        print(f"  Metadata saved to {json_filename}")
     
     except subprocess.CalledProcessError as e:
-        print(f"🔴 SQL Execution Error: {e.stderr}")
+        print(f" SQL Execution Error: {e.stderr}")
 
 # # Oracle sqlplus 명령어 실행 예시
 @time_tracker
 def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
-    # None 값을 SQL 의 NULL로 매칭
-    cls = "NULL" if (cls is None or cls == "NULL") else cls
-    unno = "NULL" if (unno is None or unno == "NULL") else unno
+    # 값이 "NULL"이 아니면 문자열로 취급하여 작은따옴표로 감쌈.
+    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
+    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
 
     # SQL*Plus 명령어를 실행할 기본 명령어
     sql_query = \
@@ -222,8 +224,8 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     JOIN icon.ai_dg_check d 
         ON p.unno = d.unno 
         AND p.cls = d.cls
-    WHERE (p.cls={cls} OR {cls} IS NULL) AND (p.unno={unno} OR {unno} IS NULL) AND p.port LIKE '{pol_port}'
-      AND (p.cls={cls} OR {cls} IS NULL) AND (d.unno={unno} OR {unno} IS NULL) AND d.port LIKE '{pod_port}';
+    WHERE (p.cls={cls_val} OR {cls_val} IS NULL) AND (p.unno={unno_val} OR {unno_val} IS NULL) AND p.port LIKE '{pol_port}'
+      AND (p.cls={cls_val} OR {cls_val} IS NULL) AND (d.unno={unno_val} OR {unno_val} IS NULL) AND d.port LIKE '{pod_port}';
     EXIT;
     """
     
@@ -231,10 +233,10 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     try:
         result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
         # SQL*Plus의 출력 결과를 받아옵니다
-        print("✅ SQL Query Results:\n", result.stdout)
+        print("  SQL Query Results:\n", result.stdout)
     except subprocess.CalledProcessError as e:
         # 오류가 발생한 경우 오류 메시지 출력
-        print(f"🔴 Error: {e.stderr}")
+        print(f" Error: {e.stderr}")
     # import code
     # code.interact(local=locals())  # 현재 변수들을 유지한 상태에서 Python 인터랙티브 셸 실행
     return sql_query, result.stdout
@@ -244,17 +246,21 @@ def get_metadata(config):
     - port_path JSON: 딕셔너리 형태이며, 'location_code' 키의 값을 추출.
     - unno_path JSON: 리스트 형태이며, 모든 항목을 문자열로 반환.
     """
+    print("[SOOWAN] get_metadata 진입")
+    print("[SOOWAN] get_metadata 진입")
+    if not config or not hasattr(config, "metadata_unno"):
+        raise ValueError("Config 객체에 'metadata_unno' 속성이 없습니다. config: {}".format(config))
     unno_path = config.metadata_unno
     port_path = config.metadata_path
 
-    # 1️⃣ port_path JSON 파일 로드 (딕셔너리)
+    # port_path JSON 파일 로드 (딕셔너리)
     with open(port_path, "r", encoding="utf-8") as f:
         port_data = json.load(f)
     
     # location_code 값 추출 (키가 없을 경우 빈 리스트 반환)
     location_codes = json.dumps(port_data.get("location_code"), ensure_ascii=False)
 
-    # 2️⃣ unno_path JSON 파일 로드 (리스트)
+    # unno_path JSON 파일 로드 (리스트)
     with open(unno_path, "r", encoding="utf-8") as f:
         unno_data = json.load(f)
     
@@ -269,6 +275,7 @@ async def generate_sql(user_query, model, tokenizer, config):
     
     # Parse Metadata
     metadata_location, metadata_unno = get_metadata(config)
+    # metadata_location = get_metadata(config)
 
     PROMPT =\
 f'''
@@ -306,6 +313,10 @@ f'''
 </assistant>
 '''
 
+    # --- 토큰 수 계산 단계 추가 ---
+    tokenized_prompt = tokenizer(PROMPT, return_tensors="pt", truncation=True)
+    token_count = tokenized_prompt["input_ids"].shape[1]
+    print(f"[DEBUG] 프롬프트 토큰 수: {token_count}")
 
     # Get Answer
     ## From Vllm Inference
@@ -321,26 +332,38 @@ f'''
     )
     accepted_request_id = str(uuid.uuid4())
     outputs_result = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
-    print(f"✅ SQL Model Outputs:{outputs_result}")
+    print(f"[GENERATE_SQL] SQL Model Outputs:{outputs_result}")
     # input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
     # input_length = input_ids['input_ids'].shape[1]
-    # print(f"✅ INPUT LENGTH: {input_length}")
+    # print(f"  INPUT LENGTH: {input_length}")
     # outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
     # outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-    # print(f"✅ OUTPUTS: {outputs_result}")
+    # print(f"  OUTPUTS: {outputs_result}")
 
     # Regular expression to extract content between <query/> and <query>
     unno_pattern = r'<unno.*?>(.*?)<unno.*?>'
     class_pattern = r'<class.*?>(.*?)<class.*?>'
     pol_port_pattern = r'<pol_port.*?>(.*?)<pol_port.*?>'
     pod_port_pattern = r'<pod_port.*?>(.*?)<pod_port.*?>'
+    
+    match_unno = re.search(unno_pattern, outputs_result, re.DOTALL)
+    UN_number = match_unno.group(1).strip() if match_unno is not None else "NULL"
 
-    UN_number = re.search(unno_pattern, outputs_result, re.DOTALL).group(1)
-    UN_class = re.search(class_pattern, outputs_result, re.DOTALL).group(1)
-    POL = re.search(pol_port_pattern, outputs_result, re.DOTALL).group(1)
-    POD = re.search(pod_port_pattern, outputs_result, re.DOTALL).group(1)
+    match_class = re.search(class_pattern, outputs_result, re.DOTALL)
+    UN_class = match_class.group(1).strip() if match_class is not None else "NULL"
 
-    print(f"✅ UN_number:{UN_number}, UN_class:{UN_class}, POL:{POL}, POD:{POD}")
+    match_pol = re.search(pol_port_pattern, outputs_result, re.DOTALL)
+    POL = match_pol.group(1).strip() if match_pol is not None else "NULL"
+
+    match_pod = re.search(pod_port_pattern, outputs_result, re.DOTALL)
+    POD = match_pod.group(1).strip() if match_pod is not None else "NULL"
+
+    # UN_number = re.search(unno_pattern, outputs_result, re.DOTALL).group(1)
+    # UN_class = re.search(class_pattern, outputs_result, re.DOTALL).group(1)
+    # POL = re.search(pol_port_pattern, outputs_result, re.DOTALL).group(1)
+    # POD = re.search(pod_port_pattern, outputs_result, re.DOTALL).group(1)
+
+    print(f"  UN_number:{UN_number}, UN_class:{UN_class}, POL:{POL}, POD:{POD}")
     final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
 
     ### Temporary ###
@@ -356,6 +379,6 @@ if __name__ == "__main__":
 
     query = "UN번호 1033, UN 클래스 2.1인 화물의 부산항에서 고베항으로의 선적이 가능한지 알아봐줘."
     model,tokenizer = initialze(config)
-    # print(f"✅ METADATA: {metadata_location}")
+    # print(f"  METADATA: {metadata_location}")
     final_sql_query, title, explain, table_json, chart_json = generate_sql(query, model, tokenizer, config)
-    print(f"✅ Final Sql Query: {final_sql_query}\n✅ Result: {table_json}")
+    print(f"  Final Sql Query: {final_sql_query}\n  Result: {table_json}")

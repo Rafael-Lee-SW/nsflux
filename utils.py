@@ -33,19 +33,8 @@ from tracking import time_tracker
 # Logging
 import logging
 
-# POST
-import requests
-
 logging.basicConfig(level=logging.DEBUG)
 
-# Gemma3Config 전역 패치: vocab_size 속성이 없으면 추가합니다.
-try:
-    from transformers.models.gemma3.configuration_gemma3 import Gemma3Config
-    if not hasattr(Gemma3Config, "vocab_size"):
-        Gemma3Config.vocab_size = 32000  # 또는 embed_tokenizer를 통해 동적으로 결정한 값
-        print("Gemma3Config에 vocab_size 패치 완료.")
-except Exception as e:
-    print("Gemma3Config 패치 실패:", e)
 
 # -------------------------------------------------
 # Function: find_weight_directory - 허깅페이스 권한 문제 해결 후에 잘 사용되지 아니함
@@ -230,7 +219,7 @@ def load_model(config):
         
         vllm_conf = config.get("vllm", {})
         
-        engine_args.enable_prefix_caching = False
+        engine_args.enable_prefix_caching = True
         engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
         engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
@@ -242,6 +231,8 @@ def load_model(config):
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
             
+        engine_args.model_max_len = vllm_conf.get("model_max_len")
+        
         # # 새로 추가: disable_sliding_window 옵션 확인
         # if vllm_conf.get("disable_sliding_window", False):
         #     engine_args.sliding_window = (-1, -1)
@@ -337,22 +328,6 @@ def load_model(config):
         return engine, tokenizer, embed_model, embed_tokenizer
 
     else:
-
-        if config.model.quantization_4bit:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
-            print("Using 4-bit quantization.")
-        elif config.model.quantization_8bit:
-            bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-            print("Using 8-bit quantization.")
-        else:
-            bnb_config = None
-            print("Using pure option of Model(No quantization)")
-
         print("DEBUG: vLLM is not used. Loading model via standard HF method.")
         try:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -759,15 +734,6 @@ def send_data_to_server(data, url):
     except Exception as e:
         print(f"[ERROR] send_data_to_server encountered an error: {str(e)}")
 
-    try:
-        # 다른 서버로 데이터를 전송 (POST 요청)
-        response = requests.post(url, json=data, headers=headers)
-        if response.status_code == 200:
-            print(f"Data sent successfully: {data}")
-        else:
-            print(f"Failed to send data: {response}")
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending data: {e}")
 
 # ---------------------- 벡터화 -----------------------
 

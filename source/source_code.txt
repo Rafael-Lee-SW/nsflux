@@ -3,6 +3,7 @@
 ```
 ├─ Dockerfile
 ├─ RAG.py
+├─ SQL_NS.py
 ├─ app.py
 ├─ config.yaml
 ├─ data_control.py
@@ -20,9 +21,9 @@
 # config.yaml
 # Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
 ### Model
-model_id : 'google/gemma-3-27b-it'
+model_id : 'google/gemma-2-27b-it'
 response_url : "http://202.20.84.16:8083/responseToUI"
-# response_url : "http://192.222.54.254:6460/testResponse"
+# response_url : "https://eo5smhcazmp1bqe.m.pipedream.net"
 
 ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)
@@ -42,18 +43,19 @@ vllm:
   max_num_batched_tokens: 16384   # v1에 따른 상향
   block_size: 128                 # 미적용
   gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
+  # v1에 따른 새로운 인자값
   disable_custom_all_reduce: true
-  enable_memory_defrag: True      # v1 신규 기능 활성화
-  # 추가할 설정
-  disable_sliding_window: True  # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
-  max_model_len: 30000
+  enable_memory_defrag: True      
+  disable_sliding_window: True    # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
+  # 모델 변경에 따른 추가된 설정
+  max_model_len: 30000            # For the new model
 
 model:
-  quantization_4bit : False # Quantize 4-bit
+  quantization_4bit : True # Quantize 4-bit
   quantization_8bit : False # Quantize 8-bit
   max_new_tokens : 2048      # 생성할 최대 토큰 수
 
-  do_sample : True # True 일때만 아래가 적용
+  do_sample : False # True 일때만 아래가 적용
   temperature : 1.0          # 텍스트 다양성 조정: 높을수록 창의력 향상 (1.0)
   top_k : 30                 # top-k 샘플링: 상위 k개의 후보 토큰 중 하나를 선택 (50)
   top_p : 1.0                # top-p 샘플링: 누적 확률을 기준으로 후보 토큰을 선택 (1.0 보다 낮을수록 창의력 증가)
@@ -64,10 +66,11 @@ embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
 cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
-data_path : 'data/0228_DB_.json'     # VectorDB Path - New one (계약서 데이터 포함)
+data_path : '/workspace/data/0228_DB_.json'     # VectorDB Path - New one (계약서 데이터 포함)
 # data_path : 'data/1104_NS_DB_old.json' # VectorDB Path - Old one
-metadata_path : 'data/Metadata.json' # Metadata.json Path
-sql_data_path : 'data/poc.db'        # SQLite 데이터베이스 Path
+metadata_path : '/workspace/data/Metadata.json' # Metadata.json Path
+metadata_unno : '/workspace/data/METADATA_OPRAIMDG.json'
+sql_data_path : '/workspace/data/poc.db'        # SQLite 데이터베이스 Path
 
 ### Retrieve
 N : 5 # Retrieve top N chunks
@@ -85,8 +88,8 @@ k : 15                        # SQL Max Rows (None=MAX)
 ```dockerfile
 
 # 베이스 이미지 선택
-# FROM globeai/flux_ns:1.26
-FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
+FROM globeai/flux_ns:2.2
+# FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
 
 # 2. 대화형 입력 없이 진행하도록 환경 변수 설정
 ENV DEBIAN_FRONTEND=noninteractive
@@ -107,20 +110,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     vim \
     && rm -rf /var/lib/apt/lists/*
 
-# Miniconda (Python 3.11 버전용) 설치
-RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-py311_23.3.1-0-Linux-x86_64.sh -O /tmp/miniconda.sh && \
-    bash /tmp/miniconda.sh -b -p /opt/conda && \
-    rm /tmp/miniconda.sh
+# # Miniconda (Python 3.11 버전용) 설치
+# RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-py311_23.3.1-0-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+#     bash /tmp/miniconda.sh -b -p /opt/conda && \
+#     rm /tmp/miniconda.sh
 
-# conda 설치 경로를 PATH에 추가
-ENV PATH=/opt/conda/bin:$PATH
+# # conda 설치 경로를 PATH에 추가
+# ENV PATH=/opt/conda/bin:$PATH
 
-# Python 버전을 3.11.9로 업데이트하고, pip를 pip 24.0으로 업그레이드
-RUN conda install python=3.11.9 -y && \
-    pip install --upgrade pip==24.0
+# # Python 버전을 3.11.9로 업데이트하고, pip를 pip 24.0으로 업그레이드
+# RUN conda install python=3.11.9 -y && \
+#     pip install --upgrade pip==24.0
 
-# 버전 확인 (빌드 시 로그에 표시됨)
-RUN python --version && pip --version
+# # 버전 확인 (빌드 시 로그에 표시됨)
+# RUN python --version && pip --version
 
 # (4) CUDA_HOME 환경변수 설정
 #     which nvcc 결과가 /usr/bin/nvcc 이고 실제 툴킷이 /usr/lib/nvidia-cuda-toolkit 내에 있으므로 해당 경로를 지정
@@ -141,9 +144,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # COPY patches/vllm/gemma3.py /opt/conda/lib/python3.11/site-packages/vllm/model_executor/models/gemma3.py
 
 # Additional pip installations:
-RUN pip install ninja \
-    && pip install git+https://github.com/huggingface/transformers.git \
-    && pip install git+https://github.com/vllm-project/vllm.git
+# RUN pip install ninja \
+#     && pip install git+https://github.com/huggingface/transformers.git \
+#     && pip install git+https://github.com/vllm-project/vllm.git
 
 # 현재 디렉토리의 모든 파일을 컨테이너의 /app 폴더로 복사
 COPY . /workspace
@@ -185,9 +188,12 @@ os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
 # GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU)
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
+
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+print("[[TEST]]")
 
 from flask import (
     Flask,
@@ -422,6 +428,7 @@ def query_stream_to_clt():
     
     response_url = config.response_url
 
+
     print(f"[DEBUG] /queryToSLLM called with qry_id='{qry_id}', user_id='{user_id}', "
           f"page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
     
@@ -518,204 +525,6 @@ def query_stream_to_clt():
 
     # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
-
-
-# @app.route("/queryToSLLM", methods=["POST"])
-# def query_stream_to_clt():
-#     """
-#     POST 방식 SSE 스트리밍 엔드포인트.
-#     클라이언트가 {"qry_id": "...", "user_id": "...", "page_id": "...", "qry_contents": "...", "qry_time": "..." }
-#     형태의 JSON을 보내면, 내부 Ray Serve SSE 스트림을 통해 처리한 후 지정된 response_url로 SSE 청크를 전송합니다.
-#     """
-#     # POST 요청 파라미터 파싱
-#     body = request.json or {}
-#     qry_id = body.get("qry_id", "")
-#     user_id = body.get("user_id", "")
-#     page_id = body.get("page_id", "")
-#     auth_class = "admin"  # 모든 요청을 'admin'으로 처리
-#     user_input = body.get("qry_contents", "")
-#     qry_time = body.get("qry_time", "")
-    
-#     response_url = config.response_url
-
-#     print(f"[DEBUG] /query_stream_to_clt called with qry_id='{qry_id}', user_id='{user_id}', "
-#           f"page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
-    
-#     # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
-#     http_query = {
-#         "qry_id": qry_id,
-#         "user_id": user_id,
-#         "page_id": page_id if page_id else str(uuid.uuid4()),
-#         "auth_class": auth_class,
-#         "qry_contents": user_input,
-#         "qry_time": qry_time,
-#         "response_url": response_url
-#     }
-#     print(f"[DEBUG] Built http_query={http_query}")
-
-#     # Ray Serve에 SSE 스트리밍 요청 보내기
-#     response = inference_handle.process_query_stream.remote(http_query)
-#     obj_ref = response._to_object_ref_sync()
-#     request_id = ray.get(obj_ref)
-#     print(f"[DEBUG] streaming request_id={request_id}")
-    
-#     def sse_generator(request_id, response_url):
-#         token_buffer = []  # To collect tokens
-#         last_sent_time = time.time()  # To track the last time data was sent
-#         answer_counter = 1  # 답변 업데이트 순번
-#         try:
-#             while True:
-#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
-#                 if token is None:
-#                     print("[DEBUG] 토큰이 None 반환됨. 종료합니다.")
-#                     break
-
-#                 if isinstance(token, str):
-#                     token = token.strip()
-#                 if token == "[[STREAM_DONE]]":
-#                     print("[DEBUG] 종료 토큰([[STREAM_DONE]]) 수신됨. 스트림 종료.")
-#                     break
-
-#                 try:
-#                     token_dict = json.loads(token) if isinstance(token, str) else token
-#                 except Exception as e:
-#                     print(f"[ERROR] JSON 파싱 실패: {e}. 원시 토큰: '{token}'")
-#                     continue
-
-#                 token_buffer.append(token_dict)
-#                 current_time = time.time()
-#                 # If 1 second has passed, send the accumulated tokens
-#                 if current_time - last_sent_time >= 1:
-#                     if len(token_buffer) > 0:
-#                         # Check if any token in the buffer signals termination.
-#                         final_continue = "E" if any(t.get("continue") == "E" for t in token_buffer) else "C"
-#                         buffer_format = process_format_to_response(token_buffer, qry_id, continue_=final_continue, update_index=answer_counter)
-#                         send_data_to_server(buffer_format, response_url)
-#                         token_buffer = []  # Reset the buffer
-#                         last_sent_time = current_time  # Update the last sent time
-#                         answer_counter += 1
-#                 if token_dict.get("continue") == "E":
-#                     # Immediately send the buffer with end flag if not already sent
-#                     if len(token_buffer) > 0:
-#                         buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
-#                         send_data_to_server(buffer_format, response_url)
-#                         token_buffer = []
-#                     break
-#             # After loop: if tokens remain, send them with continue_="E"
-#             if len(token_buffer) > 0:
-#                 buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
-#                 send_data_to_server(buffer_format, response_url)
-#         except Exception as e:
-#             print(f"[ERROR] sse_generator encountered an error: {e}")
-#         finally:
-#             try:
-#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
-#                 ray.get(obj_ref)
-#             except Exception as ex:
-#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
-#             print("[DEBUG] SSE closed.")
-    
-#     # 별도의 스레드에서 SSE generator 실행
-#     job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
-#     job.start()
-
-#     # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
-#     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
-
-# @app.route("/queryToSLLM", methods=["POST"])
-# def query_stream_to_clt():
-#     """
-#     POST 방식 SSE 스트리밍 엔드포인트.
-#     클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
-#     """
-#     # POST 요청 params
-#     body = request.json or {}
-    
-#     # CLT 통신과 맞는 규격
-#     qry_id = body.get("qry_id", "")
-#     user_id = body.get("user_id", "")
-#     page_id = body.get("page_id", "")
-#     auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
-#     user_input = body.get("qry_contents", "")
-#     qry_time = body.get("qry_time", "")
-    
-#     response_url = config.response_url
-
-#     print(f"[DEBUG] /query_stream_to_clt called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
-#     # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
-#     http_query = {
-#         "qry_id": qry_id,
-#         "user_id": user_id,
-#         "page_id": page_id if page_id else str(uuid.uuid4()),
-#         "auth_class": auth_class,
-#         "qry_contents": user_input,
-#         "qry_time": qry_time,
-#         "response_url": response_url
-#     }
-#     print(f"[DEBUG] Built http_query={http_query}")
-
-#     # Obtain request_id from Ray
-#     response = inference_handle.process_query_stream.remote(http_query)
-#     obj_ref = response._to_object_ref_sync()
-#     request_id = ray.get(obj_ref)
-
-#     print(f"[DEBUG] streaming request_id={request_id}")
-    
-#     def sse_generator(request_id, response_url):
-#         try:
-#             token_buffer = []  # To collect tokens
-#             last_sent_time = time.time()  # To track the last time data was sent
-
-#             answer_counter = 1  # 답변 업데이트 순번 (답변1, 답변2, ...)
-            
-#             while True:
-#                 # Retrieve token from SSEQueueManager
-#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
-#                 token_dict = json.loads(token) if isinstance(token, str) else token
-                
-#                 token_buffer.append(token_dict)  # Collect token
-                
-#                 current_time = time.time()
-
-#                 # If 1 second has passed, send the accumulated tokens
-#                 if current_time - last_sent_time >= 1:
-#                     # Send the accumulated tokens
-#                     buffer_format = process_format_to_response(token_buffer, qry_id, update_index=answer_counter)
-#                     send_data_to_server(buffer_format, response_url)
-#                     token_buffer = []  # Reset the buffer
-#                     last_sent_time = current_time  # Update the last sent time
-#                     answer_counter += 1  # 순번 증가
-                
-#                 # If "continue" is "E", send the accumulated tokens with END signal
-#                 elif token_dict.get("continue") == "E":
-#                     # Send the accumulated tokens --- EXCEPT LAST END TOKEN
-#                     buffer_format = process_format_to_response(token_buffer[:-1], qry_id, continue_="E", update_index=answer_counter)
-#                     send_data_to_server(buffer_format, response_url)
-#                     token_buffer = []  # Reset the buffer
-#                     last_sent_time = current_time  # Update the last sent time
-
-#                 # If the "continue" key indicates to stop, break the loop
-#                 if token_dict.get("continue") == "E":
-#                     break
-
-#         except Exception as e:
-#             # error_token = json.dumps({"type": "error", "message": str(e)})
-#             # yield f"data: {error_token}\n\n"
-#             print(e)
-
-#         finally:
-#             # Cleanup: close the SSE queue after streaming is done
-#             try:
-#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
-#                 ray.get(obj_ref)
-#             except Exception as ex:
-#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
-#             print("[DEBUG] SSE closed.")
-    
-#     job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
-#     job.start()
-
-#     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
 
 # ------------------------------------------------
 
@@ -1197,7 +1006,7 @@ class InferenceActor:
             # 4) RAG
             if TA == "yes":
                 try:
-                    docs, docs_list = execute_rag(
+                    docs, docs_list = await execute_rag(
                         QU,
                         KE,
                         TA,
@@ -1210,7 +1019,11 @@ class InferenceActor:
                         config=self.config,
                     )
                     try:
+                                                # 기존 방식
                         retrieval, chart = process_to_format(docs_list, type="SQL")
+                        # 수정된 방식 - Talbe,Chart 없이 Answer Part에 SQL 결과 전송.
+                        # retrieval_sql = process_to_format(docs, type="Answer")
+                        # await self.queue_manager.put_token.remote(request_id, retrieval_sql)
                     except Exception as e:
                         print("[ERROR] process_to_format (SQL) failed:", str(e))
                         retrieval, chart = [], None
@@ -1290,7 +1103,7 @@ class InferenceActor:
             else:
                 try:
                     print("[SOOWAN] TA is No, before make a retrieval")
-                    docs, docs_list = execute_rag(
+                    docs, docs_list = await execute_rag(
                         QU,
                         KE,
                         TA,
@@ -1846,14 +1659,6 @@ import logging
 
 logging.basicConfig(level=logging.DEBUG)
 
-# Gemma3Config 전역 패치: vocab_size 속성이 없으면 추가합니다.
-try:
-    from transformers.models.gemma3.configuration_gemma3 import Gemma3Config
-    if not hasattr(Gemma3Config, "vocab_size"):
-        Gemma3Config.vocab_size = 32000  # 또는 embed_tokenizer를 통해 동적으로 결정한 값
-        print("Gemma3Config에 vocab_size 패치 완료.")
-except Exception as e:
-    print("Gemma3Config 패치 실패:", e)
 
 # -------------------------------------------------
 # Function: find_weight_directory - 허깅페이스 권한 문제 해결 후에 잘 사용되지 아니함
@@ -2743,7 +2548,8 @@ import random
 import uuid
 import logging
 from datetime import datetime, timedelta
-from sql import generate_sql
+# from sql import generate_sql
+from SQL_NS import generate_sql
 
 # Tracking
 from tracking import time_tracker
@@ -2758,7 +2564,7 @@ global beep
 beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
 
 @time_tracker
-def execute_rag(QU, KE, TA, TI, **kwargs):
+async def execute_rag(QU, KE, TA, TI, **kwargs):
     print("[SOOWAN]: execute_rag : 진입")
     model = kwargs.get("model")
     tokenizer = kwargs.get("tokenizer")
@@ -2770,7 +2576,7 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
     if TA == "yes":  # Table 이 필요하면
         print("[SOOWAN]: execute_rag : 테이블 필요 (TA == yes). SQL 생성 시작합니다.")
         try:
-            result = generate_sql(QU, model, tokenizer, config)
+            result = await generate_sql(QU, model, tokenizer, config)
         except Exception as e:
             # 1) generate_sql() 자체가 도중에 예외를 던지는 경우
             print("[ERROR] generate_sql() 도중 예외 발생:", e)
@@ -2798,12 +2604,15 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
             f"추가 설명: {explain}\n\n"
             f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
         )
+
+        ### Not Used anymore! ###
         # docs_list : 사용자에게 보여줄 정보(List)
         docs_list = [
             {"title": title, "data": table_json},
             {"title": "시각화 차트", "data": chart_json},
         ]
         print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
+        
         return PROMPT, docs_list
 
     else:
@@ -2817,6 +2626,127 @@ def execute_rag(QU, KE, TA, TI, **kwargs):
         docs, docs_list = retrieve(KE, filtered_data, config.N, embed_model, embed_tokenizer)
         return docs, docs_list
 
+### RAG와 다르게 SQL내에서도 vLLM 모델을 사용해야 하므로 따로 정의 ###
+@time_tracker
+async def execute_sql(QU, KE, TA, TI, **kwargs):
+    from SQL_NS import get_metadata, run_sql_unno
+
+    print("[SANGJE]: execute_sql : 진입")
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    embed_model = kwargs.get("embed_model")
+    embed_tokenizer = kwargs.get("embed_tokenizer")
+    data = kwargs.get("data")
+    config = kwargs.get("config")
+
+    metadata_location, metadata_unno = get_metadata(config)
+    print(f"✅ Metadata loaded:{metadata_location[:100]}")
+    PROMPT =\
+f'''
+<bos>
+<system>
+"YourRole": "질문으로 부터 조건을 추출하는 역할",
+"YourJob": "아래 요구 사항에 맞추어 'unno', 'class', 'pol_port', 'pod_port' 정보를 추출하여, 예시처럼 답변을 구성해야 합니다.",
+"Requirements": [
+    unno: UNNO Number는 4개의 숫자로 이루어진 위험물 번호 코드야. 
+    class : UN Class는 2.1, 6.0,,, 의 숫자로 이루어진 코드야.
+    pol_port, pod_port: 항구 코드는 5개의 알파벳 또는 나라의 경우 2개의 알파벳과 %로 이루어져 있어. 다음은 항구 코드에 대한 메타데이터야 {metadata_location}. 여기에서 매칭되는 코드만을 사용해야 해. 항구는 항구코드, 나라는 2개의 나라코드와 %를 사용해.
+    unknown : 질문에서 찾을 수 없는 정보는 NULL을 출력해줘.
+]
+
+"Examples": [
+    "질문": "UN 번호 1689 화물의 부산에서 미즈시마로의 선적 가능 여부를 확인해 주세요.",
+    "답변": "<unno/>1689<unno>\\n<class/>NULL<class>\\n<pol_port/>KRPUS<pol_port>\\n<pod_port/>JPMIZ<pod_port>"
+
+    "질문": "UN 클래스 2.1 화물의 한국에서 일본으로의 선적 가능 여부를 확인해 주세요.",
+    "답변": "<unno/>NULL<unno>\\n<class/>2.1<class>\\n<pol_port/>KR%<pol_port>\\n<pod_port/>JP%<pod_port>"
+]
+- 최종 출력은 반드시 다음 4가지 항목을 포함해야 합니다:
+    <unno/>...<unno>
+    <class/>...<class>
+    <pol_port/>...<pol_port>
+    <pod_port/>...<pod_port>
+</system>
+
+<user>
+질문: "{QU}"
+</user>
+
+<assistant>
+답변:
+</assistant>
+'''
+
+    try:
+        from vllm import SamplingParams
+
+        sampling_params = SamplingParams(
+            max_tokens=config.model.max_new_tokens,
+            temperature=config.model.temperature,
+            top_k=config.model.top_k,
+            top_p=config.model.top_p,
+            repetition_penalty=config.model.repetition_penalty,
+        )
+        accepted_request_id = str(uuid.uuid4())
+        outputs_result = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+        print(f"✅ SQL Model Outputs:{outputs_result}")
+
+        # Regular expression to extract content between <query/> and <query>
+        unno_pattern = r'<unno.*?>(.*?)<unno.*?>'
+        class_pattern = r'<class.*?>(.*?)<class.*?>'
+        pol_port_pattern = r'<pol_port.*?>(.*?)<pol_port.*?>'
+        pod_port_pattern = r'<pod_port.*?>(.*?)<pod_port.*?>'
+
+        UN_number = re.search(unno_pattern, outputs_result, re.DOTALL).group(1)
+        UN_class = re.search(class_pattern, outputs_result, re.DOTALL).group(1)
+        POL = re.search(pol_port_pattern, outputs_result, re.DOTALL).group(1)
+        POD = re.search(pod_port_pattern, outputs_result, re.DOTALL).group(1)
+
+        print(f"✅ UN_number:{UN_number}, UN_class:{UN_class}, POL:{POL}, POD:{POD}")
+        final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
+        
+        ### Temporary ###
+        title, explain, table_json, chart_json = (None,) * 4   
+        
+        result = final_sql_query, title, explain, result, chart_json
+
+    except Exception as e:
+        # 1) generate_sql() 자체가 도중에 예외를 던지는 경우
+        print("[ERROR] generate_sql() 도중 예외 발생:", e)
+        # 멈추지 않고, 에러 형식으로 데이터를 만들어 반환
+        docs = "테이블 조회 시도 중 예외가 발생했습니다. " \
+            "해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다."
+        docs_list = []
+        return docs, docs_list
+
+    # 2) 함수가 정상 실행됐지만 결과가 None인 경우(= SQL 쿼리 결과가 없거나 오류)
+    if result is None:
+        print("[WARNING] generate_sql()에서 None을 반환했습니다. " 
+            "SQL 수행 결과가 없거나 에러가 발생한 것일 수 있습니다.")
+        docs = "테이블 조회 결과가 비어 있습니다. " \
+            "조회할 데이터가 없거나 SQL 오류가 발생했습니다."
+        docs_list = []
+        return docs, docs_list
+
+    # 정상적인 경우(튜플 언패킹)
+    final_sql_query, title, explain, table_json, chart_json = result
+
+    # docs : LLM 입력용 (string)
+    PROMPT = (
+        f"다음은 SQL 추출에 사용된 쿼리문: {final_sql_query}\n\n"
+        f"추가 설명: {explain}\n\n"
+        f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
+    )
+
+    ### Not Used anymore! ###
+    # docs_list : 사용자에게 보여줄 정보(List)
+    # docs_list = [
+    #     {"title": title, "data": table_json},
+    #     {"title": "시각화 차트", "data": chart_json},
+    # ]
+    docs_list = None
+    print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
+    return PROMPT, docs_list
 
 @time_tracker
 async def generate_answer(query, docs, **kwargs):
@@ -3399,8 +3329,56 @@ from datetime import datetime
 # Get today's date (this is computed when the module is loaded)
 TODAY = datetime.today()
 
-# Prompt for query sorting
+### 수정 : --- 3개 질문 유형에 대해서만 SQL로 넘어감 ---
+# New Prompt for query sorting
 QUERY_SORT_PROMPT = f"""
+<bos><start_of_turn>user
+너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. 
+query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. 
+keyword는 질문의 키워드를 뽑는거야. 
+table은 질문에 대한 답을 할때 정형 데이터가 필요한지 여부야, 현재는 선적 가능성 관련 질문만 가능하니 이때만 yes로 답해줘.
+time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는 {TODAY.year}년 {TODAY.month}월 {TODAY.day}일). 
+시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) 
+또한, '최근'이라는 말이 들어가면 2024-06-01:{TODAY.year}-{TODAY.month}-{TODAY.day}로 설정해줘.
+
+내가 먼저 예시를 줄게
+
+질문: UN 번호 1689 DG화물, 부산에서 미즈시마 선적 가능 여부를 확인해 주세요.
+답변:
+<query/>UN 번호 1689 화물의 부산항에서 미즈시마항 선적 가능 여부를 확인해 주세요.<query>
+<keyword/>UN번호 1689, 부산항, 미즈시마항, 선적가능성<keyword>
+<table/>yes<table>
+<time/>2024-08-01:2024-{TODAY.month}-{TODAY.day}<time>
+
+질문: 올해 3월에 중국 시장 전망에 대해 조사했던 내용을 정리해줘
+답변:
+<query/>2024년 3월 중국시장 전망에 대한 조사내용을 알려주고 정리해줘<query>
+<keyword/>2024년 3월 중국시장 전망<keyword>
+<table/>no<table>
+<time/>2024-02-01:2024-05-01<time>
+
+질문: 부산발 인도네시아착 경쟁사 서비스 및 항차수를 알려줘
+답변:
+<query/>부산 출발 인도네시아 도착 경쟁사 서비스 및 항차수<query>
+<keyword/>부산발 인도네시아착 경쟁사 서비스 항차수<keyword>
+<table/>no<table>
+<time/>all<time>
+
+질문: 남성해운의 인도 대리점 선정 과정은 어떻게 돼?
+답변:
+<query/>인도 대리점 선정과정을 보기 좋게 정리해줘<query>
+<keyword/>인도 대리점 선정과정<keyword>
+<table/>no<table>
+<time/>all<time>
+
+### 아래 구분자를 추가하여 실제 사용자 질문을 명확히 구분합니다.
+### 새로운 질문: {{user_query}}<end_of_turn>
+<start_of_turn>model
+답변:
+"""
+
+# Prompt for query sorting
+QUERY_SORT_PROMPT_OLD = f"""
 <bos><start_of_turn>user
 너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. 
 query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. 
@@ -3450,13 +3428,28 @@ time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오�
 GENERATE_PROMPT_TEMPLATE = """
 <bos><start_of_turn>user
 너는 남성해운의 도움을 주는 데이터 분석가야.
-주어진 내부 자료에 기반해서 내 질문에 대답해줘. 답변 형식은 보고서처럼 길고 자세하며 논리정연하게 사실만을 가지고 작성해줘.
-만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
-또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
-내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
-문단 구분을 확실하게 해줘.
-답변 형식은 markdown 형식으로 작성해줘.
+
+주어진 **내부 자료**를 바탕으로 **내 질문**에 **상세하고 논리정연한** 답변을 작성해줘.
+**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**을 지켜 작성해줘:
+
+1. **문단/제목**: `#`, `##`, `###` 등을 사용해 문단을 구분하고, 문단 사이에는 **한 줄 이상의 공백**을 넣어줘.
+2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
+3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
+4. **표**: 표가 필요하면 **Markdown 표 형식**을 사용하거나, 간단히 문단으로도 표현해줘.
+5. **코드 블록**: 예시 코드나 특수한 데이터는 ```` ``` 언어명 ... ``` ```` 을 사용해 표시해줘.
+6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
+
+만약 **주어진 자료**에 질문에 해당하는 내용이 **없다면**, `"내부 자료에 해당 자료 없음"`이라고만 답변해줘.
+
+**주의**: 
+- 너무 짧거나 단답형이 아닌, 충분히 **길고 자세한 보고서 형태**로 답변해줘.
+- 가능하면 **논리적 근거**와 **예시**를 들어 설명해줘.
+- **문단**을 명확히 구분하여 **읽기 편하게** 작성해줘.
+
+아래는 **내부 자료**와 **질문**이 주어질 것이니, 꼭 이 지침을 따라 답변해줘.
+
 내부 자료: {docs}
+
 질문: {query}<end_of_turn>
 <start_of_turn>model
 답변:
@@ -3466,17 +3459,41 @@ GENERATE_PROMPT_TEMPLATE = """
 STREAM_PROMPT_TEMPLATE = """
 <bos><start_of_turn>user
 너는 남성해운의 도움을 주는 데이터 분석가야.
-주어진 내부 자료에 기반해서 내 질문에 대답해줘. 답변 형식은 보고서처럼 길고 자세하며 논리정연하게 사실만을 가지고 작성해줘.
-만약 주어진 자료에 질문에 해당하는 내용이 없으면 "내부 자료에 해당 자료 없음"으로 답변해줘.
-또한, 반드시 근거로 사용한 데이터의 출처를 명시해줘.
-내부 자료가 표로 들어오면, 그 표를 최대한 말로 풀어서 해석해주고 논리적인 인사이트를 도출해줘.
-문단 구분을 확실하게 해줘.
-답변 형식은 markdown 형식으로 작성해줘.
+
+주어진 **내부 자료**를 바탕으로 **내 질문**에 **상세하고 논리정연한** 답변을 작성해줘.
+**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**을 지켜 작성해줘:
+
+1. **문단/제목**: `#`, `##`, `###` 등을 사용해 문단을 구분하고, 문단 사이에는 **한 줄 이상의 공백**을 넣어줘.
+2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
+3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
+4. **표**: 표가 필요하면 **Markdown 표 형식**을 사용하거나, 간단히 문단으로도 표현해줘.
+5. **코드 블록**: 예시 코드나 특수한 데이터는 ```` ``` 언어명 ... ``` ```` 을 사용해 표시해줘.
+6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
+
+만약 **주어진 자료**에 질문에 해당하는 내용이 **없다면**, `"내부 자료에 해당 자료 없음"`이라고만 답변해줘.
+
+**주의**: 
+- 너무 짧거나 단답형이 아닌, 충분히 **길고 자세한 보고서 형태**로 답변해줘.
+- 가능하면 **논리적 근거**와 **예시**를 들어 설명해줘.
+- **문단**을 명확히 구분하여 **읽기 편하게** 작성해줘.
+
+아래는 **내부 자료**와 **질문**이 주어질 것이니, 꼭 이 지침을 따라 답변해줘.
+
 내부 자료: {docs}
+
 질문: {query}<end_of_turn>
 <start_of_turn>model
 답변:
 """
+
+```
+
+
+--- SQL_NS.py
+
+```python
+
+# 파일 읽기 오류: 'charmap' codec can't decode byte 0x8d in position 665: character maps to <undefined>
 
 ```
 
@@ -3662,7 +3679,7 @@ def data_upload():
                     continue
                 
                 # chunk_text
-                splitted_contents = chunk_text(content, chunk_size=1000, chunk_overlap=200)
+                splitted_contents = chunk_text(content, chunk_size=400, chunk_overlap=50)
                 print(f"[Upload] 총 {len(splitted_contents)}개 청크로 분할 완료. (파일: {file.filename})")
                 
                 # 기존 entry 확인
@@ -3845,6 +3862,7 @@ def data_detail(index):
         if index < 0 or index >= len(data_entries):
             return jsonify({"message": "유효하지 않은 인덱스입니다."}), 400
         
+        print("[SOOWAN]데이터 상세보기 : ", data_entries[index])
         return jsonify(data_entries[index])
     except Exception as e:
         return jsonify({"message": f"데이터 상세 보기 실패: {str(e)}"}), 500
@@ -4228,31 +4246,69 @@ def get_umap_data():
      ************************************************************************/
     function parseMarkdown(text) {
       if (!text) return '';
+    
+      // 입력 텍스트가 이미 HTML 태그로 시작하면 그대로 반환
+      if (text.trim().startsWith('<')) {
+        return text;
+      }
+      
+      // 1. 인라인 Markdown 변환 수행
+      // 코드 블록 처리
       text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(match, language, code) {
         return `<pre><code class="language-${language}">${escapeHtml(code.trim())}</code></pre>`;
       });
+      // 인라인 코드 처리
       text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+      // 굵은 글씨 처리
       text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      // 기울임 글씨 처리
       text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+      // 링크 처리 (필요시 수정)
       text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
-      text = text.replace(/^### (.*$)/gm, '<h3>$1</h3>');
-      text = text.replace(/^## (.*$)/gm, '<h2>$1</h2>');
-      text = text.replace(/^# (.*$)/gm, '<h1>$1</h1>');
-      text = text.replace(/^\s*\* (.*$)/gm, '<li>$1</li>');
-      text = text.replace(/^\s*\d+\. (.*$)/gm, '<li>$1</li>');
-      text = text.replace(/<li>(.*)<\/li>/g, function(match) {
+      // 제목 처리
+      text = text.replace(/^### (.*)$/gm, '<h3>$1</h3>');
+      text = text.replace(/^## (.*)$/gm, '<h2>$1</h2>');
+      text = text.replace(/^# (.*)$/gm, '<h1>$1</h1>');
+      // 목록 처리
+      text = text.replace(/^\s*\* (.*)$/gm, '<li>$1</li>');
+      text = text.replace(/^\s*\d+\. (.*)$/gm, '<li>$1</li>');
+      // 목록 아이템을 <ul>로 감싸기 (이미 <ul>이면 건너뜀)
+      text = text.replace(/(<li>[\s\S]*?<\/li>)/gm, function(match) {
+        if (match.trim().startsWith('<ul>')) {
+          return match;
+        }
         return '<ul>' + match + '</ul>';
       });
-      text = text.replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>');
-      text = text.replace(/\n\s*\n/g, '</p><p>');
-      text = text.replace(/\n/g, '<br>');
-      if (!text.startsWith('<')) {
-        text = '<p>' + text + '</p>';
-      }
-      text = text.replace(/<\/p><p><ul>/g, '<ul>');
-      text = text.replace(/<\/ul><\/p>/g, '</ul>');
-      return text;
+      // 인용문 처리
+      text = text.replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>');
+      
+      // 2. 문단 구분 처리: 두 줄 이상의 줄바꿈(\n\n)으로 블록을 나눕니다.
+      const blocks = text.split(/\n\s*\n/);
+      
+      // 블록 수준 태그 목록: 해당 태그로 시작하면 이미 블록 요소로 간주합니다.
+      const blockLevelTags = ['<h1>', '<h2>', '<h3>', '<ul>', '<ol>', '<blockquote>', '<pre>'];
+      
+      // 각 블록을 처리: blockLevelTags로 시작하지 않으면 <p> 태그로 감쌉니다.
+      const htmlBlocks = blocks.map(block => {
+        const trimmed = block.trim();
+        // 블록 수준 태그로 시작하면 그대로 반환
+        for (let tag of blockLevelTags) {
+          if (trimmed.startsWith(tag)) {
+            return trimmed;
+          }
+        }
+        // 그렇지 않으면 단일 줄바꿈은 <br>로 변환 후 <p>로 감쌉니다.
+        const replaced = trimmed.replace(/\n/g, '<br>');
+        return `<p>${replaced}</p>`;
+      });
+      
+      let html = htmlBlocks.join('');
+      
+      // 3. 불필요한 <br> 태그 제거 (필요한 경우)
+      html = html.replace(/<\/(h1|h2|h3|ul|ol|blockquote|pre)><br><p>/g, '</$1><p>');
+      return html;
     }
+    
     function escapeHtml(unsafe) {
       return unsafe
         .replace(/&/g, "&amp;")
@@ -4261,6 +4317,8 @@ def get_umap_data():
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
     }
+    
+    
 
     /************************************************************************
      * Welcome Screen Rendering
@@ -4817,6 +4875,451 @@ def get_umap_data():
 
 ```
 
+# SQL_NS.py
+
+```python
+
+import os
+import subprocess
+from tracking import time_tracker
+import json
+from utils import load_model
+import re
+
+# 환경 변수 설정
+os.environ['ORACLE_HOME'] = '/workspace/oracle/instantclient_23_7'
+os.environ['LD_LIBRARY_PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('LD_LIBRARY_PATH', '')
+os.environ['PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('PATH', '')
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
+
+import yaml
+from box import Box
+
+# Config 불러오기
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
+
+# 기본 SQL 접속코드
+sqlplus_command = [
+            'sqlplus', '-S', 'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR'
+        ]
+
+'''
+### ORACLE DB 정보 ###
+TABLE : ai_dg_check
+    COLUMNS : CLS (위험물 클래스)
+              UNNO (위험물 UN 번호)
+              PORT (포트 번호)
+              ALLOW_YN (취급 가능 여부)
+'''
+
+SQL_UNNO_PROMPT = \
+"""
+<bos>
+<system>
+너는 남성해운의 내부 데이터를 기반으로 질문에 답하는 데이터 분석가야.
+- 문서를 바탕으로 사실적인 답변을 한다.
+- 문서에 없는 내용은 "내부 자료에 해당 자료 없음"이라고 명시한다.
+- 표 데이터를 말로 풀어 해석한 뒤 인사이트를 제공한다.
+- 출처 표기는 필수다.
+</system>
+
+<user>
+내부 자료: {docs}
+질문: {query}
+</user>
+
+<assistant>
+답변:
+</assistant>
+"""
+
+# 테스트를 위한 초기설정
+def initialze(config):
+    
+
+    model, tokenizer, _, _ = load_model(config)
+    return model, tokenizer
+
+# sqlplus 실행 여부 확인
+def check_sqlplus():
+    try:
+        # sqlplus 버전 확인
+        result = subprocess.run(['sqlplus', '-version'], capture_output=True, text=True, check=True)
+        print(" SQL*Plus is working!")
+        print("Version info:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e.stderr}")
+
+# DB 연결상태 확인
+def check_db_connection():
+    try:
+        # SQL*Plus 실행 명령
+        
+        # SQL 명령을 표준 입력으로 전달
+        sql_query = "SELECT 1 FROM dual;\nEXIT;\n"
+        result = subprocess.run(
+            sqlplus_command,
+            input=sql_query,  # SQL 명령을 표준 입력으로 전달
+            capture_output=True,
+            text=True
+        )
+        
+        # SQL*Plus 결과 분석
+        if "1" in result.stdout:
+            print("  Successfully connected to the Namsung database!")
+        else:
+            print(" Connection to the database failed!")
+
+    except subprocess.CalledProcessError as e:
+        print(f" Error: {e.stderr}")
+
+# 스키마 별 테이블 목록 출력
+@time_tracker
+def get_all_schema_tables():
+    try:
+        # SQL*Plus 실행 명령
+        sqlplus_command = [
+            'sqlplus', '-S', 'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR'
+        ]
+
+        # SQL 실행 (스키마별 테이블 목록 조회)
+        sql_query = """SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF;
+        SELECT OWNER, TABLE_NAME FROM ALL_TABLES ORDER BY OWNER, TABLE_NAME;
+        EXIT;"""
+
+        # SQL*Plus 실행
+        result = subprocess.run(
+            sqlplus_command,
+            input=sql_query,
+            capture_output=True,
+            text=True
+        )
+
+        # 결과 분석
+        schema_tables = {}
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line:
+                parts = line.split()  # 공백 기준으로 OWNER와 TABLE_NAME 분리
+                if len(parts) >= 2:
+                    schema, table = parts[0], parts[1]
+                    if schema not in schema_tables:
+                        schema_tables[schema] = []
+                    schema_tables[schema].append(table)
+
+        # 결과 출력
+        if schema_tables:
+            print("  스키마별 테이블 목록:")
+            for schema, tables in schema_tables.items():
+                print(f"\n🔹 스키마: {schema}")
+                for table in tables:
+                    print(f"  - {table}")
+        else:
+            print(" 테이블이 존재하지 않습니다.")
+
+        return schema_tables
+
+    except subprocess.CalledProcessError as e:
+        print(f" Error: {e.stderr}")
+        return {}
+
+# OPRAIMDG에서 메타데이터 만들기.
+def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
+    
+    # LINESIZE : 컬럼이 길때 다음줄로 출력하는 것 방지
+    # PAGESIZE : 0일 경우 헤더 무시
+    # TRIMSPOOL : 의미없는 공백 무시
+    # IMDCOM FORMAT A200 : IMDCOM 컬럼의 출력 길이 늘리기
+    sql_query = f"""
+    SET LINESIZE 2000;
+    SET PAGESIZE 0;
+    SET TRIMSPOOL ON;
+    COL IMDCOM FORMAT A200;
+    -- 개행문자 없애기
+    SELECT IMDUNM, IMDCLS, REPLACE(REPLACE(IMDCOM, CHR(10), ' '), CHR(13), ' ') AS IMDCOM 
+    FROM {schema_name}.{table_name};
+    EXIT;
+    """
+    
+    try:
+        # SQL*Plus 실행 및 결과 캡처
+        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
+        print(f"  RESULT: \n{str(result)[:1000]}")
+        output = result.stdout
+        print(f"  OUTPUT: \n{str(output)[:1000]}")
+        
+        # 결과 파싱
+        lines = output.strip().split("\n")
+        print(f"  LINE: \n{str(lines)[:1000]}")
+        metadata = []
+        
+        for line in lines[:-1]:
+            # print(line)
+            values = line.split(None, 2)  # 첫 두 개는 그대로, 세 번째는 나머지 전체를 포함
+            if len(values) == 3:
+                imdunm = values[0].strip()
+                imdcls = values[1].strip()
+                imdcom = values[2].strip()  # 설명은 전체 유지
+                metadata.append({
+                    "UNNO": imdunm,
+                    "Class": imdcls,
+                    "Description": imdcom
+                })
+        
+        # JSON 파일로 저장
+        json_filename = "/workspace/data/METADATA_OPRAIMDG.json"
+        with open(json_filename, "w", encoding="utf-8") as json_file:
+            json.dump(metadata, json_file, indent=4, ensure_ascii=False)
+        
+        print(f"  Metadata saved to {json_filename}")
+    
+    except subprocess.CalledProcessError as e:
+        print(f" SQL Execution Error: {e.stderr}")
+
+# # Oracle sqlplus 명령어 실행 예시
+@time_tracker
+def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
+    # None 값을 SQL 의 NULL로 매칭
+    cls = "NULL" if (cls is None or cls == "NULL") else cls
+    unno = "NULL" if (unno is None or unno == "NULL") else unno
+
+    # SQL*Plus 명령어를 실행할 기본 명령어
+    sql_query = \
+    f"""
+    SET LINESIZE 150;
+    SET PAGESIZE 1000;
+    SET TRIMSPOOL ON;
+
+    SELECT 
+        p.cls  AS CLS,
+        p.unno AS UNNO,
+        p.port AS POL_PORT,
+        d.port AS POD_PORT,
+        DECODE(p.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Landing_STATUS,
+        DECODE(d.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Departure_STATUS
+    FROM icon.ai_dg_check p
+    JOIN icon.ai_dg_check d 
+        ON p.unno = d.unno 
+        AND p.cls = d.cls
+    WHERE (p.cls={cls} OR {cls} IS NULL) AND (p.unno={unno} OR {unno} IS NULL) AND p.port LIKE '{pol_port}'
+      AND (p.cls={cls} OR {cls} IS NULL) AND (d.unno={unno} OR {unno} IS NULL) AND d.port LIKE '{pod_port}';
+    EXIT;
+    """
+    
+    # subprocess를 사용하여 SQL*Plus 명령어 실행
+    try:
+        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
+        # SQL*Plus의 출력 결과를 받아옵니다
+        print("  SQL Query Results:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        # 오류가 발생한 경우 오류 메시지 출력
+        print(f" Error: {e.stderr}")
+    # import code
+    # code.interact(local=locals())  # 현재 변수들을 유지한 상태에서 Python 인터랙티브 셸 실행
+    return sql_query, result.stdout
+
+def get_metadata(config):
+    """
+    - port_path JSON: 딕셔너리 형태이며, 'location_code' 키의 값을 추출.
+    - unno_path JSON: 리스트 형태이며, 모든 항목을 문자열로 반환.
+    """
+    print("[SOOWAN] get_metadata 진입")
+    unno_path = config.metadata_unno # 안 쓴다면서요!
+    port_path = config.metadata_path
+
+    # port_path JSON 파일 로드 (딕셔너리)
+    with open(port_path, "r", encoding="utf-8") as f:
+        port_data = json.load(f)
+    
+    # location_code 값 추출 (키가 없을 경우 빈 리스트 반환)
+    location_codes = json.dumps(port_data.get("location_code"), ensure_ascii=False)
+
+    # unno_path JSON 파일 로드 (리스트)
+    with open(unno_path, "r", encoding="utf-8") as f:
+        unno_data = json.load(f)
+    
+    # 리스트 내 모든 요소를 문자열로 변환
+    unno_list_as_string = json.dumps(unno_data, ensure_ascii=False)
+
+    return location_codes, unno_list_as_string
+
+
+@time_tracker
+async def generate_sql(user_query, model, tokenizer, config):
+    
+    # Parse Metadata
+    metadata_location, metadata_unno = get_metadata(config)
+    # metadata_location = get_metadata(config)
+
+    PROMPT =\
+f'''
+<bos>
+<system>
+"YourRole": "질문으로 부터 조건을 추출하는 역할",
+"YourJob": "아래 요구 사항에 맞추어 'unno', 'class', 'pol_port', 'pod_port' 정보를 추출하여, 예시처럼 답변을 구성해야 합니다.",
+"Requirements": [
+    unno: UNNO Number는 4개의 숫자로 이루어진 위험물 번호 코드야. 
+    class : UN Class는 2.1, 6.0,,, 의 숫자로 이루어진 코드야.
+    pol_port, pod_port: 항구 코드는 5개의 알파벳 또는 나라의 경우 2개의 알파벳과 %로 이루어져 있어. 다음은 항구 코드에 대한 메타데이터야 {metadata_location}. 여기에서 매칭되는 코드만을 사용해야 해. 항구는 항구코드, 나라는 2개의 나라코드와 %를 사용해.
+    unknown : 질문에서 찾을 수 없는 정보는 NULL을 출력해줘.
+]
+
+"Examples": [
+    "질문": "UN 번호 1689 화물의 부산에서 미즈시마로의 선적 가능 여부를 확인해 주세요.",
+    "답변": "<unno/>1689<unno>\\n<class/>NULL<class>\\n<pol_port/>KRPUS<pol_port>\\n<pod_port/>JPMIZ<pod_port>"
+
+    "질문": "UN 클래스 2.1 화물의 한국에서 일본으로의 선적 가능 여부를 확인해 주세요.",
+    "답변": "<unno/>NULL<unno>\\n<class/>2.1<class>\\n<pol_port/>KR%<pol_port>\\n<pod_port/>JP%<pod_port>"
+]
+- 최종 출력은 반드시 다음 4가지 항목을 포함해야 합니다:
+    <unno/>...<unno>
+    <class/>...<class>
+    <pol_port/>...<pol_port>
+    <pod_port/>...<pod_port>
+</system>
+
+<user>
+질문: "{user_query}"
+</user>
+
+<assistant>
+답변:
+</assistant>
+'''
+
+
+    # Get Answer
+    ## From Vllm Inference
+    from vllm import SamplingParams
+    import uuid
+    from RAG import collect_vllm_text
+    sampling_params = SamplingParams(
+        max_tokens=config.model.max_new_tokens,
+        temperature=config.model.temperature,
+        top_k=config.model.top_k,
+        top_p=config.model.top_p,
+        repetition_penalty=config.model.repetition_penalty,
+    )
+    accepted_request_id = str(uuid.uuid4())
+    outputs_result = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+    print(f"[GENERATE_SQL] SQL Model Outputs:{outputs_result}")
+    # input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
+    # input_length = input_ids['input_ids'].shape[1]
+    # print(f"  INPUT LENGTH: {input_length}")
+    # outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
+    # outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
+    # print(f"  OUTPUTS: {outputs_result}")
+
+    # Regular expression to extract content between <query/> and <query>
+    unno_pattern = r'<unno.*?>(.*?)<unno.*?>'
+    class_pattern = r'<class.*?>(.*?)<class.*?>'
+    pol_port_pattern = r'<pol_port.*?>(.*?)<pol_port.*?>'
+    pod_port_pattern = r'<pod_port.*?>(.*?)<pod_port.*?>'
+
+    UN_number = re.search(unno_pattern, outputs_result, re.DOTALL).group(1)
+    UN_class = re.search(class_pattern, outputs_result, re.DOTALL).group(1)
+    POL = re.search(pol_port_pattern, outputs_result, re.DOTALL).group(1)
+    POD = re.search(pod_port_pattern, outputs_result, re.DOTALL).group(1)
+
+    print(f"  UN_number:{UN_number}, UN_class:{UN_class}, POL:{POL}, POD:{POD}")
+    final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
+
+    ### Temporary ###
+    title, explain, table_json, chart_json = (None,) * 4
+    return final_sql_query, title, explain, result, chart_json
+
+if __name__ == "__main__":
+    # check_sqlplus()             # sqlplus가 잘 동작하는지 확인
+    # check_db_connection()       # 데이터베이스 접속 여부 확인
+    # get_all_schema_tables()    # ICON Table Name 반환
+    # run_sql_unno(cls=4.1, pol_port="KR%", pod_port="JPUKB")         # 실제 SQL 쿼리 실행
+    # make_metadata_from_table()
+
+    query = "UN번호 1033, UN 클래스 2.1인 화물의 부산항에서 고베항으로의 선적이 가능한지 알아봐줘."
+    model,tokenizer = initialze(config)
+    # print(f"  METADATA: {metadata_location}")
+    final_sql_query, title, explain, table_json, chart_json = generate_sql(query, model, tokenizer, config)
+    print(f"  Final Sql Query: {final_sql_query}\n  Result: {table_json}")
+
+```
+
+
+#에러
+
+```log
+
+(InferenceActor pid=571) 2025-03-18 00:28:37,813 INFO Entering process_to_format()
+(InferenceActor pid=571) 2025-03-18 00:28:37,816 INFO Entering generate_answer_stream()
+(InferenceActor pid=571) 2025-03-18 00:28:37,816 INFO Exiting generate_answer_stream() -- Elapsed: 0.00s
+(InferenceActor pid=571) 2025-03-18 00:28:37,816 INFO Entering collect_vllm_text_stream()
+(InferenceActor pid=571) 2025-03-18 00:28:37,816 INFO Exiting collect_vllm_text_stream() -- Elapsed: 0.00s
+(InferenceActor pid=571)   SQL Model Outputs:
+(InferenceActor pid=571) [ERROR] generate_sql() 도중 예외 발생: 'NoneType' object has no attribute 'group'
+(InferenceActor pid=571) [SOOWAN] process_to_format 진입
+(InferenceActor pid=571) [SOOWAN] 타입 : SQL
+(InferenceActor pid=571) [ERROR] process_to_format (SQL) failed: list index out of range
+(InferenceActor pid=571) [STREAM] Starting partial generation for request_id=1742257710918-6511
+(InferenceActor pid=571) [STREAM] _stream_partial_answer => request_id=1742257710918-6511, chart=None
+(InferenceActor pid=571) [DEBUG] Prepared reference data: {"type": "reference", "status_code": 200, "result": "OK", "detail": "Reference data", "evt_time": "2025-03-18T00:28:37.813671", "data_list": [[]]}
+(InferenceActor pid=571) [STREAM] Sent reference data for request_id=1742257710918-6511
+(InferenceActor pid=571) [STREAM] final_query =
+(InferenceActor pid=571)
+(InferenceActor pid=571)
+(InferenceActor pid=571) [사용자 질문]
+(InferenceActor pid=571) UN 클래스 4.1, UN NO 1309인 DG 화물이 부산항에서 고베항에 선적 가능 여부를 알려줘.
+(InferenceActor pid=571) [DEBUG] Token counts - 이전 대화: 0, RAG 검색 자료: 1, 사용자 구체화 질문: 38, 총합: 48
+(InferenceActor pid=571) [STREAM] SSE: calling generate_answer_stream for request_id=1742257710918-6511
+(InferenceActor pid=571) 최종 LLM 추론용 prompt 생성 :
+(InferenceActor pid=571) <bos><start_of_turn>user
+(InferenceActor pid=571) 너는 남성해운의 도움을 주는 데이터 분석가야.
+(InferenceActor pid=571)
+(InferenceActor pid=571) 주어진 **내부 자료**를 바탕으로 **내 질문**에 **상세하고 논리정연한** 답변을 작성해줘.
+(InferenceActor pid=571) **답변은 반드시 아래 규칙에 맞춰 Markdown 형식**을 지켜 작성해줘:
+(InferenceActor pid=571)
+(InferenceActor pid=571) 1. **문단/제목**: `#`, `##`, `###` 등을 사용해 문단을 구분하고, 문단 사이에는 **한 줄 이상의 공백**을 넣어줘.
+(InferenceActor pid=571) 2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
+(InferenceActor pid=571) 3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
+(InferenceActor pid=571) 4. **표**: 표가 필요하면 **Markdown 표 형식**을 사용하거나, 간단히 문단으로도 표현해줘.
+(InferenceActor pid=571) 5. **코드 블록**: 예시 코드나 특수한 데이터는 ```` ``` 언어명 ... ``` ```` 을 사용해 표시해줘.
+(InferenceActor pid=571) 6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
+(InferenceActor pid=571)
+(InferenceActor pid=571) 만약 **주어진 자료**에 질문에 해당하는 내용이 **없다면**, `"내부 자료에 해당 자료 없음"`이라고만 답변해줘.
+(InferenceActor pid=571)
+(InferenceActor pid=571) **주의**:
+(InferenceActor pid=571) - 너무 짧거나 단답형이 아닌, 충분히 **길고 자세한 보고서 형태**로 답변해줘.
+(InferenceActor pid=571) - 가능하면 **논리적 근거**와 **예시**를 들어 설명해줘.
+(InferenceActor pid=571) - **문단**을 명확히 구분하여 **읽기 편하게** 작성해줘.
+(InferenceActor pid=571)
+(InferenceActor pid=571) 아래는 **내부 자료**와 **질문**이 주어질 것이니, 꼭 이 지침을 따라 답변해줘.
+(InferenceActor pid=571)
+(InferenceActor pid=571) 내부 자료: 테이블 조회 시도 중 예외가 발생했습니다. 해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다.
+(InferenceActor pid=571)
+(InferenceActor pid=571) 질문:
+(InferenceActor pid=571)
+(InferenceActor pid=571) [사용자 질문]
+(InferenceActor pid=571) UN 클래스 4.1, UN NO 1309인 DG 화물이 부산항에서 고베항에 선적 가능 여부를 알려줘.<end_of_turn>
+(InferenceActor pid=571) <start_of_turn>model
+(InferenceActor pid=571) 답변:
+(InferenceActor pid=571)
+(InferenceActor pid=571) INFO 03-18 00:28:37 async_llm.py:164] Added request b4455272-3e57-44a7-a6e0-82cb98eb94c6.
+(InferenceActor pid=571) INFO 03-18 00:28:39 loggers.py:78] Avg prompt throughput: 1653.9 tokens/s, Avg generation throughput: 36.3 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 1.0%, Prefix cache hit rate: 0.0%
+(InferenceActor pid=571) INFO 03-18 00:28:44 loggers.py:78] Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 43.4 tokens/s, Running: 1 reqs, Waiting: 0 reqs, GPU KV cache usage: 1.4%, Prefix cache hit rate: 0.0%
+[DEBUG] SSE closed.
+(ServeReplica:default:inference pid=562) INFO 2025-03-18 00:28:46,834 default_inference g4s8lqro 91cfb125-8dcb-49d2-9dc3-62306ba3a939 -- CALL close_sse_queue OK 2.5ms
+(InferenceActor pid=571) 2025-03-18 00:28:46,827 INFO Entering error_format()
+(InferenceActor pid=571) 2025-03-18 00:28:46,827 INFO Exiting error_format() -- Elapsed: 0.00s
+(InferenceActor pid=571) 2025-03-18 00:28:46,830 INFO 배치 처리 후 상태 - Process Memory: RSS=1280.33 MB, VMS=36349.59 MB
+(InferenceActor pid=571) 2025-03-18 00:28:46,830 INFO 배치 처리 후 상태 - GPU Memory: allocated=0.00 MB, reserved=0.00 MB
+(InferenceActor pid=571) [STREAM] error in partial streaming => 'list' object has no attribute 'get'
+(InferenceActor pid=571) [STREAM] close_sse_queue => removing SSE queue for request_id=1742257710918-6511
+(InferenceActor pid=571) === [In-Flight Batching] Waiting for first item in request_queue... ===
+(InferenceActor pid=571) [STREAM] close_sse_queue => no SSE queue found for 1742257710918-6511
+(InferenceActor pid=571) INFO 03-18 00:28:49 loggers.py:78] Avg prompt throughput: 0.0 tokens/s, Av
+
+```
+
 
 -----------------
 
@@ -4830,10 +5333,11 @@ Base-Knowledge:
  - Langchain을 활용하여 reqeust_id별로 대화를 저장하고 활용할 수 있습니다.
  - 에러 발생 시 로깅을 통해 문제를 추적할 수 있도록 설계되었습니다.
 
+
 Answer-Rule:
  1. 추후 소스 코드 개선, 구조 변경, 에러 로그 추가 등 다양한 요구사항을 반영할 수 있는 확장성을 고려합니다.
  2. 전체 코드는 한국어로 주석 및 설명이 포함되어, 이해와 유지보수가 용이하도록 작성됩니다.
 
+
 My-Requirements:
- 1. User requirements.
- 2. My requirements.
+ 1. 위에서 검출된 두 에러를 적합하게 처리해줘.
