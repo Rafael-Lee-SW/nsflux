@@ -627,7 +627,7 @@ class InferenceActor:
         await self.queue_manager.put_token.remote(request_id, reference_json)
         
         print(f"[STREAM] Sent reference data for request_id={request_id}")
-             
+        
         # 1) 메모리 가져오기 (없으면 생성)
         try:
             memory = self.get_memory_for_session(request_id)
@@ -698,9 +698,15 @@ class InferenceActor:
                 # print(f"[STREAM] Received partial_text: {partial_text}")
                 new_text = partial_text[len(partial_accumulator) :]
                 partial_accumulator = partial_text
-                if not new_text.strip():
+                # # 원래 코드
+                # if not new_text.strip():
+                #     continue
+
+                # 수정 예시: new_text가 완전히 빈 문자열("")인 경우에만 건너뛰기
+                if new_text == "":
                     continue
-                    # Wrap answer tokens in a JSON object with type "answer"
+                
+                # Wrap answer tokens in a JSON object with type "answer"
                 answer_json = json.dumps({
                     "type": "answer",
                     "answer": new_text

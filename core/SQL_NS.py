@@ -22,16 +22,16 @@ with open("./config.yaml", "r") as f:
 
 # 기본 SQL 접속코드
 sqlplus_command = [
-            'sqlplus', '-S', 'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR'
-        ]
+    "sqlplus", "-S", "LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR"
+]
 
 '''
 ### ORACLE DB 정보 ###
 TABLE : ai_dg_check
     COLUMNS : CLS (위험물 클래스)
-              UNNO (위험물 UN 번호)
-              PORT (포트 번호)
-              ALLOW_YN (취급 가능 여부)
+            UNNO (위험물 UN 번호)
+            PORT (포트 번호)
+            ALLOW_YN (취급 가능 여부)
 '''
 
 SQL_UNNO_PROMPT = \
@@ -224,7 +224,7 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
         ON p.unno = d.unno 
         AND p.cls = d.cls
     WHERE (p.cls={cls_val} OR {cls_val} IS NULL) AND (p.unno={unno_val} OR {unno_val} IS NULL) AND p.port LIKE '{pol_port}'
-      AND (p.cls={cls_val} OR {cls_val} IS NULL) AND (d.unno={unno_val} OR {unno_val} IS NULL) AND d.port LIKE '{pod_port}';
+    AND (p.cls={cls_val} OR {cls_val} IS NULL) AND (d.unno={unno_val} OR {unno_val} IS NULL) AND d.port LIKE '{pod_port}';
     EXIT;
     """
     
@@ -245,7 +245,6 @@ def get_metadata(config):
     - port_path JSON: 딕셔너리 형태이며, 'location_code' 키의 값을 추출.
     - unno_path JSON: 리스트 형태이며, 모든 항목을 문자열로 반환.
     """
-    print("[SOOWAN] get_metadata 진입")
     print("[SOOWAN] get_metadata 진입")
     if not config or not hasattr(config, "metadata_unno"):
         raise ValueError("Config 객체에 'metadata_unno' 속성이 없습니다. config: {}".format(config))
