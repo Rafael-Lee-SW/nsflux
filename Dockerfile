@@ -1,6 +1,6 @@
 # 베이스 이미지 선택
-FROM globeai/flux_ns:2.2
-# FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
+# FROM globeai/flux_ns:2.2
+FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
 
 # 2. 대화형 입력 없이 진행하도록 환경 변수 설정
 ENV DEBIAN_FRONTEND=noninteractive
@@ -8,9 +8,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 # 작업 디렉토리 설정
 WORKDIR /workspace
 
-# Install necessary system packages and Python dependencies in one go (fewer layers)
+# # Solve the C compier
+# RUN apt-get update && apt-get install build-essential -y
+
 # combining apt-get calls for efficiency
-# Miniconda 설치에 필요한 시스템 패키지 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     bzip2 \
@@ -35,15 +36,6 @@ RUN conda install python=3.11.9 -y && \
 
 # 버전 확인 (빌드 시 로그에 표시됨)
 RUN python --version && pip --version
-
-# (4) CUDA_HOME 환경변수 설정
-#     which nvcc 결과가 /usr/bin/nvcc 이고 실제 툴킷이 /usr/lib/nvidia-cuda-toolkit 내에 있으므로 해당 경로를 지정
-# ENV CUDA_HOME="/usr/lib/nvidia-cuda-toolkit"
-# ENV PATH="${CUDA_HOME}/bin:${PATH}"
-# ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
-
-# # Solve the C compier
-# RUN apt-get update && apt-get install build-essential -y
 
 # requirements.txt만 먼저 복사해서 종속성 설치 (캐시 활용)
 COPY requirements.txt .
