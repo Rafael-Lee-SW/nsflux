@@ -1,7 +1,7 @@
 # config.yaml
 # Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
 ### Model
-model_id : 'google/gemma-2-27b-it'
+model_id : 'google/gemma-3-27b-it'
 response_url : "http://202.20.84.16:8083/responseToUI"
 # response_url : "https://eo5smhcazmp1bqe.m.pipedream.net"
 

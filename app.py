@@ -18,7 +18,7 @@ os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
 # GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU)
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
 
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"

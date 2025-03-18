@@ -11,7 +11,6 @@ import re
 os.environ['ORACLE_HOME'] = '/workspace/oracle/instantclient_23_7'
 os.environ['LD_LIBRARY_PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('LD_LIBRARY_PATH', '')
 os.environ['PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('PATH', '')
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
 
 import yaml
 from box import Box

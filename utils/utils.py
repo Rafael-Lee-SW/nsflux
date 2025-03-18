@@ -219,7 +219,7 @@ def load_model(config):
         
         vllm_conf = config.get("vllm", {})
         
-        engine_args.enable_prefix_caching = True
+        engine_args.enable_prefix_caching = False
         engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
         engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
