@@ -8,16 +8,16 @@ import uuid
 import logging
 from datetime import datetime, timedelta
 # from sql import generate_sql
-from SQL_NS import generate_sql
+from core.SQL_NS import generate_sql
 
 # Tracking
-from tracking import time_tracker
+from utils.tracking import time_tracker
 
 # Import the vLLM to use the AsyncLLMEngine
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 
 # In RAG.py (at the top, add an import for prompts)
-from prompt_rag import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE
+from prompt.prompt_rag import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE
 
 global beep
 beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
@@ -88,7 +88,7 @@ async def execute_rag(QU, KE, TA, TI, **kwargs):
 ### RAG와 다르게 SQL내에서도 vLLM 모델을 사용해야 하므로 따로 정의 ###
 @time_tracker
 async def execute_sql(QU, KE, TA, TI, **kwargs):
-    from SQL_NS import get_metadata, run_sql_unno
+    from core.SQL_NS import get_metadata, run_sql_unno
 
     print("[SANGJE]: execute_sql : 진입")
     model = kwargs.get("model")

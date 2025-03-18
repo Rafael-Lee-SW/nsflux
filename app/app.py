@@ -37,14 +37,14 @@ from flask import (
 import json
 import yaml
 from box import Box
-from utils import random_seed, error_format, send_data_to_server, process_format_to_response
+from utils.utils import random_seed, error_format, send_data_to_server, process_format_to_response
 from datetime import datetime
 
 # Import the Ray modules
-from ray_setup import init_ray
+from ray_deploy.ray_setup import init_ray
 from ray import serve
-from ray_utils import InferenceActor
-from ray_utils import InferenceService, SSEQueueManager
+from ray_deploy.ray_utils import InferenceActor
+from ray_deploy.ray_utils import InferenceService, SSEQueueManager
 
 # ------ checking process of the thread level
 import logging
@@ -100,7 +100,7 @@ def chat_page():
     return render_template("chatroom.html")
 
 # data 관리
-from data_control import data_control_bp
+from data_control.data_control import data_control_bp
 app.register_blueprint(data_control_bp, url_prefix="/data")
 
 # Query Endpoint (Non-streaming)

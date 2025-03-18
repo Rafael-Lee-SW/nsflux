@@ -10,13 +10,13 @@ from typing import Dict, Optional  # --- NEW OR MODIFIED ---
 import threading  # To find out the usage of thread
 import datetime
 
-from RAG import (
+from core.RAG import (
     query_sort,
     execute_rag,
     generate_answer,
     generate_answer_stream,
 )  # hypothetically
-from utils import (
+from utils.utils import (
     load_model,
     load_data,
     process_format_to_response,
@@ -24,8 +24,8 @@ from utils import (
     error_format,
 )
 # from summarizer import summarize_conversation
-from summarizer import summarize_conversation
-from debug_tracking import log_batch_info, log_system_info
+from utils.summarizer import summarize_conversation
+from utils.debug_tracking import log_batch_info, log_system_info
 
 # 랭체인 도입
 from langchain.memory import ConversationBufferMemory

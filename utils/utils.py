@@ -28,7 +28,7 @@ from vllm.engine.async_llm_engine import AsyncLLMEngine
 MIN_WEIGHT_SIZE = 10 * 1024 * 1024
 
 # For tracking execution time of functions
-from tracking import time_tracker
+from utils.tracking import time_tracker
 
 # Logging
 import logging
@@ -346,7 +346,7 @@ def load_model(config):
                 device_map="auto",
                 torch_dtype=torch.bfloat16,
                 cache_dir=config.cache_dir,
-                quantization_config=bnb_config,
+                # quantization_config=bnb_config,
                 trust_remote_code=True,
                 token=token,
             )

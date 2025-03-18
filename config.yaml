@@ -31,7 +31,7 @@ vllm:
   max_model_len: 8192            # For the new model
 
 model:
-  quantization_4bit : True # Quantize 4-bit
+  quantization_4bit : False # Quantize 4-bit
   quantization_8bit : False # Quantize 8-bit
   max_new_tokens : 2048      # 생성할 최대 토큰 수
 

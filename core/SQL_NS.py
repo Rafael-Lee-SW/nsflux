@@ -2,9 +2,9 @@
 
 import os
 import subprocess
-from tracking import time_tracker
+from utils.tracking import time_tracker
 import json
-from utils import load_model
+from utils.utils import load_model
 import re
 
 # 환경 변수 설정
@@ -322,7 +322,7 @@ f'''
     ## From Vllm Inference
     from vllm import SamplingParams
     import uuid
-    from RAG import collect_vllm_text
+    from core.RAG import collect_vllm_text
     sampling_params = SamplingParams(
         max_tokens=config.model.max_new_tokens,
         temperature=config.model.temperature,

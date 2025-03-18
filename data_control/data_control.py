@@ -8,7 +8,7 @@ import numpy as np
 from umap import UMAP
 from flask import Blueprint, request, jsonify, render_template
 from transformers import AutoModel, AutoTokenizer
-from utils import vectorize_content, normalize_text_vis  # Assumes you have defined vectorize_content in utils.py
+from utils.utils import vectorize_content, normalize_text_vis  # Assumes you have defined vectorize_content in utils.py
 
 # For PPTX extraction
 from pptx import Presentation
