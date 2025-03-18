@@ -19,8 +19,8 @@ vllm:
   scheduler_delay_factor: 0.1
   enable_chunked_prefill: True
   tensor_parallel_size: 1         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
-  max_num_seqs: 192               # v1에 따른 상향
-  max_num_batched_tokens: 16384   # v1에 따른 상향
+  max_num_seqs: 128               # v1에 따른 상향
+  max_num_batched_tokens: 34000   # v1에 따른 상향
   block_size: 128                 # 미적용
   gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
   # v1에 따른 새로운 인자값
@@ -28,7 +28,7 @@ vllm:
   enable_memory_defrag: True      
   disable_sliding_window: True    # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
   # 모델 변경에 따른 추가된 설정
-  max_model_len: 8192            # For the new model
+  max_model_len: 24000            # For the new model (Gemma2 : 8192)
 
 model:
   quantization_4bit : False # Quantize 4-bit

@@ -10,7 +10,7 @@
 ├─ prompt/prompt_rag.py
 ├─ ray_deploy/ray_setup.py
 ├─ ray_deploy/ray_utils.py
-├─ templates/chatroom.html
+├─ templates/index_test.html
 └─ utils/utils.py
 ```
 
@@ -39,8 +39,8 @@ vllm:
   scheduler_delay_factor: 0.1
   enable_chunked_prefill: True
   tensor_parallel_size: 1         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
-  max_num_seqs: 192               # v1에 따른 상향
-  max_num_batched_tokens: 16384   # v1에 따른 상향
+  max_num_seqs: 128               # v1에 따른 상향
+  max_num_batched_tokens: 34000   # v1에 따른 상향
   block_size: 128                 # 미적용
   gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
   # v1에 따른 새로운 인자값
@@ -48,7 +48,7 @@ vllm:
   enable_memory_defrag: True      
   disable_sliding_window: True    # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
   # 모델 변경에 따른 추가된 설정
-  max_model_len: 8192            # For the new model
+  max_model_len: 24000            # For the new model (Gemma2 : 8192)
 
 model:
   quantization_4bit : False # Quantize 4-bit
@@ -382,7 +382,6 @@ def query_stream():
                 token = ray.get(sse_manager.get_token.remote(chat_id, 120))
                 if token is None or token == "[[STREAM_DONE]]":
                     break
-                print("[APP-QUERYSTREAM] 최종 송신 데이터: ", token)
                 yield f"data: {token}\n\n"
         except Exception as e:
             error_token = json.dumps({"type": "error", "message": str(e)})
@@ -1326,7 +1325,12 @@ class InferenceActor:
                 # print(f"[STREAM] Received partial_text: {partial_text}")
                 new_text = partial_text[len(partial_accumulator) :]
                 partial_accumulator = partial_text
-                if not new_text.strip():
+                # # 원래 코드
+                # if not new_text.strip():
+                #     continue
+
+                # 수정 예시: new_text가 완전히 빈 문자열("")인 경우에만 건너뛰기
+                if new_text == "":
                     continue
                 
                 # Wrap answer tokens in a JSON object with type "answer"
@@ -1335,7 +1339,7 @@ class InferenceActor:
                     "answer": new_text
                 }, ensure_ascii=False)
                 # Use the central SSEQueueManager to put tokens
-                print(f"[STREAM] Sending token: {answer_json}")
+                # print(f"[STREAM] Sending token: {answer_json}")
                 await self.queue_manager.put_token.remote(request_id, answer_json)
             final_text = partial_accumulator
             # # 이제 memory에 저장 (이미 request_id를 알고 있다고 가정) # 랭체인
@@ -1838,11 +1842,11 @@ def load_model(config):
         
         vllm_conf = config.get("vllm", {})
         
-        engine_args.enable_prefix_caching = False
-        engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
+        engine_args.enable_prefix_caching = True
+        # engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
         engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
-        # engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
+        engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
         engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
         # engine_args.block_size = vllm_conf.get("block_size", 128)
         engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization")
@@ -1850,7 +1854,7 @@ def load_model(config):
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
             
-        engine_args.model_max_len = vllm_conf.get("model_max_len")
+        engine_args.max_model_len = vllm_conf.get("max_model_len")
         
         # # 새로 추가: disable_sliding_window 옵션 확인
         # if vllm_conf.get("disable_sliding_window", False):
@@ -3507,15 +3511,15 @@ GENERATE_PROMPT_TEMPLATE = """
 너는 남성해운의 도움을 주는 데이터 분석가야.
 
 주어진 **내부 자료**를 바탕으로 **내 질문**에 **상세하고 논리정연한** 답변을 작성해줘.
-**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**으로 작성하되,  
-줄바꿈은 일반 "\n\n" 대신 HTML \<br\> 태그를 사용하여 문단을 구분해줘.
+**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**으로 작성해줘.
 
-1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 \<br\>\<br\>를 사용해 구분해줘.
+1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 **한 줄 이상의 공백**을 넣어줘.
 2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
 3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
 4. **표**: 표가 필요하면 **Markdown 표 형식**을 사용하거나, 간단히 문단으로도 표현해줘.
 5. **코드 블록**: 예시 코드나 특수한 데이터는 ```` ``` 언어명 ... ``` ```` 을 사용해 표시해줘.
 6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
+7. **각주(footnotes)**: 답변에 각주가 필요한 경우, 본문 중에 `[^1]`, `[^2]`와 같은 형태로 표시하고, 마크다운 형식과 같게 답변 마지막에 해당 각주 내용을 작성해줘.
 
 만약 **주어진 자료**에 질문에 해당하는 내용이 **없다면**, `"내부 자료에 해당 자료 없음"`이라고만 답변해줘.
 
@@ -3539,15 +3543,15 @@ STREAM_PROMPT_TEMPLATE = """
 너는 남성해운의 도움을 주는 데이터 분석가야.
 
 주어진 **내부 자료**를 바탕으로 **내 질문**에 **상세하고 논리정연한** 답변을 작성해줘.
-**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**으로 작성하되,  
-줄바꿈은 일반 "\n\n" 대신 HTML \<br\> 태그를 사용하여 문단을 구분해줘.
+**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**으로 작성해줘.
 
-1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 \<br\>\<br\>를 사용해 구분해줘.
+1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 **한 줄 이상의 공백**을 넣어줘.
 2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
 3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
 4. **표**: 표가 필요하면 **Markdown 표 형식**을 사용하거나, 간단히 문단으로도 표현해줘.
 5. **코드 블록**: 예시 코드나 특수한 데이터는 ```` ``` 언어명 ... ``` ```` 을 사용해 표시해줘.
 6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
+7. **각주(footnotes)**: 답변에 각주가 필요한 경우, 본문 중에 `[^1]`, `[^2]`와 같은 형태로 표시하고, 마크다운 형식과 같게 답변 마지막에 해당 각주 내용을 작성해줘.
 
 만약 **주어진 자료**에 질문에 해당하는 내용이 **없다면**, `"내부 자료에 해당 자료 없음"`이라고만 답변해줘.
 
@@ -4477,935 +4481,1418 @@ def get_umap_data():
 ```
 
 
---- templates/chatroom.html
+--- templates/index_test.html
 
 ```html
 
 <!DOCTYPE html>
 <html lang="ko">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FLUX_NS Chat</title>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
-  <link rel="stylesheet" href="/static/chat_styles.css">
-</head>
-<body>
-  <!-- Sidebar -->
-  <div class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <div class="sidebar-logo">
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg>
-        <h2>FLUX_NS</h2>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>RAG Query Interface</title>
+    
+    <!-- (중요) 분리된 CSS 파일 로드 -->
+    <link rel="stylesheet" href="/static/test_styles.css" />
+
+    <!-- Google Fonts (선택 사항) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>RAG Query Interface</h1>
+        <p>검색 증강 생성(RAG) 쿼리 인터페이스</p>
       </div>
-      <button class="sidebar-toggle" onclick="toggleSidebar()">
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y2="18"></line>
-          <line x1="6" y1="6" x2="18" y2="18"></line>
-        </svg>
-      </button>
-    </div>
-    <button class="new-chat-btn" onclick="createNewChatFromSidebar()">
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="12" y1="5" x2="12" y2="19"></line>
-        <line x1="5" y1="12" x2="19" y2="12"></line>
-      </svg>
-      New Chat
-    </button>
-    <ul id="chatRoomList" class="chat-room-list"></ul>
-  </div>
-
-  <!-- Main Container -->
-  <div class="main-container">
-    <!-- Chat Header -->
-    <div class="chat-header">
-      <button id="sidebarOpener" class="sidebar-opener" onclick="toggleSidebar()">
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="3" y1="12" x2="21" y2="12"></line>
-          <line x1="3" y1="6" x2="21" y2="6"></line>
-          <line x1="3" y1="18" x2="21" y2="18"></line>
-        </svg>
-      </button>
-      <h2 id="chatRoomId">Chat Room: -</h2>
-      <div class="header-actions">
-        <button id="toggleRefBtn" class="toggle-ref-btn" onclick="toggleReferences()">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ref-icon">
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-            <polyline points="15 3 21 3 21 9"></polyline>
-            <line x1="10" y1="14" x2="21" y2="3"></line>
-          </svg>
-          <span>Show References</span>
-        </button>
+      
+      <!-- Test Set Selector -->
+      <div class="test-set-selector">
+        <label for="testSetSelect" title="옵션별 설명:
+• set_3_ask : 3개 질문
+• set_5_ask : 5개 질문
+• set_10_ask : 10개 질문
+• set_15_ask : 15개 질문
+• set_20_ask_1 : 20개 질문 1
+• sset_20_ask_2 : 20개 질문 2
+• same100 : 100개 (같은 질문)
+• circulate5x20 : 5개 질문 x 20회
+• mixed100 : 100개 다양한 질문
+• chatting : 100개 다양한 질문">
+          테스트 세트:
+        </label>
+        <select id="testSetSelect" onchange="updateContinuousCountMax()">
+          <option value="set_3_ask">3개짜리 (set_3_ask)</option>
+          <option value="set_5_ask">5개짜리 (set_5_ask)</option>
+          <option value="set_10_ask">10개짜리 (set_10_ask)</option>
+          <option value="set_15_ask" selected>15개짜리 (set_15_ask)</option>
+          <option value="set_20_ask_1">20개짜리 1 (set_20_ask_1)</option>
+          <option value="sset_20_ask_2">20개짜리 2 (sset_20_ask_2)</option>
+          <option value="same100">동일질문 100개 (same100)</option>
+          <option value="circulate5x20">5문항 × 20회 (circulate5x20)</option>
+          <option value="mixed100">100개 혼합(mixed100)</option>
+          <option value="chatting">관련 있는 질문 100개</option>
+        </select>
       </div>
-    </div>
-
-    <!-- Reference Container -->
-    <div id="referenceContainer" class="reference-container"></div>
-
-    <!-- Chat Box -->
-    <div class="chat-box" id="chatBox">
-      <!-- Welcome content will be inserted here by JS -->
-    </div>
-
-    <!-- Input Container -->
-    <div class="input-container" id="inputContainer">
-      <div class="input-box">
-        <textarea 
-          id="userMessage" 
-          class="message-input" 
-          placeholder="메시지를 입력하세요..."
-          rows="1"
-          onkeydown="handleKeyDown(event)"
-        ></textarea>
-        <button id="sendButton" class="send-btn" onclick="sendMessage()">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-          </svg>
-        </button>
+      
+      <!-- Tabs Navigation -->
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('tab1')">단일 쿼리 (Single Query)</div>
+        <div class="tab" onclick="switchTab('tab2')">동시 쿼리 (Concurrent Queries)</div>
+        <div class="tab" onclick="switchTab('tab3')">스트리밍 (Streaming)</div>
+        <div class="tab" onclick="switchTab('tab4')">동시 스트리밍 (Simultaneous Streaming)</div>
+        <div class="tab" onclick="switchTab('tab5')">연속 테스트 (Continuous Test)</div>
+        <div class="tab" onclick="switchTab('tab6')">채팅 테스트 (Chat Test)</div>
       </div>
-    </div>
-  </div>
-
-  <script>
-    /************************************************************************
-     * Global Variables and Data Structures
-     ************************************************************************/
-    let currentRequestId = null; // 현재 활성 채팅방의 requestId
-    let chatRooms = []; // [{ requestId, messages: [{role, content, references?}] }]
-    let referenceList = []; // 현재 쿼리로부터 수집된 참조 데이터
-    let isProcessing = false; // 동시 요청 방지 플래그
-    let isMobileView = window.innerWidth <= 768;
-
-    // welcome 화면 HTML 템플릿 (id 대신 클래스만 사용)
-    const welcomeContentHTML = `
-      <div class="welcome-screen">
-        <div class="welcome-header">
-          <img src="/static/NS_LOGO_ONLY.svg?height=80&width=80" alt="FLUX_NS Logo" class="welcome-logo" />
-          <h1>Welcome to FLUX_NS</h1>
-          <p class="welcome-subtitle">Ask me anything about NS information</p>
+      
+      <!-- (1) Non-Streaming Query -->
+      <div id="tab1" class="tab-content active">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>단일 쿼리</h2>
+              <h5>Single Query (Non-Streaming)</h5>
+            </div>
+          </div>
+          <div class="input-group">
+            <input type="text" id="userInput" placeholder="질문을 입력하세요... (Type your query here...)" />
+            <button class="btn btn-primary" onclick="sendQuery()">전송 (Send)</button>
+          </div>
+          <div class="output markdown-content" id="output"></div>
         </div>
-        <div class="welcome-content">
-          <div class="example-prompts">
-            <h2>Examples</h2>
-            <div class="example-cards">
-              <button class="example-card" onclick="fillExamplePrompt('디지털 기획팀의 우선과제가 어떻게 돼?')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
-                </svg>
-                <span>디지털 기획팀의 우선과제가 어떻게 돼?</span>
-              </button>
-              <button class="example-card" onclick="fillExamplePrompt('UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
-                </svg>
-                <span>UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.</span>
-              </button>
-              <button class="example-card" onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
-                </svg>
-                <span>IOT 컨테이너 사업 근황에 대해서 알려줘</span>
-              </button>
-              <button class="example-card" onclick="fillExamplePrompt('최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
-                </svg>
-                <span>최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.</span>
-              </button>
+      </div>
+
+      <!-- (2) Concurrency Test (Non-Streaming POST) -->
+      <div id="tab2" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>동시 쿼리 테스트</h2>
+              <h5>Concurrent Queries Test</h5>
             </div>
           </div>
-          
-          <div class="features-container">
-            <div class="capabilities">
-              <h2>Capabilities</h2>
-              <ul class="capability-list">
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                  <span>최신 정보와 데이터 기반 응답</span>
-                </li>
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                  <span>남성해운의 주간회의, 계약서, 인사규범 등에 대한 답변</span>
-                </li>
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                  <span>상세한 답변 및 해설</span>
-                </li>
-              </ul>
-            </div>
-            <div class="limitations">
-              <h2>Limitations</h2>
-              <ul class="limitation-list">
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                  <span>현재 모든 정보를 가지고 있지 아니함</span>
-                </li>
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                  <span>가끔 정확하지 않은 정보를 제공할 수 있음</span>
-                </li>
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                  <span>민감한 요청에 대한 응답이 제한될 수 있음</span>
-                </li>
-              </ul>
-            </div>
-          </div>
+          <p>선택한 테스트 셋의 모든 쿼리를 동시에 전송하고 결과를 표시합니다.</p>
+          <div id="progressIndicator" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
+          <button class="btn btn-primary btn-lg" onclick="testQueries()">테스트 시작 (Start Test)</button>
+          <div class="output" id="testResults"></div>
         </div>
-        
-        <div class="welcome-input-container">
-          <div class="input-prompt">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="16" x2="12" y2="12"></line>
-              <line x1="12" y1="8" x2="12.01" y2="8"></line>
-            </svg>
-            <span>질문을 입력하거나 위의 예시를 선택하세요</span>
+      </div>
+
+      <!-- (3) Single Streaming Test (POST-based) -->
+      <div id="tab3" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>스트리밍 테스트</h2>
+              <h5>Streaming Test (Single via POST)</h5>
+            </div>
           </div>
-          <div class="welcome-input-box">
-            <textarea 
-              id="welcomeMessage" 
-              class="welcome-message-input" 
-              placeholder="메시지를 입력하세요..."
-              rows="1"
-              onkeydown="handleWelcomeKeyDown(event)"
-              oninput="autoResizeTextarea(this)"
-            ></textarea>
-            <button id="welcomeSendButton" class="welcome-send-btn" onclick="sendWelcomeMessage()">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-              </svg>
+          <p>
+            이 테스트는 POST 기반 fetch를 사용하여 응답을 스트리밍합니다.
+            서버는 SSE 스타일의 청크를 전송하며, 참조 데이터와 답변 텍스트를 분리하여 처리합니다.
+          </p>
+          <div class="input-group">
+            <input type="text" id="streamInput" placeholder="스트리밍 쿼리를 입력하세요... (Type your streaming query here...)" />
+            <button class="btn btn-primary" onclick="startStreamPOST()">스트리밍 시작 (Start Streaming)</button>
+          </div>
+          <pre id="streamOutput" class="output markdown-content"></pre>
+          <div class="stream-info-box" id="streamTiming"></div>
+          <button class="btn btn-secondary" onclick="toggleReferences()">참조 데이터 보기 (Show References)</button>
+          <div id="referenceData" class="markdown-content"></div>
+        </div>
+      </div>
+
+      <!-- (4) Simultaneous Streaming Test (POST-based) -->
+      <div id="tab4" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>동시 스트리밍 테스트</h2>
+              <h5>Simultaneous Streaming Test</h5>
+            </div>
+          </div>
+          <p>
+            여러 스트리밍 쿼리를 POST 방식으로 동시에 실행합니다.
+            각 쿼리의 응답이 실시간으로 표시됩니다.
+          </p>
+          <button class="btn btn-primary btn-lg" onclick="testSimulStreamPOST()">동시 스트리밍 시작 (Start Simultaneous Streaming)</button>
+          <div class="output" id="simul-partials"></div>
+          <div class="output" id="simul-results"></div>
+        </div>
+      </div>
+
+      <!-- (5) Continuous Query Test -->
+      <div id="tab5" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>연속 쿼리 테스트</h2>
+              <h5>Continuous Query Test</h5>
+            </div>
+          </div>
+          <p>
+            선택한 테스트 셋에 따라 연속적으로 쿼리를 실행하고 평균 응답 시간을 계산합니다.
+            (스트리밍 모드에서는 각 요청의 스트리밍 결과를 별도 컨테이너에 실시간으로 보여주며, 상단에 요약 테이블도 표시됩니다.)
+          </p>
+          <div id="continuousProgress" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
+          <div class="input-group">
+            <label for="continuousCount" style="white-space: nowrap;">쿼리 개수 설정:</label>
+            <input type="number" id="continuousCount" min="1" max="100" value="10" style="width:6rem;" />      
+            <button class="btn btn-primary" onclick="continuousTest('nonstream')">
+              일반 쿼리 연속 테스트 (Non-Streaming Test)
+            </button>
+            <button class="btn btn-primary" onclick="continuousTest('stream')">
+              스트리밍 연속 테스트 (Streaming Test)
             </button>
           </div>
+          <!-- This container will first show individual streaming panels then a summary table -->
+          <div class="output markdown-content" id="continuousTestResults"></div>
         </div>
       </div>
-    `;
+      
+      <!-- (6) Chat System Test (Shared Request ID) -->
+      <div id="tab6" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>연속 채팅 테스트</h2>
+              <h5>Continuous Chat Test (Shared request_id)</h5>
+            </div>
+          </div>
+          <p>
+            선택한 테스트 셋의 모든 쿼리를 하나의 공유된 request_id로 연속 실행합니다.
+            (스트리밍 모드에서는 각 요청의 스트리밍 결과를 별도 컨테이너에 실시간으로 보여주며, 상단에 요약 테이블도 표시됩니다.)
+          </p>
+          <div id="chatTestProgress" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
+          <div class="input-group">
+            <label for="chatTestCount" style="white-space: nowrap;">쿼리 개수 설정:</label>
+            <input type="number" id="chatTestCount" min="1" max="100" value="10" style="width:6rem;" />
+            <button class="btn btn-primary" onclick="continuousChatTest('nonstream', 'chat')">
+              일반 채팅 테스트 (Non-Streaming)
+            </button>
+            <button class="btn btn-primary" onclick="continuousChatTest('stream', 'chat')">
+              스트리밍 채팅 테스트 (Streaming)
+            </button>
+          </div>
+          <div class="output markdown-content" id="chatTestResults"></div>
+        </div>
+      </div>
+    </div>
 
-    /************************************************************************
-     * Markdown Parser
-     ************************************************************************/
-    function parseMarkdown(text) {
-      if (!text) return '';
-    
-      // 입력 텍스트가 이미 HTML 태그로 시작하면 그대로 반환
-      if (text.trim().startsWith('<')) {
+    <!-- Dark Mode Toggle -->
+    <div class="dark-mode-toggle" onclick="toggleDarkMode()">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-moon">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+      </svg>
+    </div>
+
+    <!-- 공통 스크립트 (HTML 내부) -->
+    <script>
+      /************************************************************
+       * 공통 유틸 함수들
+       ************************************************************/
+      function formatTime(d) {
+        if (!d) return '';
+        const ms = d.getMilliseconds().toString().padStart(3, '0');
+        return d.toLocaleTimeString() + '.' + ms;
+      }
+
+      function toggleDarkMode() {
+        document.body.classList.toggle('dark');
+        localStorage.setItem('darkMode', document.body.classList.contains('dark'));
+      }
+      if (localStorage.getItem('darkMode') === 'true') {
+        document.body.classList.add('dark');
+      }
+
+      function switchTab(tabId) {
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+        document.getElementById(tabId).classList.add('active');
+        document.querySelector(`.tab[onclick="switchTab('${tabId}')"]`).classList.add('active');
+      }
+
+      function toggleHiddenDiv(divId) {
+        const div = document.getElementById(divId);
+        if (!div) return;
+        div.style.display = (div.style.display === "none" || div.style.display === "") ? "block" : "none";
+      }
+
+      function toggleReferences() {
+        const refDiv = document.getElementById("referenceData");
+        refDiv.style.display = (refDiv.style.display === "none" || refDiv.style.display === "") ? "block" : "none";
+      }
+
+      function renderMarkdown(text) {
+        if (!text) return '';
+        text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+        text = text.replace(/\_(.*?)\_/g, '<em>$1</em>');
+        text = text.replace(/\`(.*?)\`/g, '<code>$1</code>');
+        text = text.replace(/\`\`\`([\s\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>');
+        text = text.replace(/\n/g, '<br>');
+        text = text.replace(/^\s*\-\s+(.*?)$/gm, '<li>$1</li>');
+        text = text.replace(/(<li>.*?<\/li>)/gs, '<ul>$1</ul>');
+        text = text.replace(/^#\s+(.*?)$/gm, '<h1>$1</h1>');
+        text = text.replace(/^##\s+(.*?)$/gm, '<h2>$1</h2>');
+        text = text.replace(/^###\s+(.*?)$/gm, '<h3>$1</h3>');
         return text;
       }
-      
-      // 1. 인라인 Markdown 변환 수행
-      // 코드 블록 처리
-      text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(match, language, code) {
-        return `<pre><code class="language-${language}">${escapeHtml(code.trim())}</code></pre>`;
-      });
-      // 인라인 코드 처리
-      text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-      // 굵은 글씨 처리
-      text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      // 기울임 글씨 처리
-      text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-      // 링크 처리 (필요시 수정)
-      text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
-      // 제목 처리
-      text = text.replace(/^### (.*)$/gm, '<h3>$1</h3>');
-      text = text.replace(/^## (.*)$/gm, '<h2>$1</h2>');
-      text = text.replace(/^# (.*)$/gm, '<h1>$1</h1>');
-      // 목록 처리
-      text = text.replace(/^\s*\* (.*)$/gm, '<li>$1</li>');
-      text = text.replace(/^\s*\d+\. (.*)$/gm, '<li>$1</li>');
-      // 목록 아이템을 <ul>로 감싸기 (이미 <ul>이면 건너뜀)
-      text = text.replace(/(<li>[\s\S]*?<\/li>)/gm, function(match) {
-        if (match.trim().startsWith('<ul>')) {
-          return match;
-        }
-        return '<ul>' + match + '</ul>';
-      });
-      // 인용문 처리
-      text = text.replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>');
-      
-      // 2. 문단 구분 처리: 두 줄 이상의 줄바꿈(\n\n)으로 블록을 나눕니다.
-      const blocks = text.split(/\n\s*\n/);
-      
-      // 블록 수준 태그 목록: 해당 태그로 시작하면 이미 블록 요소로 간주합니다.
-      const blockLevelTags = ['<h1>', '<h2>', '<h3>', '<ul>', '<ol>', '<blockquote>', '<pre>'];
-      
-      // 각 블록을 처리: blockLevelTags로 시작하지 않으면 <p> 태그로 감쌉니다.
-      const htmlBlocks = blocks.map(block => {
-        const trimmed = block.trim();
-        // 블록 수준 태그로 시작하면 그대로 반환
-        for (let tag of blockLevelTags) {
-          if (trimmed.startsWith(tag)) {
-            return trimmed;
-          }
-        }
-        // 그렇지 않으면 단일 줄바꿈은 <br>로 변환 후 <p>로 감쌉니다.
-        const replaced = trimmed.replace(/\n/g, '<br>');
-        return `<p>${replaced}</p>`;
-      });
-      
-      let html = htmlBlocks.join('');
-      
-      // 3. 불필요한 <br> 태그 제거 (필요한 경우)
-      html = html.replace(/<\/(h1|h2|h3|ul|ol|blockquote|pre)><br><p>/g, '</$1><p>');
-      return html;
-    }
-    
-    function escapeHtml(unsafe) {
-      return unsafe
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-    }
-    
-    
 
-    /************************************************************************
-     * Welcome Screen Rendering
-     ************************************************************************/
-    function renderWelcomeScreen() {
-      const chatBox = document.getElementById('chatBox');
-      chatBox.innerHTML = welcomeContentHTML;
-      
-      // Hide the regular input container when welcome screen is shown
-      document.getElementById('inputContainer').classList.add('hidden');
-      
-      // Auto-resize the welcome textarea
-      const welcomeTextarea = document.getElementById('welcomeMessage');
-      if (welcomeTextarea) {
-        welcomeTextarea.addEventListener('input', function() {
-          autoResizeTextarea(this);
-        });
-      }
-    }
-
-    /************************************************************************
-     * Function Definitions
-     ************************************************************************/
-    function createNewChatFromSidebar() {
-      createNewChatRoom();
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.remove('open');
-        document.getElementById('sidebar').classList.add('collapsed');
-        updateSidebarOpenerVisibility();
-      }
-    }
-    
-    function fillExamplePrompt(text) {
-      // If welcome screen is visible, fill the welcome textarea
-      const welcomeTextarea = document.getElementById('welcomeMessage');
-      if (welcomeTextarea) {
-        welcomeTextarea.value = text;
-        autoResizeTextarea(welcomeTextarea);
-        welcomeTextarea.focus();
-      } else {
-        // Otherwise fill the regular textarea
-        const messageInput = document.getElementById('userMessage');
-        messageInput.value = text;
-        autoResizeTextarea(messageInput);
-        messageInput.focus();
-      }
-    }
-    
-    function autoResizeTextarea(textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = textarea.scrollHeight + 'px';
-    }
-    
-    function handleWelcomeKeyDown(event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendWelcomeMessage();
-      }
-    }
-    
-    function sendWelcomeMessage() {
-      const welcomeTextarea = document.getElementById('welcomeMessage');
-      if (welcomeTextarea && welcomeTextarea.value.trim()) {
-        const message = welcomeTextarea.value.trim();
-        // Copy the message to the regular input
-        document.getElementById('userMessage').value = message;
-        // Remove welcome screen
-        document.getElementById('inputContainer').classList.remove('hidden');
-        // Send the message
-        sendMessage();
-      }
-    }
-
-    /************************************************************************
-     * Page Load and Initialization
-     ************************************************************************/
-    window.addEventListener('load', () => {
-      createNewChatRoom();
-      setupTextareaAutoResize();
-      setupMobileMenu();
-      
-      // Check for mobile view
-      checkMobileView();
-      window.addEventListener('resize', checkMobileView);
-      
-      // Initialize sidebar state
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.add('collapsed');
-        updateSidebarOpenerVisibility();
-      }
-    });
-    
-    function checkMobileView() {
-      isMobileView = window.innerWidth <= 768;
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.add('collapsed');
-      } else {
-        document.getElementById('sidebar').classList.remove('collapsed');
-      }
-      updateSidebarOpenerVisibility();
-    }
-
-    function setupTextareaAutoResize() {
-      const textarea = document.getElementById('userMessage');
-      textarea.addEventListener('input', function() {
-        autoResizeTextarea(this);
-      });
-    }
-
-    function setupMobileMenu() {
-      document.addEventListener('click', (e) => {
-        const sidebar = document.getElementById('sidebar');
-        const sidebarOpener = document.getElementById('sidebarOpener');
-        
-        if (isMobileView && 
-            sidebar.classList.contains('open') &&
-            !sidebar.contains(e.target) &&
-            !sidebarOpener.contains(e.target)) {
-          sidebar.classList.remove('open');
-          sidebar.classList.add('collapsed');
-          updateSidebarOpenerVisibility();
-        }
-      });
-    }
-
-    function toggleSidebar() {
-      const sidebar = document.getElementById('sidebar');
-      
-      if (isMobileView) {
-        sidebar.classList.toggle('open');
-        sidebar.classList.toggle('collapsed');
-      } else {
-        sidebar.classList.toggle('collapsed');
-      }
-      
-      updateSidebarOpenerVisibility();
-    }
-    
-    function updateSidebarOpenerVisibility() {
-      const sidebar = document.getElementById('sidebar');
-      const opener = document.getElementById('sidebarOpener');
-      
-      if (sidebar.classList.contains('collapsed')) {
-        opener.style.display = 'flex';
-      } else {
-        opener.style.display = 'none';
-      }
-    }
-
-    /************************************************************************
-     * History Loading and Chat Room Rendering
-     ************************************************************************/
-    async function loadHistory(requestId) {
-      try {
-        const response = await fetch(`/history?request_id=${requestId}`);
-        if (response.ok) {
-          const historyData = await response.json();
-          const roomIndex = chatRooms.findIndex(r => r.requestId === requestId);
-          if (roomIndex !== -1) {
-            chatRooms[roomIndex].messages = historyData.history;
-          } else {
-            chatRooms.push({ requestId: requestId, messages: historyData.history });
-          }
-        } else {
-          console.error("History load error:", response.status);
-        }
-      } catch (error) {
-        console.error("Error loading history:", error);
-      }
-    }
-
-    // renderChatBox: 만약 해당 채팅방에 메시지가 없으면 무조건 환영 화면을 보여줍니다.
-    function renderChatBox(requestId) {
-      const chatBox = document.getElementById("chatBox");
-      chatBox.innerHTML = "";
-      const room = chatRooms.find(r => r.requestId === requestId);
-      
-      if (room && room.messages && room.messages.length > 0) {
-        // Show regular input container
-        document.getElementById('inputContainer').classList.remove('hidden');
-        
-        room.messages.forEach((msg, index) => {
-          let sender = msg.role === "human" ? "사용자" : "AI";
-          appendMessageToChatBox(sender, msg.content, index);
-        });
-      } else {
-        renderWelcomeScreen();
-      }
-      
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    // setActiveChatRoom: 새로운 채팅방이면 바로 환영 화면, 기존 채팅방이면 history를 로드한 후 렌더링
-    async function setActiveChatRoom(requestId) {
-      currentRequestId = requestId;
-      document.getElementById("chatRoomId").innerText = `Chat Room: ${requestId}`;
-      let room = chatRooms.find(r => r.requestId === requestId);
-      if (!room) {
-        room = { requestId: requestId, messages: [] };
-        chatRooms.push(room);
-        renderWelcomeScreen();
-      } else {
-        await loadHistory(requestId);
-        renderChatBox(requestId);
-      }
-      renderChatRoomList();
-      clearReferenceData();
-      
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.remove('open');
-        document.getElementById('sidebar').classList.add('collapsed');
-        updateSidebarOpenerVisibility();
-      }
-    }
-    
-    function handleKeyDown(event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-      }
-    }
-
-    /************************************************************************
-     * Chat Room Management
-     ************************************************************************/
-    function createNewChatRoom() {
-      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
-      // 새로운 채팅방은 messages 배열이 비어 있으므로 renderWelcomeScreen()에서 환영 화면이 나타납니다.
-      chatRooms.push({ requestId: newRequestId, messages: [] });
-      setActiveChatRoom(newRequestId);
-      renderChatRoomList();
-    }
-
-    function renderChatRoomList() {
-      const ul = document.getElementById("chatRoomList");
-      ul.innerHTML = "";
-      chatRooms.forEach((room) => {
-        const li = document.createElement("li");
-        const btn = document.createElement("button");
-        let chatName = "New Chat";
-        if (room.messages && room.messages.length > 0) {
-          const firstUserMsg = room.messages.find(msg => msg.role === "human");
-          if (firstUserMsg) {
-            chatName = firstUserMsg.content.substring(0, 20) + (firstUserMsg.content.length > 20 ? "..." : "");
-          }
-        }
-        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg> ${chatName}`;
-        if (room.requestId === currentRequestId) {
-          btn.classList.add("active");
-        }
-        btn.onclick = () => setActiveChatRoom(room.requestId);
-        li.appendChild(btn);
-        ul.appendChild(li);
-      });
-    }
-
-    /************************************************************************
-     * Chat Message Display Helpers
-     ************************************************************************/
-    function appendMessageToChatBox(sender, message, msgIndex = null) {
-      const chatBox = document.getElementById("chatBox");
-      // 만약 채팅창 내에 환영 화면(.welcome-screen)이 있다면 제거
-      const welcomeElem = chatBox.querySelector('.welcome-screen');
-      if (welcomeElem) {
-        chatBox.removeChild(welcomeElem);
-        // Show the regular input container when welcome screen is removed
-        document.getElementById('inputContainer').classList.remove('hidden');
-      }
-      
-      const msgDiv = document.createElement("div");
-      msgDiv.classList.add("message-line");
-      let messageClass = "";
-      let senderIcon = "";
-      
-      if (sender === "사용자") {
-        messageClass = "message-user";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-          <circle cx="12" cy="7" r="4"></circle>
-        </svg>`;
-      } else if (sender === "AI") {
-        messageClass = "message-ai";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="3" y1="9" x2="21" y2="9"></line>
-          <line x1="9" y1="21" x2="9" y2="9"></line>
-        </svg>`;
-        if (msgIndex !== null) {
-          msgDiv.style.cursor = "pointer";
-          msgDiv.title = "이 답변의 참조 보기";
-          msgDiv.onclick = () => {
-            document.querySelectorAll(".message-ai.selected").forEach(el => {
-              el.classList.remove("selected");
+      function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
+        let formattedOutput = `
+          <strong>전송 시간 (Send Time):</strong> ${sendTime} <br>
+          <strong>수신 시간 (Receive Time):</strong> ${receiveTime} <br>
+          <strong>소요 시간 (Elapsed Time):</strong> ${elapsed} ms <br>
+          <hr>
+        `;
+        if (data.status_code !== undefined) {
+          formattedOutput += `
+            <strong>상태 코드 (Status Code):</strong> ${data.status_code} <br>
+            <strong>결과 (Result):</strong> ${data.result} <br>
+            <strong>상세 (Detail):</strong> ${data.detail} <br>
+            <strong>이벤트 시간 (Event Time):</strong> ${data.evt_time} <br>
+            <strong>데이터 목록 (Data List):</strong><br>
+            <ul>
+          `;
+          if (data.data_list) {
+            let answerHTML = "";
+            let retrievalHTML = "";
+            data.data_list.forEach((item, idx) => {
+              if (item.rsp_type === "A") {
+                if (item.answer) {
+                  answerHTML += `<div class="markdown-content">${renderMarkdown(item.answer)}</div>`;
+                } else {
+                  answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
+                }
+              } else if (item.rsp_type === "R") {
+                const hiddenId = `retrieval_${uniquePrefix}_${idx}`;
+                retrievalHTML += `
+                  <div>
+                    <button class="btn btn-secondary btn-sm" onclick="toggleHiddenDiv('${hiddenId}')">참조 데이터 보기 (Show Retrieval)</button>
+                    <div id="${hiddenId}" class="hidden-retrieval" style="display:none;">
+                      <pre>${JSON.stringify(item, null, 4)}</pre>
+                    </div>
+                  </div>
+                `;
+              } else {
+                answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
+              }
             });
-            msgDiv.classList.add("selected");
-            loadReferenceForMessage(msgIndex);
-          };
+            if (answerHTML)
+              formattedOutput += `<li><strong>답변 (Answer):</strong> ${answerHTML}</li>`;
+            if (retrievalHTML)
+              formattedOutput += `<li><strong>참조 데이터 (Retrieval):</strong> ${retrievalHTML}</li>`;
+          } else {
+            formattedOutput += "<li>데이터가 없습니다 (No data available)</li>";
+          }
+          formattedOutput += "</ul>";
+        } else {
+          formattedOutput += "<pre>" + JSON.stringify(data, null, 2) + "</pre>";
         }
-      } else {
-        messageClass = "message-system";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>`;
+        return formattedOutput;
       }
-      
-      const messageContent = sender === "AI" ? parseMarkdown(message) : escapeHtml(message);
-      msgDiv.classList.add(messageClass);
-      msgDiv.innerHTML = `
-        <div class="message-header">
-          ${senderIcon}
-          ${sender}
-        </div>
-        <div class="message-content">${messageContent}</div>
-      `;
-      chatBox.appendChild(msgDiv);
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
 
-    /************************************************************************
-     * Streaming (SSE) Message Sending and Receiving
-     ************************************************************************/
-    async function sendMessage() {
-      const messageInput = document.getElementById("userMessage");
-      const message = messageInput.value.trim();
-      if (!message || isProcessing) return;
-      
-      isProcessing = true;
-      document.getElementById("sendButton").disabled = true;
-      
-      // 사용자가 메시지를 보내면 환영 화면은 더 이상 필요 없으므로 별도 처리 없이 메시지 추가 시 제거됨
-      
-      appendMessageToChatBox("사용자", message);
-      storeMessageInRoom(currentRequestId, "사용자", message);
-      messageInput.value = "";
-      messageInput.style.height = 'auto';
-      clearReferenceData();
-      
-      const originalRequestId = currentRequestId;
-      const payload = {
-        qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
-        user_id: "user123",
-        page_id: originalRequestId,
-        auth_class: "admin",
-        qry_contents: message,
-        qry_time: new Date().toISOString()
-      };
-      console.log("Sending payload:", payload);
-      
-      try {
-        const response = await fetch('/query_stream', {
+      function updateProgressIndicator(elementId, current, total, successCount = 0, failCount = 0) {
+        const elem = document.getElementById(elementId);
+        if (elem) {
+          const successRate = current > 0 ? ((successCount / current) * 100).toFixed(1) : 0;
+          elem.innerHTML = `완료: ${current} / ${total} 쿼리 | 성공: ${successCount}, 실패: ${failCount}, 성공률: ${successRate}%`;
+        }
+      }
+
+      /************************************************************
+       * (A) 동적으로 연속 테스트 개수의 max를 갱신하는 함수
+       ************************************************************/
+      function updateContinuousCountMax() {
+        const queries = buildTestQueries();
+        const length = queries.length;
+        const input = document.getElementById('continuousCount');
+        input.max = length;
+        const currentValue = parseInt(input.value, 10) || 1;
+        if (currentValue > length) {
+          input.value = length;
+        }
+      }
+
+      /************************************************************
+       * (1) Non-Streaming Query
+       ************************************************************/
+      function sendQuery() {
+        const userInput = document.getElementById('userInput').value;
+        if (!userInput.trim()) {
+          alert('질문을 입력해주세요. (Please enter a query.)');
+          return;
+        }
+        document.getElementById('output').innerHTML = '<div class="progress-indicator">요청 처리 중... (Processing request...)</div>';
+        const sendTime = new Date();
+        const sendTimeStr = formatTime(sendTime);
+        const startTimestamp = Date.now();
+        fetch('/query', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify({ qry_contents: userInput })
+        })
+          .then((response) => {
+            const receiveTime = new Date();
+            const receiveTimeStr = formatTime(receiveTime);
+            const elapsed = Date.now() - startTimestamp;
+            if (!response.ok) {
+              return response.text().then((errorData) => {
+                throw new Error(`${response.status} ${response.statusText}: ${errorData}`);
+              });
+            }
+            return response.json().then((data) => {
+              document.getElementById('output').innerHTML = formatJsonOutput(data, sendTimeStr, receiveTimeStr, elapsed);
+            });
+          })
+          .catch((error) => {
+            const receiveTime = new Date();
+            const receiveTimeStr = formatTime(receiveTime);
+            const elapsed = Date.now() - startTimestamp;
+            console.error('Error:', error);
+            document.getElementById('output').innerHTML = formatJsonOutput({ error: error.message }, sendTimeStr, receiveTimeStr, elapsed);
+          });
+      }
+
+      /************************************************************
+       * (2) Concurrency Test (Non-Streaming POST)
+       ************************************************************/
+      function testQueries() {
+        const queries = buildTestQueries();
+        document.getElementById('testResults').innerHTML = '<div class="progress-indicator">테스트 진행 중... (Testing in progress...)</div>';
+        const totalQueries = queries.length;
+        let arrivalCounter = 0;
+        let successCount = 0;
+        let failCount = 0;
+        updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+        const results = [];
+        queries.forEach((query) => {
+          const sendTime = new Date();
+          const sendTimeStr = formatTime(sendTime);
+          const startTimestamp = Date.now();
+          fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qry_contents: query.text })
+          })
+            .then((response) => {
+              const receiveTime = new Date();
+              const receiveTimeStr = formatTime(receiveTime);
+              const elapsed = Date.now() - startTimestamp;
+              if (!response.ok) {
+                failCount++;
+                return response.text().then((errorData) => {
+                  arrivalCounter++;
+                  const errMsg = `${response.status} ${response.statusText}: ${errorData}`;
+                  results.push({
+                    id: query.id,
+                    text: query.text,
+                    sendTime: sendTimeStr,
+                    receiveTime: receiveTimeStr,
+                    elapsed: elapsed,
+                    success: false,
+                    error: errMsg,
+                    arrival: arrivalCounter
+                  });
+                  updateTestResults(results);
+                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+                });
+              } else {
+                successCount++;
+                return response.json().then((data) => {
+                  arrivalCounter++;
+                  results.push({
+                    id: query.id,
+                    text: query.text,
+                    sendTime: sendTimeStr,
+                    receiveTime: receiveTimeStr,
+                    elapsed: elapsed,
+                    success: true,
+                    data: data,
+                    arrival: arrivalCounter
+                  });
+                  updateTestResults(results);
+                  updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+                });
+              }
+            })
+            .catch((error) => {
+              const receiveTime = new Date();
+              const receiveTimeStr = formatTime(receiveTime);
+              const elapsed = Date.now() - startTimestamp;
+              failCount++;
+              arrivalCounter++;
+              results.push({
+                id: query.id,
+                text: query.text,
+                sendTime: sendTimeStr,
+                receiveTime: receiveTimeStr,
+                elapsed: elapsed,
+                success: false,
+                error: error.message,
+                arrival: arrivalCounter
+              });
+              updateTestResults(results);
+              updateProgressIndicator('progressIndicator', arrivalCounter, totalQueries, successCount, failCount);
+            });
         });
-        if (!response.ok) {
-          throw new Error("Response error: " + response.status);
+      }
+
+      function updateTestResults(results) {
+        document.getElementById('testResults').innerHTML = formatTestResults(results);
+      }
+
+      function formatTestResults(results) {
+        let summaryHTML = `
+          <div class="test-summary">
+            <h3>테스트 요약 (Test Summary)</h3>
+            <table>
+              <thead>
+                <tr>
+                  <th>도착 순서<br>(Arrival Order)</th>
+                  <th>테스트 ID<br>(Test ID)</th>
+                  <th>쿼리<br>(Query)</th>
+                  <th>전송 시간<br>(Send Time)</th>
+                  <th>수신 시간<br>(Receive Time)</th>
+                  <th>소요 시간<br>(Elapsed ms)</th>
+                  <th>상태<br>(Status)</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+        results.forEach((result) => {
+          const statusText = result.success ? '성공 (Success)' : '실패 (Fail)';
+          const statusClass = result.success ? 'badge-success' : 'badge-danger';
+          summaryHTML += `
+            <tr>
+              <td>${result.arrival}</td>
+              <td>${result.id}</td>
+              <td>${result.text}</td>
+              <td>${result.sendTime}</td>
+              <td>${result.receiveTime}</td>
+              <td>${result.elapsed}</td>
+              <td><span class="badge ${statusClass}">${statusText}</span></td>
+            </tr>
+          `;
+        });
+        summaryHTML += `
+              </tbody>
+            </table>
+          </div>
+        `;
+        let detailsHTML = '<div class="test-details"><h3>개별 테스트 상세 (Individual Test Details)</h3>';
+        results.forEach((result) => {
+          const safeResultOutput = result.success
+            ? formatJsonOutput(result.data || {}, result.sendTime, result.receiveTime, result.elapsed, result.id)
+            : `<pre style="color:var(--danger);">오류 (Error): ${result.error || '알 수 없는 오류 (Unknown error)'}</pre>`;
+          let extraInfo = "";
+          if (result.result) {
+            extraInfo += `<p><strong>답변:</strong><br><pre>${result.result}</pre></p>`;
+          }
+          if (result.firstChunkDelta) {
+            extraInfo += `<p><strong>스트리밍 시작 시간:</strong> ${result.firstChunkDelta} ms</p>`;
+          }
+          detailsHTML += `
+            <div class="test-item">
+              <h4>${result.id} - ${result.text}</h4>
+              <p><strong>도착 순서 (Arrival Order):</strong> ${result.arrival}</p>
+              <p><strong>상태 (Status):</strong> ${result.success ? '성공 (Success)' : '실패 (Fail)'}</p>
+              ${safeResultOutput}
+              ${extraInfo}
+            </div>
+          `;
+        });
+        detailsHTML += "</div>";
+        return summaryHTML + detailsHTML;
+      }
+
+      /************************************************************
+       * (3) Single Streaming Test (POST-based streaming)
+       ************************************************************/
+      let postStreamFirstChunkTime = null;
+      let postStreamEndTime = null;
+      let postStreamStartTime = null;
+      let streamingInProgress = false;
+      let answerAccumulated = "";
+      let sseBuffer = "";
+      async function startStreamPOST() {
+        if (streamingInProgress) {
+          alert("스트리밍이 이미 진행 중입니다. (Streaming is already in progress.)");
+          return;
         }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let sseBuffer = "";
-        let partialAnswer = "";
-        startAIStreamingMessage();
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          sseBuffer += chunk;
-          const lines = sseBuffer.split("\n");
-          sseBuffer = lines.pop();
-          for (let line of lines) {
-            line = line.trim();
-            if (!line) continue;
-            if (line.startsWith("data:")) {
-              const jsonStr = line.slice(5).trim();
-              if (jsonStr === "[[STREAM_DONE]]") {
-                finalizeAIMessage(partialAnswer, originalRequestId);
-                isProcessing = false;
-                document.getElementById("sendButton").disabled = false;
-                return;
-              }
-              try {
-                const sseData = JSON.parse(jsonStr);
-                if (sseData.type === "answer") {
-                  partialAnswer += sseData.answer;
-                  updateAIStreamingMessage(partialAnswer);
-                } else if (sseData.type === "reference") {
-                  addReferenceData(sseData);
+        const userQuery = document.getElementById('streamInput').value.trim();
+        if (!userQuery) {
+          alert('스트리밍 쿼리를 입력해주세요. (Please type a streaming query.)');
+          return;
+        }
+        streamingInProgress = true;
+        answerAccumulated = "";
+        sseBuffer = "";
+        postStreamFirstChunkTime = null;
+        postStreamEndTime = null;
+        document.getElementById('streamOutput').textContent = "";
+        document.getElementById('streamTiming').innerHTML = "";
+        document.getElementById('referenceData').innerHTML = "";
+        document.getElementById('referenceData').style.display = "none";
+        document.getElementById('streamOutput').textContent = "스트리밍 응답을 기다리는 중... (Waiting for streaming response...)";
+        const querySentTime = new Date();
+        postStreamStartTime = performance.now();
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: userQuery })
+          });
+          if (!response.ok) {
+            const errTxt = await response.text();
+            throw new Error('응답 오류 (Response not OK): ' + response.status + " " + errTxt);
+          }
+          document.getElementById('streamOutput').textContent = "";
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              postStreamEndTime = performance.now();
+              updatePostStreamTiming(querySentTime);
+              break;
+            }
+            const chunk = decoder.decode(value, { stream: true });
+            processPostSseChunk(chunk);
+            document.getElementById('streamOutput').innerHTML = renderMarkdown(answerAccumulated);
+          }
+        } catch (err) {
+          console.error('POST-based streaming error:', err);
+          document.getElementById('streamOutput').textContent = "오류 발생 (Error): " + err.message;
+          postStreamEndTime = performance.now();
+          updatePostStreamTiming();
+        } finally {
+          streamingInProgress = false;
+        }
+      }
+      function processPostSseChunk(chunk) {
+        sseBuffer += chunk;
+        let lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop(); 
+        for (let line of lines) {
+          line = line.trim();
+          if (!line) continue;
+          if (line.startsWith("data:")) {
+            const sseData = line.slice(5).trim();
+            if (!postStreamFirstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
+              postStreamFirstChunkTime = performance.now();
+            }
+            if (sseData === "[[STREAM_DONE]]") {
+              postStreamEndTime = performance.now();
+              updatePostStreamTiming();
+              return;
+            }
+            try {
+              const jsonData = JSON.parse(sseData);
+              if (jsonData.type === "reference") {
+                let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
+                if (Array.isArray(jsonData.data_list)) {
+                  jsonData.data_list.forEach((ref, idx) => {
+                    refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                  });
                 } else {
-                  console.log("Other SSE data:", sseData);
+                  refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
                 }
-              } catch (err) {
-                partialAnswer += jsonStr;
-                updateAIStreamingMessage(partialAnswer);
+                refHTML += `</ul>`;
+                document.getElementById("referenceData").innerHTML = refHTML;
+              } else if (jsonData.type === "answer") {
+                answerAccumulated += jsonData.answer;
               }
+            } catch (e) {
+              answerAccumulated += sseData;
             }
           }
         }
-        finalizeAIMessage(partialAnswer, originalRequestId);
-        isProcessing = false;
-        document.getElementById("sendButton").disabled = false;
-      } catch (err) {
-        appendMessageToChatBox("시스템", "Error occurred: " + err.message);
-        storeMessageInRoom(currentRequestId, "시스템", "Error occurred: " + err.message);
-        isProcessing = false;
-        document.getElementById("sendButton").disabled = false;
       }
-    }
-    
-    function storeMessageInRoom(requestId, sender, text) {
-      const room = chatRooms.find(r => r.requestId === requestId);
-      if (room) {
-        room.messages.push({ role: sender === "사용자" ? "human" : "ai", content: text });
-      }
-    }
-
-    /************************************************************************
-     * AI Streaming Display (Temporary Message)
-     ************************************************************************/
-
-     
-     let tempAiMsgDiv = null;
-     function startAIStreamingMessage() {
-       const chatBox = document.getElementById("chatBox");
-       tempAiMsgDiv = document.createElement("div");
-       tempAiMsgDiv.classList.add("message-line", "message-ai");
-       tempAiMsgDiv.innerHTML = `
-       <div class="message-header">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="3" y1="9" x2="21" y2="9"></line>
-          <line x1="9" y1="21" x2="9" y2="9"></line>
-          </svg>
-          AI
-          </div>
-          <div class="message-content" id="aiTempText"></div>
-          `;
-          chatBox.appendChild(tempAiMsgDiv);
-          chatBox.scrollTop = chatBox.scrollHeight;
+      function updatePostStreamTiming(querySentTime) {
+        let msg = "";
+        if (querySentTime) {
+          msg += `쿼리 전송 시간 (Query Sent Time): ${querySentTime.toLocaleTimeString()}<br>`;
         }
-        
-    function unescapeNewlines(text) {
-      // 만약 text 내에 리터럴 "\\n"이 있다면 이를 실제 줄바꿈으로 변환
-      return text.replace(/\\n/g, "\n");
-    }
-
-    function updateAIStreamingMessage(text) {
-      if (!tempAiMsgDiv) return;
-      const contentDiv = tempAiMsgDiv.querySelector("#aiTempText");
-      if (contentDiv) {
-        // 먼저, 리터럴 이스케이프된 줄바꿈을 실제 줄바꿈으로 변환
-        const unescapedText = unescapeNewlines(text);
-        console.log("변환 전 ", unescapedText)
-        contentDiv.innerHTML = parseMarkdown(unescapedText);
-        console.log("변환 후 ", unescapedText)
-      }
-      const chatBox = document.getElementById("chatBox");
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    function finalizeAIMessage(finalText, queryRequestId) {
-      storeMessageInRoom(queryRequestId, "AI", finalText);
-      if (currentRequestId === queryRequestId) {
-        renderChatRoomList();
-        renderChatBox(queryRequestId);
-      }
-      if (referenceList.length > 0) {
-        document.getElementById("toggleRefBtn").style.display = "flex";
-      }
-    }
-    
-    /************************************************************************
-     * Reference Data Related Functions
-     ************************************************************************/
-    function addReferenceData(refData) {
-      referenceList.push(refData);
-      console.log("Reference data received:", refData);
-    }
-    function clearReferenceData() {
-      referenceList = [];
-      document.getElementById("toggleRefBtn").style.display = "none";
-      document.getElementById("referenceContainer").style.display = "none";
-      document.getElementById("referenceContainer").innerHTML = "";
-    }
-    function toggleReferences() {
-      const container = document.getElementById("referenceContainer");
-      const toggleBtn = document.getElementById("toggleRefBtn");
-      
-      if (container.style.display === "none" || container.style.display === "") {
-        container.style.display = "block";
-        if (!container.innerHTML.trim()) {
-          renderReferenceData();
+        if (postStreamFirstChunkTime !== null) {
+          msg += `첫 응답 도착 시간 (First Chunk Time): ${(postStreamFirstChunkTime - postStreamStartTime).toFixed(1)} ms<br>`;
+        } else {
+          msg += "첫 응답 도착 시간: 아직 도착하지 않음<br>";
         }
-        toggleBtn.querySelector('span').textContent = "Hide References";
-      } else {
-        container.style.display = "none";
-        toggleBtn.querySelector('span').textContent = "Show References";
+        if (postStreamEndTime !== null) {
+          msg += `스트리밍 종료 시간 (Streaming End Time): ${(postStreamEndTime - postStreamStartTime).toFixed(1)} ms<br>`;
+          if (postStreamFirstChunkTime !== null) {
+            msg += `스트리밍 생성 시간 (Streaming Generation Time): ${(postStreamEndTime - postStreamFirstChunkTime).toFixed(1)} ms<br>`;
+          }
+        } else {
+          msg += "스트리밍 종료 시간: 아직 도착하지 않음<br>";
+        }
+        document.getElementById('streamTiming').innerHTML = msg;
       }
-    }
-    function renderReferenceData() {
-      const container = document.getElementById("referenceContainer");
-      container.innerHTML = "";
-      
-      if (referenceList.length === 0) {
-        container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
-        return;
+
+      /************************************************************
+       * (4) Simultaneous Streaming Test (POST-based)
+       ************************************************************/
+      async function testSimulStreamPOST() {
+        const queries = buildTestQueries();
+        const simulPartialsContainer = document.getElementById("simul-partials");
+        const simulResultsContainer = document.getElementById("simul-results");
+        simulPartialsContainer.innerHTML = '<div class="progress-indicator">동시 스트리밍 테스트 준비 중...</div>';
+        simulResultsContainer.innerHTML = "";
+        const promises = queries.map((q, index) => {
+          const containerId = "simul-stream-" + index;
+          const div = document.createElement("div");
+          div.id = containerId;
+          div.className = "card";
+          div.style.marginBottom = "1rem";
+          simulPartialsContainer.appendChild(div);
+          return startSimulStreamPOST(q, containerId);
+        });
+        let results = await Promise.all(promises);
+        let summaryTable = buildSimulSummaryTable(results);
+        simulResultsContainer.innerHTML = summaryTable;
       }
-      
-      referenceList.forEach((refObj, idx) => {
-        const div = document.createElement("div");
-        div.className = "reference-item";
-        div.innerHTML = `
-          <div class="reference-header">
-            <h4>Reference #${idx + 1}</h4>
-          </div>
-          <pre>${JSON.stringify(refObj, null, 2)}</pre>
+      async function startSimulStreamPOST(queryObj, containerId) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = `
+          <h4>${queryObj.id} - ${queryObj.text}</h4>
+          <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem; margin-bottom:0.5rem;"></div>
+          <div class="stream-info-box"></div>
+          <button class="btn btn-secondary btn-sm" onclick="toggleReferencesInContainer('${containerId}')">참조 데이터 보기 (Toggle References)</button>
+          <div class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
         `;
-        container.appendChild(div);
+        let answerAccumulated = "";
+        let sseBuffer = "";
+        let chunkCount = 0;
+        const streamStartTime = performance.now();
+        let firstChunkTime = null;
+        let endTime = null;
+        let success = true;
+        let errorMessage = "";
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: queryObj.text })
+          });
+          if (!response.ok) {
+            success = false;
+            errorMessage = `응답 오류: ${response.status}`;
+            container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">${errorMessage}</span>`;
+            return { id: queryObj.id, query: queryObj.text, sendTime: streamStartTime, firstChunkTime, endTime, duration: 0, success, error: errorMessage, chunkCount };
+          }
+          container.querySelector(".stream-output").textContent = "스트리밍 응답 대기 중...";
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              endTime = performance.now();
+              updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+              break;
+            }
+            if (chunkCount === 0) {
+              container.querySelector(".stream-output").textContent = "";
+            }
+            const chunk = decoder.decode(value, { stream: true });
+            sseBuffer += chunk;
+            let lines = sseBuffer.split("\n");
+            sseBuffer = lines.pop();
+            for (let line of lines) {
+              line = line.trim();
+              if (!line) continue;
+              if (line.startsWith("data:")) {
+                const sseData = line.slice(5).trim();
+                chunkCount++;
+                if (!firstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
+                  firstChunkTime = performance.now();
+                }
+                if (sseData === "[[STREAM_DONE]]") {
+                  endTime = performance.now();
+                  updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+                  return {
+                    id: queryObj.id,
+                    query: queryObj.text,
+                    sendTime: streamStartTime,
+                    firstChunkTime,
+                    endTime,
+                    duration: (endTime - streamStartTime).toFixed(1),
+                    success,
+                    error: errorMessage,
+                    chunkCount
+                  };
+                }
+                try {
+                  const jsonData = JSON.parse(sseData);
+                  if (jsonData.type === "reference") {
+                    const refDiv = container.querySelector(".reference-output");
+                    let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
+                    if (Array.isArray(jsonData.data_list)) {
+                      jsonData.data_list.forEach((ref, idx) => {
+                        refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                      });
+                    } else {
+                      refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
+                    }
+                    refHTML += `</ul>`;
+                    refDiv.innerHTML = refHTML;
+                  } else if (jsonData.type === "answer") {
+                    answerAccumulated += jsonData.answer;
+                    container.querySelector(".stream-output").innerHTML = renderMarkdown(answerAccumulated);
+                  }
+                } catch (e) {
+                  answerAccumulated += sseData;
+                  container.querySelector(".stream-output").innerHTML = renderMarkdown(answerAccumulated);
+                }
+              }
+            }
+            updateContainerTiming(container, streamStartTime, firstChunkTime, null, chunkCount);
+          }
+        } catch (err) {
+          success = false;
+          errorMessage = err.message;
+          container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">오류: ${err.message}</span>`;
+        }
+        endTime = endTime || performance.now();
+        updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
+        return {
+          id: queryObj.id,
+          query: queryObj.text,
+          sendTime: streamStartTime,
+          firstChunkTime,
+          endTime,
+          duration: (endTime - streamStartTime).toFixed(1),
+          success,
+          error: errorMessage,
+          chunkCount
+        };
+      }
+      function updateContainerTiming(container, start, first, end, chunkCount) {
+        const infoBox = container.querySelector(".stream-info-box");
+        let infoMsg = "";
+        if (first !== null && first !== undefined) {
+          infoMsg += `<strong>첫 응답 도착(TTFT):</strong> ${(first - start).toFixed(1)} ms<br>`;
+        } else {
+          infoMsg += `<strong>첫 응답 도착:</strong> 아직 도착하지 않음<br>`;
+        }
+        if (end !== null && end !== undefined) {
+          infoMsg += `<strong>스트리밍 종료:</strong> ${(end - start).toFixed(1)} ms<br>`;
+          if (first !== null && first !== undefined) {
+            infoMsg += `<strong>스트리밍 생성 시간:</strong> ${(end - first).toFixed(1)} ms<br>`;
+          }
+        } else {
+          infoMsg += `<strong>스트리밍 종료:</strong> 아직 도착하지 않음<br>`;
+        }
+        infoMsg += `<strong>청크 수(Chunk Count):</strong> ${chunkCount}`;
+        infoBox.innerHTML = infoMsg;
+      }
+      function toggleReferencesInContainer(containerId) {
+        const container = document.getElementById(containerId);
+        const refDiv = container.querySelector(".reference-output");
+        if (refDiv.style.display === "none" || refDiv.style.display === "") {
+          refDiv.style.display = "block";
+        } else {
+          refDiv.style.display = "none";
+        }
+      }
+
+      /************************************************************
+       * (5) Continuous Query Test
+       * For streaming mode, run queries concurrently with individual containers.
+       ************************************************************/
+      async function continuousTest(mode) {
+        let queries = buildTestQueries();
+        const totalAvailable = queries.length; 
+        const userInputCount = parseInt(document.getElementById('continuousCount').value, 10) || 1;
+        const limit = Math.min(userInputCount, totalAvailable);
+        const truncated = queries.slice(0, limit);
+        if (mode === 'nonstream') {
+          // Sequential non-streaming test (unchanged)
+          const results = [];
+          const total = truncated.length;
+          document.getElementById('continuousTestResults').innerHTML = `<div class="progress-indicator">일반 테스트 실행 중...</div>`;
+          updateProgressIndicator('continuousProgress', 0, total);
+          for (let i = 0; i < total; i++) {
+            const r = await runNonStreamingQuery(truncated[i]);
+            results.push(r);
+            updateProgressIndicator('continuousProgress', i + 1, total);
+          }
+          let sum = 0;
+          results.forEach(r => sum += Number(r.duration));
+          const avg = (sum / results.length).toFixed(2);
+          let html = `<h3>연속 일반 테스트 결과 (${total}개)</h3>`;
+          html += `<p>평균 소요 시간: <strong>${avg} ms</strong></p>`;
+          html += "<ul>";
+          results.forEach((r) => {
+            html += `<li><strong>${r.id}</strong> [${r.query}] - 시작: ${r.startTime}, 종료: ${r.endTime}, 소요: ${r.duration} ms</li>`;
+          });
+          html += "</ul>";
+          document.getElementById('continuousTestResults').innerHTML = html;
+        }else {
+          // (중요) 스트리밍 모드를 "연속적으로" 실행하되,
+          // "쿼리 1개 끝날 때마다" 개별 카드 + 요약 테이블을 즉시 업데이트
+          const parent = document.getElementById('continuousTestResults');
+          parent.innerHTML = ''; // 기존 내용 초기화
+        
+          const total = truncated.length;
+        
+          // 1) 누적 요약 테이블을 계속 갱신하기 위한 컨테이너 생성
+          const summaryContainer = document.createElement('div');
+          summaryContainer.id = "continuous-summary";
+          parent.appendChild(summaryContainer);
+
+          // 2) 부분결과(개별 카드)들을 표시할 컨테이너
+          const partialsContainer = document.createElement('div');
+          partialsContainer.id = "continuous-partials";
+          parent.appendChild(partialsContainer);
+        
+        
+          const results = [];
+        
+          // (중요) for 루프 + await = "연속" 스트리밍 실행
+          for (let i = 0; i < total; i++) {
+            const queryObj = truncated[i];
+        
+            // 각 쿼리에 대응되는 카드 DIV
+            const containerId = `continuous-stream-${i}`;
+            const cardDiv = document.createElement('div');
+            cardDiv.id = containerId;
+            cardDiv.className = "card";
+            cardDiv.style.marginBottom = "1rem";
+            partialsContainer.appendChild(cardDiv);
+        
+            // runStreamingQueryWithUI() 함수를 사용하여 스트리밍 쿼리를 연속적으로 실행
+            const result = await runStreamingQueryWithUI(queryObj, cardDiv);
+            results.push(result);
+        
+            // ★ 쿼리 한 건 끝날 때마다 요약 테이블을 즉시 업데이트
+            summaryContainer.innerHTML = buildSimulSummaryTable(results);
+          }
+          
+          // (선택) 모든 쿼리가 끝난 뒤에도 한 번 더 갱신 가능
+          summaryContainer.innerHTML = buildSimulSummaryTable(results);
+        }
+      async function runNonStreamingQuery(qObj) {
+        const sendTime = new Date();
+        const startTs = Date.now();
+        try {
+          const resp = await fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qry_contents: qObj.text })
+          });
+          await resp.json();
+        } catch (e) {
+          console.error("Non-stream error:", e);
+        }
+        const endTime = new Date();
+        const duration = Date.now() - startTs;
+        return {
+          id: qObj.id,
+          query: qObj.text,
+          startTime: formatTime(sendTime),
+          endTime: formatTime(endTime),
+          duration: duration.toString()
+        };
+      }
+    }
+    /* [수정 후: runStreamingQueryWithUI 함수 - SSE 청크 단위로 처리] */
+    function runStreamingQueryWithUI(qObj, container) {
+      return new Promise(async (resolve, reject) => {
+        const sendTime = new Date();
+        const startTs = performance.now();
+
+        // UI 초기화
+        container.innerHTML = `
+          <h4>${qObj.id} - ${qObj.text}</h4>
+          <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem;"></div>
+          <div class="stream-info-box"></div>
+          <button class="btn btn-secondary btn-sm" onclick="toggleHiddenDiv('ref-${qObj.id}')">
+            참조 데이터 보기 (Toggle References)
+          </button>
+          <div id="ref-${qObj.id}" class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
+        `;
+
+        const outputDiv = container.querySelector(".stream-output");
+        const infoBox = container.querySelector(".stream-info-box");
+        const refDiv = container.querySelector(".reference-output");
+
+        let sseBuffer = "";
+        let answerAccumulated = "";
+        let firstChunkTime = null;
+        let success = true;
+        let errorMessage = "";
+        let chunkCount = 0;
+
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ input: qObj.text })
+          });
+
+          if (!response.ok) {
+            success = false;
+            errorMessage = `응답 오류: ${response.status}`;
+            outputDiv.innerHTML = `<span style="color:red;">${errorMessage}</span>`;
+            return resolve(makeResultObj(false));
+          }
+
+          // 스트리밍 읽기
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              // 끝
+              const endTime = performance.now();
+              return resolve(makeResultObj(true, endTime));
+            }
+
+            chunkCount++;
+            if (!firstChunkTime) {
+              firstChunkTime = performance.now();
+            }
+
+            // 청크 누적
+            sseBuffer += decoder.decode(value, { stream: true });
+            // \n 기준 분리
+            const lines = sseBuffer.split('\n');
+            // 마지막 라인은 아직 덜 잘린 청크일 수 있으므로 버퍼에 남김
+            sseBuffer = lines.pop();
+
+            for (let line of lines) {
+              line = line.trim();
+              if (!line) continue;
+
+              if (line.startsWith('data:')) {
+                const sseData = line.slice(5).trim();  // 'data:' 뒷부분
+                // 스트리밍 종료 신호
+                if (sseData === "[[STREAM_DONE]]") {
+                  const endTime = performance.now();
+                  return resolve(makeResultObj(true, endTime));
+                }
+                // JSON 파싱 시도
+                try {
+                  const json = JSON.parse(sseData);
+                  if (json.type === 'reference') {
+                    // 참조 데이터
+                    let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
+                    if (Array.isArray(json.data_list)) {
+                      json.data_list.forEach((ref, idx) => {
+                        refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                      });
+                    } else {
+                      refHTML += `<li>${JSON.stringify(json.data_list)}</li>`;
+                    }
+                    refHTML += `</ul>`;
+                    refDiv.innerHTML = refHTML;
+                  } else if (json.type === 'answer') {
+                    // 답변 누적
+                    answerAccumulated += json.answer;
+                    outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                  }
+                } catch (e) {
+                  // 그냥 텍스트로 처리
+                  answerAccumulated += sseData;
+                  outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                }
+              }
+            }
+
+            // 실시간 정보 갱신
+            infoBox.innerHTML = buildInfoBoxText();
+          }
+        } catch (err) {
+          success = false;
+          errorMessage = err.message;
+          outputDiv.innerHTML = `<span style="color:red;">오류: ${err.message}</span>`;
+          return resolve(makeResultObj(false));
+        }
+
+        // 내부 편의 함수
+        function makeResultObj(successful, endTime) {
+          const endTs = endTime ? endTime : performance.now();
+          const duration = (endTs - startTs).toFixed(1);
+          const firstChunkDelta = firstChunkTime ? (firstChunkTime - startTs).toFixed(1) : null;
+          return {
+            id: qObj.id,
+            query: qObj.text,
+            sendTime: startTs,
+            endTime: formatTime(new Date()),
+            duration,
+            result: answerAccumulated,
+            firstChunkDelta,
+            firstChunkTime: firstChunkDelta,
+            success: successful,
+            error: errorMessage,
+            chunkCount
+          };
+        }
+
+        function buildInfoBoxText() {
+          let html = "";
+          if (firstChunkTime) {
+            html += `<strong>첫 응답 도착(TTFT):</strong> ${(firstChunkTime - startTs).toFixed(1)} ms<br>`;
+          } else {
+            html += `<strong>첫 응답 도착:</strong> 대기 중...<br>`;
+          }
+          html += `<strong>청크 수:</strong> ${chunkCount}`;
+          return html;
+        }
       });
     }
-    function loadReferenceForMessage(msgIndex) {
-      const url = `/reference?request_id=${currentRequestId}&msg_index=${msgIndex}`;
-      fetch(url)
-        .then(response => response.json())
-        .then(data => {
-          if (data.error) {
-            alert(data.error);
-            return;
+
+      /************************************************************
+       * (6) Continuous Chat Test - All queries share the same request_id.
+       * For streaming mode, similar to (5) but using chat-specific streaming functions.
+       ************************************************************/
+      async function continuousChatTest(mode, target = 'default') {
+        let queries = buildTestQueries();
+        const totalAvailable = queries.length;
+        const countInput = target === 'chat' ? document.getElementById('chatTestCount') : document.getElementById('continuousCount');
+        const userInputCount = parseInt(countInput.value, 10) || 1;
+        const limit = Math.min(userInputCount, totalAvailable);
+        const truncated = queries.slice(0, limit);
+
+        const sharedRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000); // 이번 테스트에 사용될 랜덤 Requrest_id
+        console.log("현재 사용된 sharedRequestId : ", sharedRequestId);
+
+        if (mode === 'nonstream') {
+          const results = [];
+          const total = truncated.length;
+          document.getElementById('chatTestResults').innerHTML = `<div class="progress-indicator">일반 채팅 테스트 실행 중...</div>`;
+          updateProgressIndicator('chatTestProgress', 0, total);
+          for (let i = 0; i < total; i++) {
+            const r = await runChatNonStreamingQuery(truncated[i], sharedRequestId);
+            results.push(r);
+            updateProgressIndicator('chatTestProgress', i + 1, total);
           }
-          displayReferenceData(data.references);
-        })
-        .catch(err => {
-          console.error("참조 데이터 로딩 오류:", err);
-          alert("참조 데이터를 불러오는 중 오류 발생");
-        });
-    }
-    function displayReferenceData(refs) {
-      const container = document.getElementById("referenceContainer");
-      container.innerHTML = "";
+          let sum = 0;
+          results.forEach(r => sum += Number(r.duration));
+          const avg = (sum / results.length).toFixed(2);
+          let html = `<h3>연속 채팅 테스트 결과 (${total}개)</h3>`;
+          html += `<p>평균 소요 시간: <strong>${avg} ms</strong></p>`;
+          html += "<ul>";
+          results.forEach((r) => {
+            html += `<li><strong>${r.id}</strong> [${r.query}] - 시작: ${r.startTime}, 종료: ${r.endTime}, 소요: ${r.duration} ms</li>`;
+          });
+          html += "</ul>";
+          document.getElementById('chatTestResults').innerHTML = html;
+        } else {
+          // (중요) 채팅 모드도 "연속" 스트리밍 실행 중
+          // 각 쿼리가 끝날 때마다 결과 + 요약 테이블 실시간 업데이트
+          console.log('[DEBUG] Starting streaming chat test...');
+          const parent = document.getElementById('chatTestResults');
+          parent.innerHTML = ''; // 기존 내용 초기화
+        
+          const total = truncated.length;
+        
+          // 1) 누적 요약 테이블을 계속 갱신하기 위한 컨테이너 생성
+          const summaryContainer = document.createElement('div');
+          summaryContainer.id = "chat-summary";
+          parent.appendChild(summaryContainer);
+
+          // 2) 개별 카드 표시할 컨테이너
+          const partialsContainer = document.createElement('div');
+          partialsContainer.id = "chat-panels";
+          parent.appendChild(partialsContainer);
+        
+        
+          const results = [];
+        
+          // "연속" 스트리밍 실행
+          for (let i = 0; i < total; i++) {
+            const queryObj = truncated[i];
+            console.log(`[DEBUG] [chatTest] Starting iteration i=${i}, query=${queryObj.text}`);
+
+            const containerId = `chat-stream-${i}`;
+            const cardDiv = document.createElement('div');
+            cardDiv.id = containerId;
+            cardDiv.className = "card";
+            cardDiv.style.marginBottom = "1rem";
+            partialsContainer.appendChild(cardDiv);
+        
+            try {
+              // 스트리밍 함수 호출 전후로 로그
+              console.log(`[DEBUG] [chatTest] About to call runChatStreamingQueryWithUI() =>`, queryObj);
+              const result = await runChatStreamingQueryWithUI(queryObj, cardDiv, sharedRequestId);
+              console.log(`[DEBUG] [chatTest] Finished iteration i=${i}, got result=`, result);
+
+              results.push(result);
+              summaryContainer.innerHTML = buildSimulSummaryTable(results);
+            } catch (err) {
+              console.error(`[ERROR] iteration i=${i} failed =>`, err);
+            }
+
+          }
+
+          console.log('[DEBUG] All chat streaming queries completed. Final results=', results);
+          // (선택) 모든 쿼리가 끝난 뒤 한번 더 갱신 가능
+          summaryContainer.innerHTML = buildSimulSummaryTable(results);
+        }
+      }
+      async function runChatNonStreamingQuery(qObj, requestId) {
+        const sendTime = new Date();
+        const startTs = Date.now();
+        try {
+          const resp = await fetch('/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ qry_contents: qObj.text, request_id: requestId })
+          });
+          await resp.json();
+        } catch (e) {
+          console.error("Chat non-streaming error:", e);
+        }
+        const endTime = new Date();
+        const duration = Date.now() - startTs;
+        return {
+          id: qObj.id,
+          query: qObj.text,
+          startTime: formatTime(sendTime),
+          endTime: formatTime(endTime),
+          duration: duration.toString()
+        };
+      }
       
-      if (refs.length === 0) {
-        container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
-      } else {
-        refs.forEach((ref, idx) => {
-          const div = document.createElement("div");
-          div.className = "reference-item";
-          div.innerHTML = `
-            <div class="reference-header">
-              <h4>Reference #${idx + 1}</h4>
-            </div>
-            <pre>${JSON.stringify(ref, null, 2)}</pre>
+
+      /* [수정 후: runChatStreamingQueryWithUI 함수 - SSE 청크 단위로 처리] */
+      function runChatStreamingQueryWithUI(qObj, container, req_id) {
+        return new Promise(async (resolve, reject) => {
+          console.log('[DEBUG] runChatStreamingQueryWithUI() start =>', qObj);
+
+          const sendTime = new Date();
+          const startTs = performance.now();
+
+          container.innerHTML = `
+            <h4>${qObj.id} - ${qObj.text}</h4>
+            <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem;"></div>
+            <div class="stream-info-box"></div>
+            <button class="btn btn-secondary btn-sm" onclick="toggleHiddenDiv('ref-chat-${qObj.id}')">
+              참조 데이터 보기 (Toggle References)
+            </button>
+            <div id="ref-chat-${qObj.id}" class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
           `;
-          container.appendChild(div);
+
+          const outputDiv = container.querySelector(".stream-output");
+          const infoBox = container.querySelector(".stream-info-box");
+          const refDiv = container.querySelector(".reference-output");
+
+          let sseBuffer = "";
+          let answerAccumulated = "";
+          let firstChunkTime = null;
+          let success = true;
+          let errorMessage = "";
+          let chunkCount = 0;
+
+          try {
+            console.log('[DEBUG] runChatStreamingQueryWithUI() => sending fetch /query_stream');
+            const response = await fetch('/query_stream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              // (중요) request_id 공유 시, 여기서 동일한 request_id를 넣어줄 수도 있음
+              body: JSON.stringify({
+                input: qObj.text,
+                request_id: req_id
+              })
+            });
+
+            if (!response.ok) {
+              success = false;
+              errorMessage = `응답 오류: ${response.status}`;
+              outputDiv.innerHTML = `<span style="color:red;">${errorMessage}</span>`;
+              return resolve(makeResultObj(false));
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                console.log('[DEBUG] SSE read loop done => finishing runChatStreamingQueryWithUI()');
+                const endTime = performance.now();
+                return resolve(makeResultObj(true, endTime));
+              }
+
+              chunkCount++;
+              if (!firstChunkTime) {
+                firstChunkTime = performance.now();
+              }
+
+              // 청크 누적
+              sseBuffer += decoder.decode(value, { stream: true });
+              const lines = sseBuffer.split('\n');
+              sseBuffer = lines.pop();
+
+              for (let line of lines) {
+                line = line.trim();
+                if (!line) continue;
+
+                if (line.startsWith('data:')) {
+                  const sseData = line.slice(5).trim();
+                  if (sseData === "[[STREAM_DONE]]") {
+                    const endTime = performance.now();
+                    return resolve(makeResultObj(true, endTime));
+                  }
+                  try {
+                    const json = JSON.parse(sseData);
+                    if (json.type === 'reference') {
+                      let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
+                      if (Array.isArray(json.data_list)) {
+                        json.data_list.forEach((ref, idx) => {
+                          refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                        });
+                      } else {
+                        refHTML += `<li>${JSON.stringify(json.data_list)}</li>`;
+                      }
+                      refHTML += `</ul>`;
+                      refDiv.innerHTML = refHTML;
+                    } else if (json.type === 'answer') {
+                      answerAccumulated += json.answer;
+                      outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                    }
+                  } catch (err) {
+                    answerAccumulated += sseData;
+                    outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                  }
+                }
+              }
+              // 실시간 정보 갱신
+              infoBox.innerHTML = buildInfoBoxText();
+            }
+          } catch (err) {
+            console.error('[ERROR] runChatStreamingQueryWithUI =>', err);
+            success = false;
+            errorMessage = err.message;
+            outputDiv.innerHTML = `<span style="color:red;">오류: ${err.message}</span>`;
+            return resolve(makeResultObj(false));
+          }
+
+          function makeResultObj(successful, endTime) {
+            const endTs = endTime ? endTime : performance.now();
+            const duration = (endTs - startTs).toFixed(1);
+            const firstChunkDelta = firstChunkTime ? (firstChunkTime - startTs).toFixed(1) : null;
+            return {
+              id: qObj.id,
+              query: qObj.text,
+              sendTime: formatTime(sendTime),
+              firstChunkTime: firstChunkDelta,
+              endTime: formatTime(new Date()),
+              duration,
+              result: answerAccumulated,
+              firstChunkDelta,
+              success: successful,
+              error: errorMessage,
+              chunkCount
+            };
+          }
+
+          function buildInfoBoxText() {
+            let html = "";
+            if (firstChunkTime) {
+              html += `<strong>첫 응답 도착(TTFT):</strong> ${(firstChunkTime - startTs).toFixed(1)} ms<br>`;
+            } else {
+              html += `<strong>첫 응답 도착:</strong> 대기 중...<br>`;
+            }
+            html += `<strong>청크 수:</strong> ${chunkCount}`;
+            return html;
+          }
         });
       }
       
-      container.style.display = "block";
-      document.getElementById("toggleRefBtn").style.display = "flex";
-      document.getElementById("toggleRefBtn").querySelector('span').textContent = "Hide References";
-    }
-  </script>
-</body>
+      // 전역 적으로 요약 테이블 작성에 도움을 주는 함수
+      function buildSimulSummaryTable(results) {
+        let successCount = 0;
+        let failCount = 0;
+        results.forEach(r => {
+          if (r.success) successCount++;
+          else failCount++;
+        });
+    
+        let html = `
+          <div class="test-summary">
+            <h3>결과 요약</h3>
+            <p>총: ${results.length}, 성공: ${successCount}, 실패: ${failCount}</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>쿼리</th>
+                  <th>전송 시간</th>
+                  <th>첫 응답(TTFT)</th>
+                  <th>종료 시간</th>
+                  <th>소요(ms)</th>
+                  <th>청크 수</th>
+                  <th>상태</th>
+                  <th>오류</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+    
+        results.forEach(r => {
+          const statusText = r.success ? "성공" : "실패";
+          const statusClass = r.success ? "badge-success" : "badge-danger";
+          const errorText = r.error || "";
+    
+          // 만약 sendTime, endTime이 "오전 11:36:58.637" 같은 문자열이면 그대로 표시
+          // number면 toFixed(1) 등 해도 됨
+          const sendTimeCell = (typeof r.sendTime === 'number')
+            ? r.sendTime.toFixed(1)
+            : (r.sendTime || '');
+    
+          const firstTimeStr = (typeof r.firstChunkTime === 'number')
+            ? r.firstChunkTime.toFixed(1)
+            : (r.firstChunkTime || '');
+    
+          const endTimeStr = (typeof r.endTime === 'number')
+            ? r.endTime.toFixed(1)
+            : (r.endTime || '');
+    
+          // duration은 string/number일 수 있음
+          const durationStr = (typeof r.duration === 'number')
+            ? r.duration.toFixed(1)
+            : (r.duration || '');
+    
+          html += `
+            <tr>
+              <td>${r.id || ''}</td>
+              <td>${r.query || ''}</td>
+              <td>${sendTimeCell}</td>
+              <td>${firstTimeStr}</td>
+              <td>${endTimeStr}</td>
+              <td>${durationStr}</td>
+              <td>${r.chunkCount || 0}</td>
+              <td><span class="badge ${statusClass}">${statusText}</span></td>
+              <td style="color:var(--danger);">${errorText}</td>
+            </tr>
+          `;
+        });
+    
+        html += `
+              </tbody>
+            </table>
+          </div>
+        `;
+        return html;
+      }
+
+      window.addEventListener('DOMContentLoaded', () => {
+        updateContinuousCountMax();
+      });
+    </script>
+
+    <script src="/static/test_set.js"></script>
+  </body>
 </html>
 
 ```
 
-```log
-
-(InferenceActor pid=567) [사용자 질문]
-(InferenceActor pid=567) 문장 2개를 만들고 그 둘 사이에 띄어쓰기 2번을 의도적으로  넣어봐.<end_of_turn>
-(InferenceActor pid=567) <start_of_turn>model
-(InferenceActor pid=567) 답변:
-(InferenceActor pid=567)
-(InferenceActor pid=567) INFO 03-18 10:06:48 async_llm.py:164] Added request fcfb650c-2839-455d-a1cb-94f8bc365967.
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": "첫"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": " 번째"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": " 문"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": "장"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": "입니다"}
-(InferenceActor pid=567) [DEBUG] New token raw: <첫>
-(InferenceActor pid=567) [DEBUG] New token tokens: 첫
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": "첫"}
-(InferenceActor pid=567) [DEBUG] New token raw: < 번째>
-(InferenceActor pid=567) [DEBUG] New token tokens: ▁번째
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": " 번째"}
-(InferenceActor pid=567) [DEBUG] New token raw: < 문>
-(InferenceActor pid=567) [DEBUG] New token tokens: ▁문
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": " 문"}
-(InferenceActor pid=567) [DEBUG] New token raw: <장>
-(InferenceActor pid=567) [DEBUG] New token tokens: 장
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": "장"}
-(InferenceActor pid=567) [DEBUG] New token raw: <입니다>
-(InferenceActor pid=567) [DEBUG] New token tokens: 입니다
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": "입니다"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": "."}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": "두"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": " 번째"}
-(InferenceActor pid=567) [DEBUG] New token raw: <.>
-(InferenceActor pid=567) [DEBUG] New token tokens: .
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": "."}
-(InferenceActor pid=567) [DEBUG] New token raw: <두>
-(InferenceActor pid=567) [DEBUG] New token tokens: 두
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": "두"}
-(InferenceActor pid=567) [DEBUG] New token raw: < 번째>
-(InferenceActor pid=567) [DEBUG] New token tokens: ▁번째
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": " 번째"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": " 문"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": "장"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": "입니다"}
-[APP-QUERYSTREAM] 최종 송신 데이터:  {"type": "answer", "answer": "."}
-(InferenceActor pid=567) [DEBUG] New token raw: < 문>
-(InferenceActor pid=567) [DEBUG] New token tokens: ▁문
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": " 문"}
-(InferenceActor pid=567) [DEBUG] New token raw: <장>
-(InferenceActor pid=567) [DEBUG] New token tokens: 장
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": "장"}
-(InferenceActor pid=567) [DEBUG] New token raw: <입니다>
-(InferenceActor pid=567) [DEBUG] New token tokens: 입니다
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": "입니다"}
-(InferenceActor pid=567) [DEBUG] New token raw: <.>
-(InferenceActor pid=567) [DEBUG] New token tokens: .
-(InferenceActor pid=567) [STREAM] Sending token: {"type": "answer", "answer": "."}
-
-
-```
 
 -----------------
 
@@ -5426,5 +5913,5 @@ Answer-Rule:
 
 
 My-Requirements:
- 1. 현재 코드 어디선가, 공백이 출력되면 제거되고 있는 것 같아. 이를 찾아서 해당 부분이 어디인지 명확하게 나에게 알려줘.
- 
+ 1. User requirements.
+ 2. My requirements.

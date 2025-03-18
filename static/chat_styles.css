@@ -231,6 +231,39 @@ body {
     overflow-y: auto;
 }
 
+.reference-container-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.reference-container-header h3 {
+    font-size: 1rem;
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.close-ref-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem;
+    border-radius: var(--radius-sm);
+    transition: var(--transition-normal);
+}
+
+.close-ref-btn:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+    color: var(--primary);
+}
+
 .reference-item {
     margin-bottom: 1rem;
     padding: 1rem;
@@ -579,9 +612,82 @@ body {
     margin-right: 0.5rem;
 }
 
+/* Reference button in message header */
+.message-ref-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: auto;
+    padding: 0.25rem 0.5rem;
+    background-color: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition-normal);
+}
+
+.message-ref-btn svg {
+    color: var(--primary);
+    margin-right: 0;
+}
+
+.message-ref-btn:hover {
+    background-color: var(--primary-light);
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
 .message-content {
     font-size: 0.9375rem;
     overflow-wrap: break-word;
+}
+
+/* Typing indicator */
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    margin-left: 0.5rem;
+}
+
+.typing-indicator span {
+    height: 0.5rem;
+    width: 0.5rem;
+    margin: 0 0.1rem;
+    background-color: var(--primary);
+    border-radius: 50%;
+    display: inline-block;
+    opacity: 0.6;
+}
+
+.typing-indicator span:nth-child(1) {
+    animation: pulse 1s infinite 0.1s;
+}
+
+.typing-indicator span:nth-child(2) {
+    animation: pulse 1s infinite 0.3s;
+}
+
+.typing-indicator span:nth-child(3) {
+    animation: pulse 1s infinite 0.5s;
+}
+
+@keyframes pulse {
+    0% {
+        transform: scale(1);
+        opacity: 0.6;
+    }
+
+    50% {
+        transform: scale(1.2);
+        opacity: 1;
+    }
+
+    100% {
+        transform: scale(1);
+        opacity: 0.6;
+    }
 }
 
 /* Markdown Styling */
@@ -691,6 +797,32 @@ body {
 
 .message-content h6 {
     font-size: 0.85rem;
+}
+
+/* Table styles */
+.message-content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    overflow-x: auto;
+    display: block;
+}
+
+.message-content table th,
+.message-content table td {
+    padding: 0.5rem;
+    border: 1px solid var(--border-color);
+    text-align: left;
+}
+
+.message-content table th {
+    background-color: var(--primary-light);
+    font-weight: 600;
+    color: var(--primary);
+}
+
+.message-content table tr:nth-child(even) {
+    background-color: rgba(0, 0, 0, 0.02);
 }
 
 /* Input Container Styles */
@@ -832,6 +964,14 @@ body {
     .welcome-subtitle {
         font-size: 1rem;
     }
+
+    .message-ref-btn span {
+        display: none;
+    }
+
+    .message-ref-btn {
+        padding: 0.25rem;
+    }
 }
 
 /* Dark mode support (optional) */
@@ -884,5 +1024,14 @@ body {
     .toggle-ref-btn {
         background-color: #1f2937;
         color: #d1d5db;
+    }
+
+    .message-ref-btn {
+        background-color: transparent;
+        border-color: #374151;
+    }
+
+    .message-ref-btn:hover {
+        background-color: rgba(16, 163, 127, 0.2);
     }
 }

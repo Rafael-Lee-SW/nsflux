@@ -219,11 +219,11 @@ def load_model(config):
         
         vllm_conf = config.get("vllm", {})
         
-        engine_args.enable_prefix_caching = False
-        engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
+        engine_args.enable_prefix_caching = True
+        # engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
         engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
-        # engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
+        engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
         engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
         # engine_args.block_size = vllm_conf.get("block_size", 128)
         engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization")
@@ -231,7 +231,7 @@ def load_model(config):
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
             
-        engine_args.model_max_len = vllm_conf.get("model_max_len")
+        engine_args.max_model_len = vllm_conf.get("max_model_len")
         
         # # 새로 추가: disable_sliding_window 옵션 확인
         # if vllm_conf.get("disable_sliding_window", False):

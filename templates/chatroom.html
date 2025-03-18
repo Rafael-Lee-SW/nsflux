@@ -53,7 +53,7 @@
             <polyline points="15 3 21 3 21 9"></polyline>
             <line x1="10" y1="14" x2="21" y2="3"></line>
           </svg>
-          <span>Show References</span>
+          <span>Show All References</span>
         </button>
       </div>
     </div>
@@ -95,6 +95,7 @@
     let referenceList = []; // 현재 쿼리로부터 수집된 참조 데이터
     let isProcessing = false; // 동시 요청 방지 플래그
     let isMobileView = window.innerWidth <= 768;
+    let currentlyViewingMsgIndex = null; // 현재 보고 있는 메시지 인덱스
 
     // welcome 화면 HTML 템플릿 (id 대신 클래스만 사용)
     const welcomeContentHTML = `
@@ -222,6 +223,19 @@
      ************************************************************************/
     function parseMarkdown(text) {
       if (!text) return '';
+
+      // footnote 정의를 추출합니다.
+      // 각주는 텍스트의 마지막에 별도의 줄로 "[^번호]: 내용" 형식으로 존재한다고 가정합니다.
+      const footnoteRegex = /^\[\^(\d+)\]:\s*(.+)$/gm;
+      const footnotesDict = {};
+      let match;
+      while ((match = footnoteRegex.exec(text)) !== null) {
+        const num = match[1];
+        const content = match[2];
+        footnotesDict[num] = content;
+      }
+      // footnote 정의 라인 제거
+      text = text.replace(footnoteRegex, '').trim();
     
       // 입력 텍스트가 이미 HTML 태그로 시작하면 그대로 반환
       if (text.trim().startsWith('<')) {
@@ -242,6 +256,9 @@
       // 링크 처리 (필요시 수정)
       text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
       // 제목 처리
+      text = text.replace(/^###### (.*)$/gm, '<h6>$1</h6>');
+      text = text.replace(/^##### (.*)$/gm, '<h5>$1</h5>');
+      text = text.replace(/^#### (.*)$/gm, '<h4>$1</h4>');
       text = text.replace(/^### (.*)$/gm, '<h3>$1</h3>');
       text = text.replace(/^## (.*)$/gm, '<h2>$1</h2>');
       text = text.replace(/^# (.*)$/gm, '<h1>$1</h1>');
@@ -279,6 +296,21 @@
       });
       
       let html = htmlBlocks.join('');
+
+      // 3. 표 변환 처리: Markdown 표를 HTML 테이블로 변환
+      html = parseTables(html);   
+
+      // 각주 영역 생성: footnotesDict에 있는 각주 정의들을 <ol> 목록으로 추가합니다.
+      const footnotesKeys = Object.keys(footnotesDict);
+      if (footnotesKeys.length > 0) {
+        let footnotesHTML = '<div class="footnotes"><hr><ol>';
+        // 번호 순서대로 정렬
+        footnotesKeys.sort((a, b) => Number(a) - Number(b)).forEach(num => {
+          footnotesHTML += `<li id="fn${num}">${footnotesDict[num]} <a href="#ref${num}" title="Back to content">↩</a></li>`;
+        });
+        footnotesHTML += '</ol></div>';
+        html += footnotesHTML;
+      }
       
       // 3. 불필요한 <br> 태그 제거 (필요한 경우)
       html = html.replace(/<\/(h1|h2|h3|ul|ol|blockquote|pre)><br><p>/g, '</$1><p>');
@@ -294,8 +326,48 @@
         .replace(/'/g, "&#039;");
     }
     
-    
 
+    function parseTables(text) {
+      // Markdown 표는 최소 3줄 이상 있어야 합니다.
+      // 예) 
+      // | 헤더1 | 헤더2 |
+      // |-------|-------|
+      // | 값1   | 값2   |
+      const tableRegex = /((?:^\|.*\|(?:\r?\n|$))+)/gm;
+      return text.replace(tableRegex, function(match) {
+        const lines = match.trim().split(/\r?\n/);
+        if (lines.length < 2) return match; // 표 형식이 아님
+    
+        // 첫 줄은 헤더, 두 번째 줄은 구분선입니다.
+        const headers = lines[0].split('|').map(s => s.trim()).filter(Boolean);
+        const separator = lines[1].split('|').map(s => s.trim()).filter(Boolean);
+        
+        // 구분선 검증: 각 셀에 :?-+:? 형식이어야 합니다.
+        if (!separator.every(s => /^:?-+:?$/.test(s))) return match; // 표 형식이 아님
+    
+        // 나머지 줄은 데이터 행입니다.
+        const rows = lines.slice(2).map(line =>
+          line.split('|').map(s => s.trim()).filter(Boolean)
+        );
+    
+        // HTML 테이블 생성
+        let html = '<table><thead><tr>';
+        headers.forEach(header => {
+          html += `<th>${header}</th>`;
+        });
+        html += '</tr></thead><tbody>';
+        rows.forEach(row => {
+          html += '<tr>';
+          row.forEach(cell => {
+            html += `<td>${cell}</td>`;
+          });
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        return html;
+      });
+    }
+    
     /************************************************************************
      * Welcome Screen Rendering
      ************************************************************************/
@@ -584,17 +656,6 @@
           <line x1="3" y1="9" x2="21" y2="9"></line>
           <line x1="9" y1="21" x2="9" y2="9"></line>
         </svg>`;
-        if (msgIndex !== null) {
-          msgDiv.style.cursor = "pointer";
-          msgDiv.title = "이 답변의 참조 보기";
-          msgDiv.onclick = () => {
-            document.querySelectorAll(".message-ai.selected").forEach(el => {
-              el.classList.remove("selected");
-            });
-            msgDiv.classList.add("selected");
-            loadReferenceForMessage(msgIndex);
-          };
-        }
       } else {
         messageClass = "message-system";
         senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -606,10 +667,27 @@
       
       const messageContent = sender === "AI" ? parseMarkdown(message) : escapeHtml(message);
       msgDiv.classList.add(messageClass);
+      
+      // 레퍼런스 버튼 추가 (AI 메시지에만)
+      let referenceButton = '';
+      if (sender === "AI" && msgIndex !== null) {
+        referenceButton = `
+          <button class="message-ref-btn" onclick="loadReferenceForMessage(${msgIndex})">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            <span>References</span>
+          </button>
+        `;
+      }
+      
       msgDiv.innerHTML = `
         <div class="message-header">
           ${senderIcon}
           ${sender}
+          ${referenceButton}
         </div>
         <div class="message-content">${messageContent}</div>
       `;
@@ -716,8 +794,6 @@
     /************************************************************************
      * AI Streaming Display (Temporary Message)
      ************************************************************************/
-
-     
      let tempAiMsgDiv = null;
      function startAIStreamingMessage() {
        const chatBox = document.getElementById("chatBox");
@@ -731,6 +807,11 @@
           <line x1="9" y1="21" x2="9" y2="9"></line>
           </svg>
           AI
+          <div class="typing-indicator">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
           </div>
           <div class="message-content" id="aiTempText"></div>
           `;
@@ -749,9 +830,7 @@
       if (contentDiv) {
         // 먼저, 리터럴 이스케이프된 줄바꿈을 실제 줄바꿈으로 변환
         const unescapedText = unescapeNewlines(text);
-        console.log("변환 전 ", unescapedText)
         contentDiv.innerHTML = parseMarkdown(unescapedText);
-        console.log("변환 후 ", unescapedText)
       }
       const chatBox = document.getElementById("chatBox");
       chatBox.scrollTop = chatBox.scrollHeight;
@@ -775,12 +854,20 @@
       referenceList.push(refData);
       console.log("Reference data received:", refData);
     }
+    
     function clearReferenceData() {
       referenceList = [];
+      currentlyViewingMsgIndex = null;
       document.getElementById("toggleRefBtn").style.display = "none";
       document.getElementById("referenceContainer").style.display = "none";
       document.getElementById("referenceContainer").innerHTML = "";
+      
+      // 선택된 메시지 하이라이트 제거
+      document.querySelectorAll(".message-ai.selected").forEach(el => {
+        el.classList.remove("selected");
+      });
     }
+    
     function toggleReferences() {
       const container = document.getElementById("referenceContainer");
       const toggleBtn = document.getElementById("toggleRefBtn");
@@ -790,12 +877,13 @@
         if (!container.innerHTML.trim()) {
           renderReferenceData();
         }
-        toggleBtn.querySelector('span').textContent = "Hide References";
+        toggleBtn.querySelector('span').textContent = "Hide All References";
       } else {
         container.style.display = "none";
-        toggleBtn.querySelector('span').textContent = "Show References";
+        toggleBtn.querySelector('span').textContent = "Show All References";
       }
     }
+    
     function renderReferenceData() {
       const container = document.getElementById("referenceContainer");
       container.innerHTML = "";
@@ -817,7 +905,37 @@
         container.appendChild(div);
       });
     }
+    
     function loadReferenceForMessage(msgIndex) {
+      // 이미 선택된 메시지인 경우 참조 컨테이너 토글
+      if (currentlyViewingMsgIndex === msgIndex) {
+        const container = document.getElementById("referenceContainer");
+        if (container.style.display === "none" || container.style.display === "") {
+          container.style.display = "block";
+        } else {
+          container.style.display = "none";
+          // 선택 상태 해제
+          document.querySelectorAll(".message-ai.selected").forEach(el => {
+            el.classList.remove("selected");
+          });
+          currentlyViewingMsgIndex = null;
+          return;
+        }
+      } else {
+        // 다른 메시지 선택 시 하이라이트 변경
+        document.querySelectorAll(".message-ai.selected").forEach(el => {
+          el.classList.remove("selected");
+        });
+        
+        // 현재 메시지 하이라이트
+        const messages = document.querySelectorAll(".message-line.message-ai");
+        if (messages[msgIndex]) {
+          messages[msgIndex].classList.add("selected");
+        }
+        
+        currentlyViewingMsgIndex = msgIndex;
+      }
+      
       const url = `/reference?request_id=${currentRequestId}&msg_index=${msgIndex}`;
       fetch(url)
         .then(response => response.json())
@@ -826,19 +944,32 @@
             alert(data.error);
             return;
           }
-          displayReferenceData(data.references);
+          displayReferenceData(data.references, msgIndex);
         })
         .catch(err => {
           console.error("참조 데이터 로딩 오류:", err);
           alert("참조 데이터를 불러오는 중 오류 발생");
         });
     }
-    function displayReferenceData(refs) {
+    
+    function displayReferenceData(refs, msgIndex) {
       const container = document.getElementById("referenceContainer");
       container.innerHTML = "";
       
+      // 메시지 인덱스 표시
+      const headerDiv = document.createElement("div");
+      headerDiv.className = "reference-container-header";
+      headerDiv.innerHTML = `<h3>References for Message #${msgIndex + 1}</h3>
+        <button class="close-ref-btn" onclick="closeReferences()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>`;
+      container.appendChild(headerDiv);
+      
       if (refs.length === 0) {
-        container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
+        container.innerHTML += "<p class='no-references'>참조 데이터가 없습니다.</p>";
       } else {
         refs.forEach((ref, idx) => {
           const div = document.createElement("div");
@@ -854,8 +985,15 @@
       }
       
       container.style.display = "block";
-      document.getElementById("toggleRefBtn").style.display = "flex";
-      document.getElementById("toggleRefBtn").querySelector('span').textContent = "Hide References";
+    }
+    
+    function closeReferences() {
+      document.getElementById("referenceContainer").style.display = "none";
+      // 선택 상태 해제
+      document.querySelectorAll(".message-ai.selected").forEach(el => {
+        el.classList.remove("selected");
+      });
+      currentlyViewingMsgIndex = null;
     }
   </script>
 </body>
