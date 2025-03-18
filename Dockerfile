@@ -1,5 +1,5 @@
 # 베이스 이미지 선택
-FROM globeai/flux_ns:2.2
+FROM globeai/flux_ns:1.26
 # FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
 
 # 2. 대화형 입력 없이 진행하도록 환경 변수 설정

@@ -12,6 +12,7 @@ import datetime
 
 from core.RAG import (
     query_sort,
+    specific_question,
     execute_rag,
     generate_answer,
     generate_answer_stream,
@@ -352,9 +353,9 @@ class InferenceActor:
             #    방법 1) query_sort() 전에 past_context를 참조해 query를 확장
             #    방법 2) generate_answer()에서 Prompt 앞부분에 붙임
             # 여기서는 예시로 “query_sort”에 past_context를 넘겨
-            # 호출부 수정
+            # 호출부 수정 "user_input": f"{past_context}\n사용자 질문: {user_input}",
             params = {
-                "user_input": f"{past_context}\n사용자 질문: {user_input}",
+                "user_input": f"사용자 질문: {user_input}",
                 "model": self.model,
                 "tokenizer": self.tokenizer,
                 "embed_model": self.embed_model,
@@ -466,6 +467,8 @@ class InferenceActor:
             else:
                 try:
                     print("[SOOWAN] TA is No, before make a retrieval")
+                    QU, KE, TA, TI = await specific_question(params) # TA == no, so that have to remake the question based on history
+                    
                     docs, docs_list = await execute_rag(
                         QU,
                         KE,

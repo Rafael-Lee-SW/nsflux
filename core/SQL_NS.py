@@ -330,43 +330,42 @@ f'''
         top_p=config.model.top_p,
         repetition_penalty=config.model.repetition_penalty,
     )
-    accepted_request_id = str(uuid.uuid4())
-    outputs_result = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
-    print(f"[GENERATE_SQL] SQL Model Outputs:{outputs_result}")
-    # input_ids = tokenizer(PROMPT, return_tensors="pt").to("cuda")
-    # input_length = input_ids['input_ids'].shape[1]
-    # print(f"  INPUT LENGTH: {input_length}")
-    # outputs = model.generate(**input_ids, max_new_tokens=config.model.max_new_tokens)
-    # outputs_result = tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-    # print(f"  OUTPUTS: {outputs_result}")
-
-    # Regular expression to extract content between <query/> and <query>
+    # 성공할 때까지 최대 3회 반복
+    max_attempts = 3
+    attempt = 0
+    UN_number = UN_class = POL = POD = "NULL"
     unno_pattern = r'<unno.*?>(.*?)<unno.*?>'
     class_pattern = r'<class.*?>(.*?)<class.*?>'
     pol_port_pattern = r'<pol_port.*?>(.*?)<pol_port.*?>'
     pod_port_pattern = r'<pod_port.*?>(.*?)<pod_port.*?>'
-    
-    match_unno = re.search(unno_pattern, outputs_result, re.DOTALL)
-    UN_number = match_unno.group(1).strip() if match_unno is not None else "NULL"
 
-    match_class = re.search(class_pattern, outputs_result, re.DOTALL)
-    UN_class = match_class.group(1).strip() if match_class is not None else "NULL"
+    while attempt < max_attempts:
+        accepted_request_id = str(uuid.uuid4())
+        outputs_result = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+        print(f"[GENERATE_SQL] Attempt {attempt+1}, SQL Model Outputs: {outputs_result}")
 
-    match_pol = re.search(pol_port_pattern, outputs_result, re.DOTALL)
-    POL = match_pol.group(1).strip() if match_pol is not None else "NULL"
+        match_unno = re.search(unno_pattern, outputs_result, re.DOTALL)
+        UN_number = match_unno.group(1).strip() if match_unno is not None else "NULL"
 
-    match_pod = re.search(pod_port_pattern, outputs_result, re.DOTALL)
-    POD = match_pod.group(1).strip() if match_pod is not None else "NULL"
+        match_class = re.search(class_pattern, outputs_result, re.DOTALL)
+        UN_class = match_class.group(1).strip() if match_class is not None else "NULL"
 
-    # UN_number = re.search(unno_pattern, outputs_result, re.DOTALL).group(1)
-    # UN_class = re.search(class_pattern, outputs_result, re.DOTALL).group(1)
-    # POL = re.search(pol_port_pattern, outputs_result, re.DOTALL).group(1)
-    # POD = re.search(pod_port_pattern, outputs_result, re.DOTALL).group(1)
+        match_pol = re.search(pol_port_pattern, outputs_result, re.DOTALL)
+        POL = match_pol.group(1).strip() if match_pol is not None else "NULL"
 
-    print(f"  UN_number:{UN_number}, UN_class:{UN_class}, POL:{POL}, POD:{POD}")
+        match_pod = re.search(pod_port_pattern, outputs_result, re.DOTALL)
+        POD = match_pod.group(1).strip() if match_pod is not None else "NULL"
+
+        print(f"[GENERATE_SQL] 추출 결과 - UN_number: {UN_number}, UN_class: {UN_class}, POL: {POL}, POD: {POD}")
+
+        # 조건: UN_number와 UN_class 중 하나라도 NULL이 아니고, POL과 POD는 모두 NULL이 아니어야 함.
+        if ((UN_number != "NULL" or UN_class != "NULL") and POL != "NULL" and POD != "NULL"):
+            break
+        attempt += 1
+
+    print(f"[GENERATE_SQL] 최종 추출 값 - UN_number: {UN_number}, UN_class: {UN_class}, POL: {POL}, POD: {POD}")
     final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
-
-    ### Temporary ###
+    # Temporary: title, explain, table_json, chart_json은 None으로 처리
     title, explain, table_json, chart_json = (None,) * 4
     return final_sql_query, title, explain, result, chart_json
 
