@@ -240,6 +240,67 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     # code.interact(local=locals())  # 현재 변수들을 유지한 상태에서 Python 인터랙티브 셸 실행
     return sql_query, result.stdout
 
+# --------------------------------------------------------
+# SQL 상세보기
+# --------------------------------------------------------
+# # Oracle sqlplus 명령어 실행 예시
+@time_tracker
+def run_sql_bl(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
+    # 값이 "NULL"이 아니면 문자열로 취급하여 작은따옴표로 감쌈.
+    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
+    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
+
+    # SQL*Plus 명령어를 실행할 기본 명령어
+    sql_query = \
+    f"""
+    SELECT *
+    FROM (
+        SELECT
+            MST.FRTBNO AS "B/L No",
+            MST.FRTOBD AS onBoard_Date,
+            MST.FRTPOL AS POL,
+            MST.FRTPOD AS POD,
+            MST.FRTSBM AS ship_back,
+            CNT.KCTUNN AS UNNO,
+            CNT.KCTCLS AS CLASS,
+            COUNT(*) AS "DG_Container_Count"
+        FROM ICON.WSDAMST MST
+        JOIN ICON.WSDACNT CNT ON CNT.KCTBNO = MST.FRTBNO
+        WHERE MST.BUKRS = '1000'
+        AND CNT.BUKRS = '1000'
+        AND MST.FRTOBD BETWEEN TO_CHAR(SYSDATE-1095,'YYYYMMDD')+1 AND TO_CHAR(SYSDATE+1,'YYYYMMDD')
+        AND CNT.KCTUNN = {unno_val}
+        AND CNT.KCTCLS = {cls_val}
+        AND MST.FRTPOL = '{pol_port}'
+        AND MST.FRTPOD = '{pod_port}'
+        GROUP BY
+            MST.FRTBNO,
+            MST.FRTOBD,
+            MST.FRTPOL,
+            MST.FRTPOD,
+            MST.FRTSBM,
+            CNT.KCTUNN,
+            CNT.KCTCLS
+    )
+    WHERE ROWNUM <= 5;
+    EXIT;
+    """
+    
+    # subprocess를 사용하여 SQL*Plus 명령어 실행
+    try:
+        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
+        # SQL*Plus의 출력 결과를 받아옵니다
+        print("[SQL_NS] SQL Query run_sql_bl Results:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        # 오류가 발생한 경우 오류 메시지 출력
+        print(f"[SQL_NS] run_sql_bl Error: {e.stderr}")
+    # import code
+    # code.interact(local=locals())  # 현재 변수들을 유지한 상태에서 Python 인터랙티브 셸 실행
+    return sql_query, result.stdout
+
+# --------------------------------------------------------
+# 메타데이터 정보 추출
+# --------------------------------------------------------
 def get_metadata(config):
     """
     - port_path JSON: 딕셔너리 형태이며, 'location_code' 키의 값을 추출.
@@ -360,12 +421,18 @@ f'''
         if ((UN_number != "NULL" or UN_class != "NULL") and POL != "NULL" and POD != "NULL"):
             break
         attempt += 1
-
+    
     print(f"[GENERATE_SQL] 최종 추출 값 - UN_number: {UN_number}, UN_class: {UN_class}, POL: {POL}, POD: {POD}")
+    
+    # DG 가능 여부 테이블 SQL 실행
     final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
+    
+    # 상세 B/L SQL 실행
+    detailed_sql_query, detailed_result = run_sql_bl(UN_class, UN_number, POL, POD)
+    
     # Temporary: title, explain, table_json, chart_json은 None으로 처리
     title, explain, table_json, chart_json = (None,) * 4
-    return final_sql_query, title, explain, result, chart_json
+    return final_sql_query, title, explain, result, chart_json, detailed_result
 
 if __name__ == "__main__":
     # check_sqlplus()             # sqlplus가 잘 동작하는지 확인

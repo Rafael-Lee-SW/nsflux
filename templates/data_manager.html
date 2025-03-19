@@ -1,10 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Data Insights Hub - UMAP Visualization</title>
-  <link rel="stylesheet" href="/static/data_styles.css">
+  <!-- 외부 CSS 파일 링크 -->
+  <link rel="stylesheet" href="/static/data_styles.css" />
   <!-- d3.js for pagination and legends -->
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <!-- PIXI.js for visualization -->
@@ -16,9 +17,12 @@
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
   <!-- Google Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
 </head>
 <body>
   <div class="app-container">
@@ -31,8 +35,8 @@
             Refresh
           </button>
           <button class="btn btn-outline btn-sm" id="themeToggleBtn">
-            <span class="light-icon">🌙</span>
-            <span class="dark-icon">☀️</span>
+            <span class="light-icon">üåô</span>
+            <span class="dark-icon">‚òÄÔ∏è</span>
           </button>
         </div>
       </div>
@@ -45,7 +49,7 @@
             <button class="tab-trigger active" data-tab="manage">Data Management</button>
             <button class="tab-trigger" data-tab="visualize">UMAP Visualization</button>
           </div>
-          
+
           <div class="tabs-meta">
             <span class="badge badge-outline" id="filesCountBadge">0 Files</span>
           </div>
@@ -62,10 +66,10 @@
               </div>
               <div class="card-content">
                 <div class="search-form">
-                  <input type="text" id="searchInput" placeholder="Enter search query..." class="input">
+                  <input type="text" id="searchInput" placeholder="Enter search query..." class="input" />
                   <button id="searchBtn" class="btn btn-primary">Search</button>
                 </div>
-                
+
                 <div id="searchResults" class="search-results"></div>
               </div>
             </div>
@@ -80,11 +84,11 @@
               <div class="card-content">
                 <div id="fileUploader" class="file-uploader">
                   <div class="dropzone" id="dropzone">
-                    <input type="file" id="dataFile" multiple accept=".txt,.json,.pptx,.pdf" class="file-input">
+                    <input type="file" id="dataFile" multiple accept=".txt,.json,.pptx,.pdf" class="file-input" />
                     <div class="dropzone-content">
                       <i data-lucide="upload" class="icon-lg icon-muted"></i>
                       <p class="dropzone-text">
-                        Drag files here or 
+                        Drag files here or
                         <button type="button" class="text-link" id="browseBtn">browse</button>
                       </p>
                       <p class="dropzone-hint">Supports .txt, .json, .pptx, .pdf</p>
@@ -136,7 +140,7 @@
                   </tbody>
                 </table>
               </div>
-
+              <!-- Pagination: 추가된 페이지번호 및 첫/마지막 버튼 -->
               <div class="pagination-controls">
                 <div class="pagination-info">
                   Page <span id="currentPage">1</span> of <span id="totalPages">1</span>
@@ -146,6 +150,7 @@
                     <i data-lucide="chevron-left" class="icon-sm"></i>
                     Previous
                   </button>
+                  <div id="pageNumbers" class="pagination-page-numbers"></div>
                   <button id="nextPageBtn" class="btn btn-outline btn-sm" disabled>
                     Next
                     <i data-lucide="chevron-right" class="icon-sm"></i>
@@ -174,13 +179,13 @@
                     <span>Upload Trends</span>
                   </button>
                 </div>
-                
+
                 <div class="stats-tab-content active" id="distributionTab">
                   <div id="distributionChart" class="chart-container">
                     <!-- Chart will be rendered here -->
                   </div>
                 </div>
-                
+
                 <div class="stats-tab-content" id="trendsTab">
                   <div id="trendsChart" class="chart-container">
                     <!-- Chart will be rendered here -->
@@ -205,35 +210,35 @@
                     <p class="loading-text">Loading visualization data...</p>
                   </div>
                 </div>
-                
+
                 <div class="visualization-controls">
                   <div class="control-panel">
                     <button id="zoomOutBtn" class="btn btn-icon" title="Zoom Out">
                       <i data-lucide="zoom-out" class="icon-sm"></i>
                     </button>
-                    
+
                     <div class="zoom-slider-container">
-                      <input type="range" id="zoomSlider" min="10" max="200" step="10" value="100" class="zoom-slider">
+                      <input type="range" id="zoomSlider" min="10" max="200" step="10" value="100" class="zoom-slider" />
                     </div>
-                    
+
                     <button id="zoomInBtn" class="btn btn-icon" title="Zoom In">
                       <i data-lucide="zoom-in" class="icon-sm"></i>
                     </button>
-                    
+
                     <button id="resetViewBtn" class="btn btn-icon" title="Reset View">
                       <i data-lucide="refresh-cw" class="icon-sm"></i>
                     </button>
-                    
+
                     <button id="fullscreenBtn" class="btn btn-icon" title="Toggle Fullscreen">
                       <i data-lucide="maximize-2" class="icon-sm"></i>
                     </button>
                   </div>
                 </div>
-                
+
                 <div class="visualization-help">
                   <div class="help-content">
                     <i data-lucide="move" class="icon-sm"></i>
-                    <span>Drag to pan • Scroll to zoom</span>
+                    <span>Drag to pan · Scroll to zoom</span>
                   </div>
                 </div>
               </div>
@@ -245,7 +250,7 @@
 
     <footer class="app-footer">
       <div class="container">
-        <p class="footer-text">Data Management & UMAP Visualization Dashboard © <span id="currentYear"></span></p>
+        <p class="footer-text">Data Management & UMAP Visualization Dashboard ¬© <span id="currentYear"></span></p>
       </div>
     </footer>
   </div>
@@ -269,11 +274,8 @@
 
     tabTriggers.forEach(trigger => {
       trigger.addEventListener('click', () => {
-        // Remove active class from all triggers and contents
         tabTriggers.forEach(t => t.classList.remove('active'));
         tabContents.forEach(c => c.classList.remove('active'));
-        
-        // Add active class to clicked trigger and corresponding content
         trigger.classList.add('active');
         const tabId = trigger.getAttribute('data-tab');
         document.getElementById(`${tabId}Tab`).classList.add('active');
@@ -286,11 +288,8 @@
 
     statsTabTriggers.forEach(trigger => {
       trigger.addEventListener('click', () => {
-        // Remove active class from all triggers and contents
         statsTabTriggers.forEach(t => t.classList.remove('active'));
         statsTabContents.forEach(c => c.classList.remove('active'));
-        
-        // Add active class to clicked trigger and corresponding content
         trigger.classList.add('active');
         const tabId = trigger.getAttribute('data-stats-tab');
         document.getElementById(`${tabId}Tab`).classList.add('active');
@@ -309,15 +308,8 @@
 
     let selectedFiles = [];
 
-    // Handle file selection
     fileInput.addEventListener('change', handleFileSelection);
-
-    // Handle browse button click
-    browseBtn.addEventListener('click', () => {
-      fileInput.click();
-    });
-
-    // Handle drag and drop
+    browseBtn.addEventListener('click', () => { fileInput.click(); });
     dropzone.addEventListener('dragenter', handleDrag);
     dropzone.addEventListener('dragover', handleDrag);
     dropzone.addEventListener('dragleave', handleDrag);
@@ -326,7 +318,6 @@
     function handleDrag(e) {
       e.preventDefault();
       e.stopPropagation();
-      
       if (e.type === 'dragenter' || e.type === 'dragover') {
         dropzone.classList.add('dropzone-active');
       } else if (e.type === 'dragleave') {
@@ -338,7 +329,6 @@
       e.preventDefault();
       e.stopPropagation();
       dropzone.classList.remove('dropzone-active');
-      
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
         fileInput.files = e.dataTransfer.files;
         handleFileSelection();
@@ -357,7 +347,6 @@
       selectedFilesContainer.classList.remove('hidden');
       fileCount.textContent = selectedFiles.length;
       filesList.innerHTML = '';
-      
       selectedFiles.forEach((file, index) => {
         const fileItem = document.createElement('div');
         fileItem.className = 'file-item';
@@ -365,6 +354,7 @@
           <div class="file-info">
             <i data-lucide="file-text" class="icon-sm icon-muted"></i>
             <span class="file-name">${file.name}</span>
+            ${getFileTypeLabel(file.name) ? `<span class="file-type-label">${getFileTypeLabel(file.name)}</span>` : ''}
           </div>
           <button class="btn-icon-sm remove-file" data-index="${index}">
             <i data-lucide="x" class="icon-xs"></i>
@@ -372,11 +362,7 @@
         `;
         filesList.appendChild(fileItem);
       });
-      
-      // Initialize icons for new elements
       lucide.createIcons();
-      
-      // Add event listeners to remove buttons
       document.querySelectorAll('.remove-file').forEach(btn => {
         btn.addEventListener('click', () => {
           const index = parseInt(btn.getAttribute('data-index'));
@@ -385,43 +371,56 @@
       });
     }
 
+    function getFileTypeLabel(fileName) {
+      const parts = fileName.split('.');
+      if(parts.length < 2) return "";
+      const ext = parts.pop().toLowerCase();
+      switch(ext) {
+        case 'pptx':
+          return 'PPTX';
+        case 'text':
+          return 'Text';
+        case 'json':
+          return 'JSON';
+        case 'pdf':
+          return 'PDF';
+        default:
+          return "";
+      }
+    }
+
     function removeFile(index) {
       selectedFiles = selectedFiles.filter((_, i) => i !== index);
       renderSelectedFiles();
       uploadBtn.disabled = selectedFiles.length === 0;
-      
       if (selectedFiles.length === 0) {
         selectedFilesContainer.classList.add('hidden');
       }
     }
 
-    // Upload button functionality
-    uploadBtn.addEventListener('click', () => {
+    // --- File upload using real API ---
+    uploadBtn.addEventListener('click', async () => {
       if (selectedFiles.length === 0) return;
-      
-      // Show upload progress
       uploadProgress.classList.remove('hidden');
       uploadBtn.disabled = true;
-      
-      // Simulate upload process
-      setTimeout(() => {
-        // In a real app, this would be an actual fetch request
-        // const formData = new FormData();
-        // selectedFiles.forEach(file => formData.append('dataFile', file));
-        // fetch('/data/upload', { method: 'POST', body: formData })
-        
-        alert('Files uploaded and vectorized successfully!');
-        
-        // Reset uploader state
+      const formData = new FormData();
+      selectedFiles.forEach(file => formData.append('dataFile', file));
+      try {
+        const response = await fetch('/data/upload', { method: 'POST', body: formData });
+        const result = await response.json();
+        alert(result.message);
         selectedFiles = [];
         fileInput.value = '';
         selectedFilesContainer.classList.add('hidden');
         uploadProgress.classList.add('hidden');
-        
-        // Refresh data table and visualization
         loadDataList(1);
         initPixiVisualization();
-      }, 2000);
+      } catch (error) {
+        console.error('Upload failed:', error);
+        alert('Upload failed');
+        uploadProgress.classList.add('hidden');
+        uploadBtn.disabled = false;
+      }
     });
 
     // Data table functionality
@@ -434,65 +433,29 @@
     const nextPageBtn = document.getElementById('nextPageBtn');
     const filesCountBadge = document.getElementById('filesCountBadge');
 
-    // Load data list
     async function loadDataList(page = 1) {
       currentPage = page;
       currentPageSpan.textContent = page;
-      
-      // Show loading state
       dataTableBody.innerHTML = '';
-      for (let i = 0; i < 5; i++) {
-        dataTableBody.innerHTML += `
-          <tr class="loading-row">
-            <td><div class="skeleton skeleton-sm"></div></td>
-            <td><div class="skeleton"></div></td>
-            <td><div class="skeleton"></div></td>
-            <td><div class="skeleton skeleton-md"></div></td>
-            <td><div class="skeleton skeleton-md"></div></td>
-          </tr>
-        `;
-      }
-      
-      // In a real app, this would be an actual fetch request
-      // const response = await fetch(`/data/list?page=${page}`);
-      // const result = await response.json();
-      
-      // Simulate API response
-      setTimeout(() => {
-        const mockData = generateMockData();
-        renderDataTable(mockData);
-        
-        // Update pagination
-        totalPages = 3; // Mock total pages
+      try {
+        const response = await fetch(`/data/list?page=${page}`);
+        if (!response.ok) throw new Error('Failed to load data list');
+        const result = await response.json();
+        renderDataTable(result.data);
+        totalPages = Math.ceil(result.total / result.per_page);
         totalPagesSpan.textContent = totalPages;
         prevPageBtn.disabled = currentPage === 1;
         nextPageBtn.disabled = currentPage === totalPages;
-        
-        // Update files count badge
-        filesCountBadge.textContent = `${mockData.length * 3} Files`;
-      }, 1000);
-    }
-
-    function generateMockData() {
-      const data = [];
-      const startIndex = (currentPage - 1) * 10;
-      
-      for (let i = 0; i < 10; i++) {
-        const index = startIndex + i + 1;
-        data.push({
-          index: index,
-          file_name: `document_${index}.${['pdf', 'txt', 'json', 'pptx'][Math.floor(Math.random() * 4)]}`,
-          title: `Sample Document ${index}`,
-          date: new Date(Date.now() - Math.random() * 10000000000).toLocaleDateString()
-        });
+        filesCountBadge.textContent = `${result.total} Files`;
+        renderPagination(currentPage, totalPages);
+      } catch (error) {
+        console.error('Error loading data list:', error);
+        dataTableBody.innerHTML = `<tr><td colspan="5">Failed to load data list</td></tr>`;
       }
-      
-      return data;
     }
 
     function renderDataTable(data) {
       dataTableBody.innerHTML = '';
-      
       if (data.length === 0) {
         dataTableBody.innerHTML = `
           <tr>
@@ -503,15 +466,16 @@
         `;
         return;
       }
-      
       data.forEach(item => {
         const row = document.createElement('tr');
         row.className = 'data-row';
         row.onclick = () => showDetail(item.index);
-        
         row.innerHTML = `
           <td class="col-index">${item.index}</td>
-          <td class="col-filename">${item.file_name}</td>
+          <td class="col-filename">
+            ${item.file_name}
+            ${getFileTypeLabel(item.file_name) ? `<span class="file-type-label">${getFileTypeLabel(item.file_name)}</span>` : ''}
+          </td>
           <td class="col-title">${item.title}</td>
           <td class="col-date">${item.date}</td>
           <td class="col-actions">
@@ -525,14 +489,9 @@
             </div>
           </td>
         `;
-        
         dataTableBody.appendChild(row);
       });
-      
-      // Initialize icons for new elements
       lucide.createIcons();
-      
-      // Add event listeners to action buttons
       document.querySelectorAll('.detail-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -540,7 +499,6 @@
           showDetail(index);
         });
       });
-      
       document.querySelectorAll('.delete-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -550,68 +508,87 @@
       });
     }
 
-    function showDetail(index) {
-      // In a real app, this would fetch the detail data
-      // const response = await fetch(`/data/detail/${index}`);
-      // const data = await response.json();
-      
-      const mockDetail = {
-        index: index,
-        file_name: `document_${index}.pdf`,
-        title: `Sample Document ${index}`,
-        date: new Date().toLocaleDateString(),
-        content: "This is a sample document content. In a real application, this would contain the actual document content or metadata.",
-        vector_dimensions: 768
-      };
-      
-      alert(JSON.stringify(mockDetail, null, 2));
+    async function showDetail(index) {
+      try {
+        const response = await fetch(`/data/detail/${index}`);
+        if (!response.ok) throw new Error('Failed to load detail');
+        const data = await response.json();
+        alert(JSON.stringify(data, null, 2));
+      } catch (error) {
+        console.error('Error loading detail:', error);
+        alert('Failed to load detail');
+      }
     }
 
-    function deleteData(index) {
+    async function deleteData(index) {
       if (!confirm(`Are you sure you want to delete document #${index}?`)) return;
-      
-      // In a real app, this would send a delete request
-      // const response = await fetch('/data/delete', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({ index: index })
-      // });
-      
-      alert(`Document #${index} deleted successfully!`);
-      loadDataList(currentPage);
-      initPixiVisualization();
+      try {
+        const response = await fetch('/data/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ index: index })
+        });
+        if (!response.ok) throw new Error('Delete API failed');
+        const result = await response.json();
+        alert(result.message);
+        loadDataList(currentPage);
+        initPixiVisualization();
+      } catch (error) {
+        console.error('Error deleting data:', error);
+        alert('Failed to delete document');
+      }
     }
 
-    // Pagination button handlers
+    // Pagination button handlers for Prev/Next
     prevPageBtn.addEventListener('click', () => {
-      if (currentPage > 1) {
-        loadDataList(currentPage - 1);
-      }
+      if (currentPage > 1) loadDataList(currentPage - 1);
     });
-
     nextPageBtn.addEventListener('click', () => {
-      if (currentPage < totalPages) {
-        loadDataList(currentPage + 1);
-      }
+      if (currentPage < totalPages) loadDataList(currentPage + 1);
     });
 
-    // Search functionality
+    // Render pagination page numbers including First/Last buttons and up to 5 pages
+    function renderPagination(current, total) {
+      const pageNumbersDiv = document.getElementById('pageNumbers');
+      pageNumbersDiv.innerHTML = "";
+      let startPage = Math.max(1, current - 2);
+      let endPage = Math.min(total, startPage + 4);
+      if (endPage - startPage < 4) {
+        startPage = Math.max(1, endPage - 4);
+      }
+      // First button
+      const firstBtn = document.createElement('button');
+      firstBtn.className = 'btn btn-outline btn-sm';
+      firstBtn.textContent = 'First';
+      firstBtn.disabled = current === 1;
+      firstBtn.addEventListener('click', () => loadDataList(1));
+      pageNumbersDiv.appendChild(firstBtn);
+      // Page numbers
+      for (let i = startPage; i <= endPage; i++) {
+        const pageBtn = document.createElement('button');
+        pageBtn.className = 'btn btn-outline btn-sm';
+        pageBtn.textContent = i;
+        if (i === current) pageBtn.classList.add('active');
+        pageBtn.addEventListener('click', () => loadDataList(i));
+        pageNumbersDiv.appendChild(pageBtn);
+      }
+      // Last button
+      const lastBtn = document.createElement('button');
+      lastBtn.className = 'btn btn-outline btn-sm';
+      lastBtn.textContent = 'Last';
+      lastBtn.disabled = current === total;
+      lastBtn.addEventListener('click', () => loadDataList(total));
+      pageNumbersDiv.appendChild(lastBtn);
+    }
+
+    // Search functionality using real API
     const searchInput = document.getElementById('searchInput');
     const searchBtn = document.getElementById('searchBtn');
-    const searchResults = document.getElementById('searchResults');
 
-    searchBtn.addEventListener('click', performSearch);
-    searchInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        performSearch();
-      }
-    });
-
-    function performSearch() {
+    async function performSearch() {
       const query = searchInput.value.trim();
       if (!query) return;
-      
-      // Show loading state
+      const searchResults = document.getElementById('searchResults');
       searchResults.innerHTML = `
         <div class="search-loading">
           <div class="skeleton skeleton-lg"></div>
@@ -620,41 +597,36 @@
           <div class="skeleton skeleton-md"></div>
         </div>
       `;
-      
-      // In a real app, this would be an actual fetch request
-      // const response = await fetch(`/data/search?q=${encodeURIComponent(query)}`);
-      // const results = await response.json();
-      
-      // Simulate API response
-      setTimeout(() => {
-        const mockResults = [
-          { index: 1, file_name: 'document_1.pdf', title: 'Sample Document 1' },
-          { index: 5, file_name: 'document_5.txt', title: 'Sample Document 5' },
-          { index: 9, file_name: 'document_9.json', title: 'Sample Document 9' }
-        ];
-        
-        displaySearchResults(mockResults);
-      }, 1000);
+      try {
+        const response = await fetch(`/data/search?q=${encodeURIComponent(query)}`);
+        if (!response.ok) throw new Error('Search API failed');
+        const results = await response.json();
+        displaySearchResults(results);
+      } catch (error) {
+        console.error('Search failed:', error);
+        searchResults.innerHTML = '<p class="no-results">Search failed</p>';
+      }
     }
+    searchBtn.addEventListener('click', performSearch);
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') performSearch();
+    });
 
     function displaySearchResults(results) {
+      const searchResults = document.getElementById('searchResults');
       if (results.length === 0) {
         searchResults.innerHTML = '<p class="no-results">No results found.</p>';
         return;
       }
-      
       searchResults.innerHTML = `
         <h3 class="results-count">${results.length} results found</h3>
         <div class="results-list"></div>
       `;
-      
       const resultsList = searchResults.querySelector('.results-list');
-      
       results.forEach(result => {
         const resultItem = document.createElement('div');
         resultItem.className = 'result-item';
         resultItem.onclick = () => showDetail(result.index);
-        
         resultItem.innerHTML = `
           <div class="result-icon">
             <i data-lucide="file-text" class="icon-accent"></i>
@@ -664,177 +636,35 @@
             <p class="result-filename">${result.file_name}</p>
           </div>
         `;
-        
         resultsList.appendChild(resultItem);
       });
-      
-      // Initialize icons for new elements
       lucide.createIcons();
     }
 
-    // Data analytics charts
-    function initCharts() {
-      // Mock data for charts
-      const fileTypes = [
-        { name: "PDF", value: 42 },
-        { name: "TXT", value: 28 },
-        { name: "JSON", value: 15 },
-        { name: "PPTX", value: 10 },
-        { name: "Other", value: 5 }
-      ];
-      
-      const uploadTrends = [
-        { date: "Jan", count: 12 },
-        { date: "Feb", count: 19 },
-        { date: "Mar", count: 15 },
-        { date: "Apr", count: 22 },
-        { date: "May", count: 30 },
-        { date: "Jun", count: 25 }
-      ];
-      
-      // Show loading state
-      document.getElementById('distributionChart').innerHTML = '<div class="skeleton skeleton-chart"></div>';
-      document.getElementById('trendsChart').innerHTML = '<div class="skeleton skeleton-chart"></div>';
-      
-      // Simulate loading delay
-      setTimeout(() => {
-        // Render distribution chart (pie chart)
-        const distributionContainer = document.getElementById('distributionChart');
-        renderPieChart(distributionContainer, fileTypes);
-        
-        // Render trends chart (bar chart)
-        const trendsContainer = document.getElementById('trendsChart');
-        renderBarChart(trendsContainer, uploadTrends);
-      }, 1000);
+    // UMAP visualization using real API
+    async function loadVisualizationData() {
+      try {
+        const response = await fetch('/data/api/umap_data');
+        if (!response.ok) throw new Error('Failed to load visualization data');
+        return await response.json();
+      } catch (error) {
+        console.error('Error loading visualization data:', error);
+        throw error;
+      }
     }
 
-    function renderPieChart(container, data) {
-      // Clear container
-      container.innerHTML = '';
-      
-      // Create SVG element
-      const width = container.clientWidth;
-      const height = 300;
-      const radius = Math.min(width, height) / 2 * 0.8;
-      
-      const svg = d3.select(container)
-        .append('svg')
-        .attr('width', width)
-        .attr('height', height)
-        .append('g')
-        .attr('transform', `translate(${width / 2}, ${height / 2})`);
-      
-      // Color scale
-      const color = d3.scaleOrdinal()
-        .domain(data.map(d => d.name))
-        .range(['#4f46e5', '#ec4899', '#10b981', '#f59e0b', '#ef4444']);
-      
-      // Compute position of each group on the pie
-      const pie = d3.pie()
-        .value(d => d.value);
-      
-      const data_ready = pie(data);
-      
-      // Build arcs
-      const arcGenerator = d3.arc()
-        .innerRadius(0)
-        .outerRadius(radius);
-      
-      // Build the pie chart
-      svg.selectAll('slices')
-        .data(data_ready)
-        .join('path')
-        .attr('d', arcGenerator)
-        .attr('fill', d => color(d.data.name))
-        .attr('stroke', 'white')
-        .style('stroke-width', '2px')
-        .style('opacity', 0.7);
-      
-      // Add labels
-      svg.selectAll('slices')
-        .data(data_ready)
-        .join('text')
-        .text(d => `${d.data.name}: ${d.data.value}`)
-        .attr('transform', d => `translate(${arcGenerator.centroid(d)})`)
-        .style('text-anchor', 'middle')
-        .style('font-size', 12)
-        .style('fill', 'white');
-    }
-
-    function renderBarChart(container, data) {
-      // Clear container
-      container.innerHTML = '';
-      
-      // Set dimensions
-      const margin = {top: 20, right: 30, bottom: 40, left: 40};
-      const width = container.clientWidth - margin.left - margin.right;
-      const height = 300 - margin.top - margin.bottom;
-      
-      // Create SVG element
-      const svg = d3.select(container)
-        .append('svg')
-        .attr('width', width + margin.left + margin.right)
-        .attr('height', height + margin.top + margin.bottom)
-        .append('g')
-        .attr('transform', `translate(${margin.left},${margin.top})`);
-      
-      // X axis
-      const x = d3.scaleBand()
-        .range([0, width])
-        .domain(data.map(d => d.date))
-        .padding(0.2);
-      
-      svg.append('g')
-        .attr('transform', `translate(0,${height})`)
-        .call(d3.axisBottom(x))
-        .selectAll('text')
-        .style('text-anchor', 'middle');
-      
-      // Y axis
-      const y = d3.scaleLinear()
-        .domain([  'middle');
-      
-      // Y axis
-      const y = d3.scaleLinear()
-        .domain([0, d3.max(data, d => d.count) * 1.2])
-        .range([height, 0]);
-      
-      svg.append('g')
-        .call(d3.axisLeft(y));
-      
-      // Bars
-      svg.selectAll('bars')
-        .data(data)
-        .join('rect')
-        .attr('x', d => x(d.date))
-        .attr('y', d => y(d.count))
-        .attr('width', x.bandwidth())
-        .attr('height', d => height - y(d.count))
-        .attr('fill', '#4f46e5')
-        .attr('rx', 4)
-        .attr('ry', 4);
-    }
-
-    // PIXI.js visualization
     let pixiApp;
     let vizContainer;
-    let zoomLevel = 1;
     let isFullscreen = false;
 
     function initPixiVisualization() {
       const pixiContainer = document.getElementById('pixiVisualization');
       const loadingOverlay = document.getElementById('pixiLoadingOverlay');
-      
-      // Show loading overlay
       loadingOverlay.style.display = 'flex';
-      
-      // Clean up existing PIXI app if it exists
       if (pixiApp) {
         pixiApp.destroy(true);
         pixiContainer.querySelector('canvas')?.remove();
       }
-      
-      // Create new PIXI application
       pixiApp = new PIXI.Application({
         width: pixiContainer.clientWidth,
         height: 700,
@@ -842,15 +672,9 @@
         antialias: true,
         resolution: window.devicePixelRatio || 1,
       });
-      
-      // Add canvas to container
       pixiContainer.appendChild(pixiApp.view);
-      
-      // Create container for visualization
       vizContainer = new PIXI.Container();
       pixiApp.stage.addChild(vizContainer);
-      
-      // Load visualization data
       loadVisualizationData()
         .then(data => {
           drawVisualization(data);
@@ -860,81 +684,27 @@
           console.error('Failed to load visualization data:', error);
           loadingOverlay.innerHTML = '<div class="loading-error">Failed to load data</div>';
         });
-      
-      // Set up interactions
       setupInteractions();
-    }
-
-    async function loadVisualizationData() {
-      // In a real app, this would be an actual fetch request
-      // const response = await fetch('/data/api/umap_data');
-      // return await response.json();
-      
-      // Simulate API response with mock data
-      return new Promise(resolve => {
-        setTimeout(() => {
-          // Generate mock nodes and edges
-          const nodes = [];
-          const edges = [];
-          
-          // Generate 1000 nodes
-          for (let i = 0; i < 1000; i++) {
-            nodes.push({
-              id: i,
-              x: Math.random() * 1000 - 500,
-              y: Math.random() * 1000 - 500,
-              r: Math.random() * 2 + 3,
-              cluster: Math.floor(Math.random() * 5)
-            });
-          }
-          
-          // Generate edges between nodes
-          for (let i = 0; i < 500; i++) {
-            const source = Math.floor(Math.random() * nodes.length);
-            const target = Math.floor(Math.random() * nodes.length);
-            if (source !== target) {
-              edges.push({ source, target });
-            }
-          }
-          
-          resolve({ nodes, edges });
-        }, 1500);
-      });
     }
 
     function drawVisualization(data) {
       vizContainer.removeChildren();
-      
       const maxNodes = 10000;
-      const nodes = downsample(data.nodes, maxNodes);
+      const nodes = data.nodes.length > maxNodes ? data.nodes.slice(0, maxNodes) : data.nodes;
       const nodeIds = new Set(nodes.map(n => n.id));
-      const edges = data.edges.filter(edge => 
-        nodeIds.has(edge.source) && nodeIds.has(edge.target)
-      );
-      
-      // Draw edges
+      const edges = data.edges.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target));
       const edgeGraphics = new PIXI.Graphics();
       edgeGraphics.lineStyle(1, 0xdddddd, 0.3);
-      for (const edge of edges) {
+      edges.forEach(edge => {
         const source = data.nodes.find(n => n.id === edge.source);
         const target = data.nodes.find(n => n.id === edge.target);
         if (source && target) {
           edgeGraphics.moveTo(source.x, source.y);
           edgeGraphics.lineTo(target.x, target.y);
         }
-      }
+      });
       vizContainer.addChild(edgeGraphics);
-      
-      // Create node clusters with different colors
-      const clusterColors = [
-        0x4f46e5, // indigo
-        0xec4899, // pink
-        0x10b981, // emerald
-        0xf59e0b, // amber
-        0xef4444, // red
-      ];
-      
-      // Draw nodes with cluster colors
+      const clusterColors = [0x4f46e5, 0xec4899, 0x10b981, 0xf59e0b, 0xef4444];
       nodes.forEach((node, index) => {
         const colorIndex = node.cluster || index % clusterColors.length;
         const circle = new PIXI.Graphics();
@@ -943,11 +713,8 @@
         circle.endFill();
         circle.x = node.x;
         circle.y = node.y;
-        
-        // Add hover effect
         circle.eventMode = 'static';
         circle.cursor = 'pointer';
-        
         circle.on('mouseover', () => {
           circle.clear();
           circle.beginFill(0xffffff);
@@ -955,26 +722,14 @@
           circle.drawCircle(0, 0, (node.r || 4) + 2);
           circle.endFill();
         });
-        
         circle.on('mouseout', () => {
           circle.clear();
           circle.beginFill(clusterColors[colorIndex % clusterColors.length]);
           circle.drawCircle(0, 0, node.r || 4);
           circle.endFill();
         });
-        
         vizContainer.addChild(circle);
       });
-    }
-
-    function downsample(nodes, maxPoints) {
-      if (nodes.length <= maxPoints) return nodes;
-      const sampled = [];
-      const step = Math.floor(nodes.length / maxPoints);
-      for (let i = 0; i < nodes.length; i += step) {
-        sampled.push(nodes[i]);
-      }
-      return sampled;
     }
 
     function setupInteractions() {
@@ -982,13 +737,11 @@
       let isDragging = false;
       let dragStart = { x: 0, y: 0 };
       let containerStart = { x: vizContainer.x, y: vizContainer.y };
-      
       view.addEventListener('mousedown', (event) => {
         isDragging = true;
         dragStart = { x: event.clientX, y: event.clientY };
         containerStart = { x: vizContainer.x, y: vizContainer.y };
       });
-      
       view.addEventListener('mousemove', (event) => {
         if (isDragging) {
           const dx = event.clientX - dragStart.x;
@@ -997,95 +750,64 @@
           vizContainer.y = containerStart.y + dy;
         }
       });
-      
       view.addEventListener('mouseup', () => { isDragging = false; });
       view.addEventListener('mouseleave', () => { isDragging = false; });
-      
       view.addEventListener('wheel', (event) => {
         event.preventDefault();
         const scaleFactor = event.deltaY > 0 ? 0.9 : 1.1;
         vizContainer.scale.x *= scaleFactor;
         vizContainer.scale.y *= scaleFactor;
-        updateZoomSlider();
       });
-      
-      // Zoom controls
       const zoomSlider = document.getElementById('zoomSlider');
       const zoomInBtn = document.getElementById('zoomInBtn');
       const zoomOutBtn = document.getElementById('zoomOutBtn');
       const resetViewBtn = document.getElementById('resetViewBtn');
       const fullscreenBtn = document.getElementById('fullscreenBtn');
-      
       zoomSlider.addEventListener('input', () => {
         const newZoom = parseInt(zoomSlider.value) / 100;
         vizContainer.scale.x = newZoom;
         vizContainer.scale.y = newZoom;
-        zoomLevel = newZoom;
       });
-      
       zoomInBtn.addEventListener('click', () => {
         vizContainer.scale.x *= 1.2;
         vizContainer.scale.y *= 1.2;
-        updateZoomSlider();
       });
-      
       zoomOutBtn.addEventListener('click', () => {
         vizContainer.scale.x *= 0.8;
         vizContainer.scale.y *= 0.8;
-        updateZoomSlider();
       });
-      
       resetViewBtn.addEventListener('click', () => {
         vizContainer.x = 0;
         vizContainer.y = 0;
         vizContainer.scale.x = 1;
         vizContainer.scale.y = 1;
-        updateZoomSlider();
       });
-      
       fullscreenBtn.addEventListener('click', toggleFullscreen);
-    }
-
-    function updateZoomSlider() {
-      const zoomSlider = document.getElementById('zoomSlider');
-      zoomLevel = vizContainer.scale.x;
-      zoomSlider.value = Math.round(zoomLevel * 100);
     }
 
     function toggleFullscreen() {
       const pixiContainer = document.getElementById('pixiVisualization');
-      isFullscreen = !isFullscreen;
-      
-      if (isFullscreen) {
-        pixiContainer.classList.add('fullscreen');
-      } else {
-        pixiContainer.classList.remove('fullscreen');
-      }
-      
-      // Resize PIXI app
+      const isFull = pixiContainer.classList.toggle('fullscreen');
       setTimeout(() => {
         pixiApp.renderer.resize(
           pixiContainer.clientWidth,
-          isFullscreen ? window.innerHeight : 700
+          isFull ? window.innerHeight : 700
         );
       }, 100);
     }
 
-    // Handle window resize
     window.addEventListener('resize', () => {
       if (pixiApp) {
         const pixiContainer = document.getElementById('pixiVisualization');
         pixiApp.renderer.resize(
           pixiContainer.clientWidth,
-          isFullscreen ? window.innerHeight : 700
+          pixiContainer.classList.contains('fullscreen') ? window.innerHeight : 700
         );
       }
     });
 
-    // Initialize the application
     document.addEventListener('DOMContentLoaded', () => {
       loadDataList();
-      initCharts();
       initPixiVisualization();
     });
   </script>

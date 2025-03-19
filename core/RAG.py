@@ -54,21 +54,20 @@ async def execute_rag(QU, KE, TA, TI, **kwargs):
             docs_list = []
             return docs, docs_list
 
-        # 정상적인 경우(튜플 언패킹)
-        final_sql_query, title, explain, table_json, chart_json = result
+        # 기존 generate_sql은 이제 6개의 값을 반환합니다.
+        final_sql_query, title, explain, table_json, chart_json, detailed_result = result
 
         # docs : LLM 입력용 (string)
         PROMPT = (
-            f"다음은 SQL 추출에 사용된 쿼리문: {final_sql_query}\n\n"
+            f"실제 사용된 SQL문: {final_sql_query}\n\n"
             f"추가 설명: {explain}\n\n"
             f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
+            f"실제 선적된 B/L 데이터: {str(detailed_result)}\n\n"
         )
-
-        ### Not Used anymore! ###
-        # docs_list : 사용자에게 보여줄 정보(List)
+        # docs_list에 DG B/L 상세 정보를 추가하여 총 3개 항목으로 구성합니다.
         docs_list = [
             {"title": title, "data": table_json},
-            {"title": "시각화 차트", "data": chart_json},
+            {"title": "DG B/L 상세 정보", "data": detailed_result}
         ]
         print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
         
