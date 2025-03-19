@@ -2595,21 +2595,20 @@ async def execute_rag(QU, KE, TA, TI, **kwargs):
             docs_list = []
             return docs, docs_list
 
-        # 정상적인 경우(튜플 언패킹)
-        final_sql_query, title, explain, table_json, chart_json = result
+        # 기존 generate_sql은 이제 6개의 값을 반환합니다.
+        final_sql_query, title, explain, table_json, chart_json, detailed_result = result
 
         # docs : LLM 입력용 (string)
         PROMPT = (
-            f"다음은 SQL 추출에 사용된 쿼리문: {final_sql_query}\n\n"
+            f"실제 사용된 SQL문: {final_sql_query}\n\n"
             f"추가 설명: {explain}\n\n"
             f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
+            f"실제 선적된 B/L 데이터: {str(detailed_result)}\n\n"
         )
-
-        ### Not Used anymore! ###
-        # docs_list : 사용자에게 보여줄 정보(List)
+        # docs_list에 DG B/L 상세 정보를 추가하여 총 3개 항목으로 구성합니다.
         docs_list = [
             {"title": title, "data": table_json},
-            {"title": "시각화 차트", "data": chart_json},
+            {"title": "DG B/L 상세 정보", "data": detailed_result}
         ]
         print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
         
@@ -3515,8 +3514,8 @@ GENERATE_PROMPT_TEMPLATE = """
 1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 **한 줄 이상의 공백**을 넣어줘.
 2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
 3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
-4. **표**: 표가 필요하면 **Markdown 표 형식**을 사용하거나, 간단히 문단으로도 표현해줘.
-5. **코드 블록**: 예시 코드나 특수한 데이터는 ```` ``` 언어명 ... ``` ```` 을 사용해 표시해줘.
+4. **표**: SQL 표 결과가 답변에 포함될 경우, 반드시 표의 시작 부분에 "<<<TABLE>>>"와 끝 부분에 "<<<END_TABLE>>>"라는 구분자를 추가해서 출력해줘.
+5. **코드 블록**: 예시 코드나 특수한 데이터는 ``` ``` 언어명 ... ``` ``` 을 사용해 표시해줘.
 6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
 7. **각주(footnotes)**: 답변에 각주가 필요한 경우, 본문 중에 `[^1]`, `[^2]`와 같은 형태로 표시하고, 마크다운 형식과 같게 답변 마지막에 해당 각주 내용을 작성해줘.
 
@@ -3547,8 +3546,8 @@ STREAM_PROMPT_TEMPLATE = """
 1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 **한 줄 이상의 공백**을 넣어줘.
 2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
 3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
-4. **표**: 표가 필요하면 **Markdown 표 형식**을 사용하거나, 간단히 문단으로도 표현해줘.
-5. **코드 블록**: 예시 코드나 특수한 데이터는 ```` ``` 언어명 ... ``` ```` 을 사용해 표시해줘.
+4. **표**: SQL 표 결과가 답변에 포함될 경우, 반드시 표의 시작 부분에 "<<<TABLE>>>"와 끝 부분에 "<<<END_TABLE>>>"라는 구분자를 추가해서 출력해줘.
+5. **코드 블록**: 예시 코드나 특수한 데이터는 ``` ``` 언어명 ... ``` ``` 을 사용해 표시해줘.
 6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
 7. **각주(footnotes)**: 답변에 각주가 필요한 경우, 본문 중에 `[^1]`, `[^2]`와 같은 형태로 표시하고, 마크다운 형식과 같게 답변 마지막에 해당 각주 내용을 작성해줘.
 
@@ -3817,6 +3816,67 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     # code.interact(local=locals())  # í˜„ì�¬ ë³€ìˆ˜ë“¤ì�„ ìœ ì§€í•œ ìƒ�íƒœì—�ì„œ Python ì�¸í„°ë�™í‹°ë¸Œ ì…¸ ì‹¤í–‰
     return sql_query, result.stdout
 
+# --------------------------------------------------------
+# SQL ìƒ�ì„¸ë³´ê¸°
+# --------------------------------------------------------
+# # Oracle sqlplus ëª…ë ¹ì–´ ì‹¤í–‰ ì˜ˆì‹œ
+@time_tracker
+def run_sql_bl(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
+    # ê°’ì�´ "NULL"ì�´ ì•„ë‹ˆë©´ ë¬¸ì��ì—´ë¡œ ì·¨ê¸‰í•˜ì—¬ ì�‘ì�€ë”°ì˜´í‘œë¡œ ê°�ìŒˆ.
+    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
+    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
+
+    # SQL*Plus ëª…ë ¹ì–´ë¥¼ ì‹¤í–‰í•  ê¸°ë³¸ ëª…ë ¹ì–´
+    sql_query = \
+    f"""
+    SELECT *
+    FROM (
+        SELECT
+            MST.FRTBNO AS "B/L No",
+            MST.FRTOBD AS onBoard_Date,
+            MST.FRTPOL AS POL,
+            MST.FRTPOD AS POD,
+            MST.FRTSBM AS ship_back,
+            CNT.KCTUNN AS UNNO,
+            CNT.KCTCLS AS CLASS,
+            COUNT(*) AS "DG_Container_Count"
+        FROM ICON.WSDAMST MST
+        JOIN ICON.WSDACNT CNT ON CNT.KCTBNO = MST.FRTBNO
+        WHERE MST.BUKRS = '1000'
+        AND CNT.BUKRS = '1000'
+        AND MST.FRTOBD BETWEEN TO_CHAR(SYSDATE-1095,'YYYYMMDD')+1 AND TO_CHAR(SYSDATE+1,'YYYYMMDD')
+        AND CNT.KCTUNN = {unno_val}
+        AND CNT.KCTCLS = {cls_val}
+        AND MST.FRTPOL = '{pol_port}'
+        AND MST.FRTPOD = '{pod_port}'
+        GROUP BY
+            MST.FRTBNO,
+            MST.FRTOBD,
+            MST.FRTPOL,
+            MST.FRTPOD,
+            MST.FRTSBM,
+            CNT.KCTUNN,
+            CNT.KCTCLS
+    )
+    WHERE ROWNUM <= 5;
+    EXIT;
+    """
+    
+    # subprocessë¥¼ ì‚¬ìš©í•˜ì—¬ SQL*Plus ëª…ë ¹ì–´ ì‹¤í–‰
+    try:
+        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
+        # SQL*Plusì�˜ ì¶œë ¥ ê²°ê³¼ë¥¼ ë°›ì•„ì˜µë‹ˆë‹¤
+        print("[SQL_NS] SQL Query run_sql_bl Results:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        # ì˜¤ë¥˜ê°€ ë°œìƒ�í•œ ê²½ìš° ì˜¤ë¥˜ ë©”ì‹œì§€ ì¶œë ¥
+        print(f"[SQL_NS] run_sql_bl Error: {e.stderr}")
+    # import code
+    # code.interact(local=locals())  # í˜„ì�¬ ë³€ìˆ˜ë“¤ì�„ ìœ ì§€í•œ ìƒ�íƒœì—�ì„œ Python ì�¸í„°ë�™í‹°ë¸Œ ì…¸ ì‹¤í–‰
+    return sql_query, result.stdout
+
+# --------------------------------------------------------
+# ë©”íƒ€ë�°ì�´í„° ì •ë³´ ì¶”ì¶œ
+# --------------------------------------------------------
 def get_metadata(config):
     """
     - port_path JSON: ë”•ì…”ë„ˆë¦¬ í˜•íƒœì�´ë©°, 'location_code' í‚¤ì�˜ ê°’ì�„ ì¶”ì¶œ.
@@ -3937,12 +3997,18 @@ f'''
         if ((UN_number != "NULL" or UN_class != "NULL") and POL != "NULL" and POD != "NULL"):
             break
         attempt += 1
-
+    
     print(f"[GENERATE_SQL] ìµœì¢… ì¶”ì¶œ ê°’ - UN_number: {UN_number}, UN_class: {UN_class}, POL: {POL}, POD: {POD}")
+    
+    # DG ê°€ëŠ¥ ì—¬ë¶€ í…Œì�´ë¸” SQL ì‹¤í–‰
     final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
+    
+    # ìƒ�ì„¸ B/L SQL ì‹¤í–‰
+    detailed_sql_query, detailed_result = run_sql_bl(UN_class, UN_number, POL, POD)
+    
     # Temporary: title, explain, table_json, chart_jsonì�€ Noneìœ¼ë¡œ ì²˜ë¦¬
     title, explain, table_json, chart_json = (None,) * 4
-    return final_sql_query, title, explain, result, chart_json
+    return final_sql_query, title, explain, result, chart_json, detailed_result
 
 if __name__ == "__main__":
     # check_sqlplus()             # sqlplusê°€ ì�˜ ë�™ì�‘í•˜ëŠ”ì§€ í™•ì�¸
@@ -4081,11 +4147,11 @@ if __name__ == "__main__":
                 </svg>
                 <span>디지털 기획팀의 우선과제가 어떻게 돼?</span>
               </button>
-              <button class="example-card" onclick="fillExamplePrompt('UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
+              <button class="example-card" onclick="fillExamplePrompt('UN 클래스 2.1, UNNO 1033인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘..')">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
                 </svg>
-                <span>UN 클래스 4.1, UNNO 1309인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.</span>
+                <span>UN 클래스 2.1, UNNO 1033인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.</span>
               </button>
               <button class="example-card" onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -4190,6 +4256,31 @@ if __name__ == "__main__":
     function parseMarkdown(text) {
       if (!text) return '';
 
+      // 먼저 "<<<TABLE>>>" 구분자로 감싼 표를 변환합니다.
+      text = text.replace(/<<<TABLE>>>([\s\S]*?)<<<END_TABLE>>>/g, function(match, tableContent) {
+        return convertMarkdownTable(tableContent);
+      });
+    
+      // 그리고 plain text 형식의 표 (예: SQL 출력 형태)를 변환합니다.
+      text = parsePlainTextTables(text);
+    
+      // 각주 정의 추출 및 제거
+      const footnoteRegex = /^\[\^(\d+)\]:\s*(.+)$/gm;
+      const footnotesDict = {};
+      let match;
+      while ((match = footnoteRegex.exec(text)) !== null) {
+        const num = match[1];
+        const content = match[2];
+        footnotesDict[num] = content;
+      }
+      text = text.replace(footnoteRegex, '').trim();
+    
+      // 입력 텍스트가 이미 HTML 태그로 시작하면 그대로 반환
+      if (text.trim().startsWith('<')) {
+        return text;
+      }
+      
+
       // footnote 정의를 추출합니다.
       // 각주는 텍스트의 마지막에 별도의 줄로 "[^번호]: 내용" 형식으로 존재한다고 가정합니다.
       const footnoteRegex = /^\[\^(\d+)\]:\s*(.+)$/gm;
@@ -4263,7 +4354,7 @@ if __name__ == "__main__":
       
       let html = htmlBlocks.join('');
 
-      // 3. 표 변환 처리: Markdown 표를 HTML 테이블로 변환
+      // 3. 기존 Markdown 표 처리 (파이프 '|' 기반)
       html = parseTables(html);   
 
       // 각주 영역 생성: footnotesDict에 있는 각주 정의들을 <ol> 목록으로 추가합니다.
@@ -4292,46 +4383,88 @@ if __name__ == "__main__":
         .replace(/'/g, "&#039;");
     }
     
-
-    function parseTables(text) {
-      // Markdown 표는 최소 3줄 이상 있어야 합니다.
-      // 예) 
-      // | 헤더1 | 헤더2 |
-      // |-------|-------|
-      // | 값1   | 값2   |
+    // 기존 Markdown 표 처리 함수 (파이프 '|' 기반)
+    function parseMarkdownTables(text) {
       const tableRegex = /((?:^\|.*\|(?:\r?\n|$))+)/gm;
       return text.replace(tableRegex, function(match) {
-        const lines = match.trim().split(/\r?\n/);
-        if (lines.length < 2) return match; // 표 형식이 아님
-    
-        // 첫 줄은 헤더, 두 번째 줄은 구분선입니다.
-        const headers = lines[0].split('|').map(s => s.trim()).filter(Boolean);
-        const separator = lines[1].split('|').map(s => s.trim()).filter(Boolean);
-        
-        // 구분선 검증: 각 셀에 :?-+:? 형식이어야 합니다.
-        if (!separator.every(s => /^:?-+:?$/.test(s))) return match; // 표 형식이 아님
-    
-        // 나머지 줄은 데이터 행입니다.
-        const rows = lines.slice(2).map(line =>
-          line.split('|').map(s => s.trim()).filter(Boolean)
-        );
-    
-        // HTML 테이블 생성
-        let html = '<table><thead><tr>';
-        headers.forEach(header => {
-          html += `<th>${header}</th>`;
-        });
-        html += '</tr></thead><tbody>';
-        rows.forEach(row => {
+        return convertMarkdownTable(match);
+      });
+    }
+
+    // "<<<TABLE>>>" 블록과 기존 마크다운 표 모두를 변환하는 함수
+    function convertMarkdownTable(tableContent) {
+      const lines = tableContent.trim().split(/\r?\n/);
+      if (lines.length < 2) return tableContent;
+      const headers = lines[0].split('|').map(s => s.trim()).filter(s => s);
+      const dataRows = lines.slice(2).map(line => line.split('|').map(s => s.trim()).filter(s => s));
+      let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
+      headers.forEach(header => { html += `<th>${header}</th>`; });
+      html += '</tr></thead><tbody>';
+      dataRows.forEach(row => {
+        html += '<tr>';
+        row.forEach(cell => { html += `<td>${cell}</td>`; });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      return html;
+    }
+
+    // Plain text 형식의 표 (SQL 출력 등)를 감지하고 변환하는 함수
+    function parsePlainTextTables(text) {
+      const lines = text.split(/\r?\n/);
+      let outputLines = [];
+      let i = 0;
+      while (i < lines.length) {
+        // 헤더 행: 최소 2개 이상의 공백으로 구분된 단어가 있어야 함
+        if (lines[i].trim() && lines[i].match(/\S+(?:\s{2,}\S+)+/)) {
+          const headerLine = lines[i];
+          // 바로 다음 줄이 구분선 (대시와 공백만)
+          if (i + 1 < lines.length && lines[i+1].trim().match(/^[-\s]+$/)) {
+            let tableLines = [];
+            tableLines.push(headerLine);
+            tableLines.push(lines[i+1]);
+            i += 2;
+            // 데이터 행: 공백으로 구분된 여러 단어가 있는 행
+            while (i < lines.length && lines[i].trim() && lines[i].match(/\S+(?:\s{2,}\S+)+/)) {
+              tableLines.push(lines[i]);
+              i++;
+            }
+            // 변환한 HTML 테이블 추가
+            outputLines.push(convertPlainTextTableToHTML(tableLines));
+            continue;
+          }
+        }
+        outputLines.push(lines[i]);
+        i++;
+      }
+      return outputLines.join("\n");
+    }
+
+    // Plain text 표를 HTML 테이블로 변환하는 함수
+    function convertPlainTextTableToHTML(lines) {
+      // 헤더 행과 구분선 행은 반드시 존재함
+      const headerLine = lines[0];
+      const separatorLine = lines[1];
+      // 최소 2개 이상의 공백으로 분할
+      const headers = headerLine.trim().split(/\s{2,}/);
+      let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
+      headers.forEach(header => {
+        html += `<th>${header}</th>`;
+      });
+      html += '</tr></thead><tbody>';
+      // 데이터 행 처리
+      for (let j = 2; j < lines.length; j++) {
+        const row = lines[j].trim().split(/\s{2,}/);
+        if (row.length >= headers.length) {
           html += '<tr>';
           row.forEach(cell => {
             html += `<td>${cell}</td>`;
           });
           html += '</tr>';
-        });
-        html += '</tbody></table>';
-        return html;
-      });
+        }
+      }
+      html += '</tbody></table>';
+      return html;
     }
     
     /************************************************************************
@@ -4967,45 +5100,6 @@ if __name__ == "__main__":
 
 ```
 
-# DG에 대한 상세 B/L 추가 로직
-
-```sql
-
-SELECT *
-FROM (
-    SELECT
-        MST.FRTBNO AS "B/L No",
-        MST.FRTOBD AS onBoard_Date,
-        MST.FRTPOL AS POL,
-        MST.FRTPOD AS POD,
-        MST.FRTSBM AS ship_back,
-        CNT.KCTUNN AS UNNO,
-        CNT.KCTCLS AS CLASS,
-        COUNT(*) AS "DG_Container_Count"
-    FROM ICON.WSDAMST MST
-    JOIN ICON.WSDACNT CNT ON CNT.KCTBNO = MST.FRTBNO
-    WHERE MST.BUKRS = '1000'
-      AND CNT.BUKRS = '1000'
-      AND MST.FRTOBD BETWEEN TO_CHAR(SYSDATE-1095,'YYYYMMDD')+1 AND TO_CHAR(SYSDATE+1,'YYYYMMDD')
-      AND CNT.KCTUNN = '1033'
-      AND CNT.KCTCLS = '2.1'
-      AND MST.FRTPOL = 'KRPUS'
-      AND MST.FRTPOD = 'JPUKB'
-    GROUP BY
-        MST.FRTBNO,
-        MST.FRTOBD,
-        MST.FRTPOL,
-        MST.FRTPOD,
-        MST.FRTSBM,
-        CNT.KCTUNN,
-        CNT.KCTCLS
-)
-WHERE ROWNUM <= 5;
-/
-
-
-```
-
 
 -----------------
 
@@ -5026,5 +5120,5 @@ Answer-Rule:
 
 
 My-Requirements:
- 1. 현재 SQL이 필요한 답변의 경우 reference를 client로 보내지 않고 있어. query_stream과 동일하게 다른 reference 자료와 같은 형식으로 기존 답변들처럼 reference_json으로 보낼 수 있도록 바꿔줘.
- 2. 내가 보낸 새로운 SQL을 추가해서, SQL 시에 해당 B/L 정보까지 같이 보낼 수 있도록 변경하고, 해당 내용을 reference_json에 같은 형식으로 담아서 보낼 수 있도록 해줘.
+ 1. User requirements.
+ 2. My requirements.
