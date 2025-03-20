@@ -3,7 +3,9 @@ from .utils import (
     load_model,
     load_data,
     debug_vector_format,
-    random_seed,
+    random_seed
+)
+from .utils_format import (
     process_to_format,
     process_format_to_response,
     error_format,

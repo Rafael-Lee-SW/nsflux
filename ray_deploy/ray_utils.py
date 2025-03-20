@@ -17,7 +17,7 @@ from core.RAG import (
     generate_answer,
     generate_answer_stream,
 )  # hypothetically
-from utils.utils import (
+from utils import (
     load_model,
     load_data,
     process_format_to_response,
@@ -302,7 +302,7 @@ class InferenceActor:
                 is_streaming = False
                 print("[NORMAL] _process_single_query started...")
                 
-            # 2) Memory 객체 가져오기 (없으면 새로 생성)
+            # 2) Memory 객체 정보 가져오기 (없으면 새로 생성)
             page_id = http_query.get("page_id", request_id)
             memory = self.get_memory_for_session(page_id)
 
@@ -339,7 +339,7 @@ class InferenceActor:
             # tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
             # print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
 
-            # 5) 필요하다면 데이터를 다시 로드(1.16version 유지)
+            # 5) 필요하다면 RAG 데이터를 다시 로드(1.16version 유지)
             self.data = load_data(
                 self.config.data_path
             )  # if you want always-latest, else skip

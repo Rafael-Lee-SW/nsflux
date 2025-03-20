@@ -1,24 +1,8 @@
 # utils/utils_format.py
 import json
-import numpy as np
-import torch
-import random
-import shutil
 from datetime import datetime, timedelta
-from transformers import (
-    AutoModel,
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    BitsAndBytesConfig,
-    AutoConfig,
-)
 
-import os
 import requests
-
-# Import vLLM utilities
-from vllm.engine.arg_utils import AsyncEngineArgs
-from vllm.engine.async_llm_engine import AsyncLLMEngine
 
 # Define the minimum valid file size (e.g., 10MB)
 MIN_WEIGHT_SIZE = 10 * 1024 * 1024
@@ -28,9 +12,7 @@ from utils.tracking import time_tracker
 
 # Logging
 import logging
-
 logging.basicConfig(level=logging.DEBUG)
-
 
 # -------------------------------------------------
 # Function: process_to_format
