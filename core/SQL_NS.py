@@ -4,7 +4,7 @@ import os
 import subprocess
 from utils.tracking import time_tracker
 import json
-from utils.utils import load_model
+from utils import load_model
 import re
 
 # 환경 변수 설정

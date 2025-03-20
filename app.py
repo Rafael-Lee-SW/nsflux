@@ -37,7 +37,7 @@ from flask import (
 import json
 import yaml
 from box import Box
-from utils.utils import random_seed, error_format, send_data_to_server, process_format_to_response
+from utils import random_seed, error_format, send_data_to_server, process_format_to_response
 from datetime import datetime
 
 # Import the Ray modules
