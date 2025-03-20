@@ -57,14 +57,21 @@ class InferenceActor:
 
         self.batch_counter = 0  # New counter to track batches
 
-        
         self.memory_map = {}
 
         # Micro-batching로 바꾸기(아래 주석 해체)
         # asyncio.create_task(self._batch_processor())
         
         # In-flight batching까지 추가 적용(Micro 사용할 경우 주석)
-        asyncio.create_task(self._in_flight_batch_processor())
+        # asyncio.create_task(self._in_flight_batch_processor())
+        
+        # 활성 작업 추적을 위한 변수 추가
+        self.active_tasks = set()
+        self.max_concurrent_tasks = config.ray.max_batch_size
+        
+        # 연속 배치 처리기 시작
+        asyncio.create_task(self.continuous_batch_processor())
+        
 
 
     def get_memory_for_session(self, request_id: str) -> CustomConversationBufferMemory:
@@ -189,6 +196,65 @@ class InferenceActor:
             # Actually run them all concurrently
             await asyncio.gather(*tasks)
             log_system_info("배치 처리 후 상태")
+            
+    # -------------------------------------------------------------------------
+    # CONTINUOUOS BATCH PROCESSOR
+    # -------------------------------------------------------------------------
+    async def continuous_batch_processor(self):
+        """
+        연속적인 배치 처리 - 최대 max_batch_size개의 요청이 항상 동시에 처리되도록 함
+        """
+        while True:
+            # 사용 가능한 슬롯 확인
+            available_slots = self.max_concurrent_tasks - len(self.active_tasks)
+            
+            if available_slots > 0:
+                try:
+                    # 새 요청 받기 (짧은 타임아웃으로 non-blocking 유지)
+                    request_tuple = await asyncio.wait_for(
+                        self.request_queue.get(), 
+                        timeout=0.01
+                    )
+                    
+                    # 비동기 처리 작업 생성
+                    request_obj, fut, sse_queue = request_tuple
+                    task = asyncio.create_task(
+                        self._process_single_query(request_obj, fut, sse_queue)
+                    )
+                    
+                    # 작업 완료 시 활성 목록에서 제거하는 콜백 설정
+                    task.add_done_callback(
+                        lambda t, task_ref=task: self.active_tasks.discard(task_ref)
+                    )
+                    
+                    # 활성 작업 목록에 추가
+                    self.active_tasks.add(task)
+                    
+                    print(f"[Continuous Batching] +1 request => active tasks now {len(self.active_tasks)}/{self.max_concurrent_tasks}")
+                
+                except asyncio.TimeoutError:
+                    # 새 요청이 없으면 잠시 대기
+                    await asyncio.sleep(0.01)
+            else:
+                # 모든 슬롯이 사용 중이면 작업 완료될 때까지 대기
+                if self.active_tasks:
+                    # 작업 중 하나라도 완료될 때까지 대기
+                    done, pending = await asyncio.wait(
+                        self.active_tasks, 
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    
+                    # 완료된 작업 확인
+                    for task in done:
+                        try:
+                            await task
+                        except Exception as e:
+                            print(f"[ERROR] Task failed: {e}")
+                    
+                    print(f"[Continuous Batching] Tasks completed: {len(done)} => active tasks now {len(self.active_tasks)}/{self.max_concurrent_tasks}")
+                else:
+                    await asyncio.sleep(0.01)
+
 
     async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
         """

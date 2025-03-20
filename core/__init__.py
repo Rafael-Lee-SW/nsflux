@@ -14,9 +14,8 @@ Exports:
       execute_sql_query, create_table_json, create_chart_json
 
   [SQL_NS.py]
-    - initialze, check_sqlplus, check_db_connection, get_all_schema_tables,
-      make_metadata_from_table, run_sql_unno, get_metadata,
-      generate_sql (SQL_NS 버전)
+    - check_sqlplus, check_db_connection, get_all_schema_tables,
+      make_metadata_from_table, run_sql_unno, get_metadata
 """
 
 from .RAG import (
@@ -51,14 +50,12 @@ from .sql import (
 )
 
 from .SQL_NS import (
-    initialze,
     check_sqlplus,
     check_db_connection,
     get_all_schema_tables,
     make_metadata_from_table,
     run_sql_unno,
     get_metadata,
-    generate_sql as generate_sql_ns,
 )
 
 __all__ = [
@@ -79,6 +76,7 @@ __all__ = [
     "collect_vllm_text",
     "generate_answer_stream",
     "collect_vllm_text_stream",
+
     # sql 모듈 관련 함수들 (sql.py)
     "generate_sql_sql",
     "first_llm",
@@ -89,13 +87,12 @@ __all__ = [
     "execute_sql_query",
     "create_table_json",
     "create_chart_json",
+
     # SQL_NS 모듈 관련 함수들
-    "initialze",
     "check_sqlplus",
     "check_db_connection",
     "get_all_schema_tables",
     "make_metadata_from_table",
     "run_sql_unno",
     "get_metadata",
-    "generate_sql_ns",
 ]
