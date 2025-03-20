@@ -1,4 +1,4 @@
-# ray_setup.py
+# ray_deploy/ray_setup.py
 import ray
 from ray import serve
 

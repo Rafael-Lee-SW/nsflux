@@ -41,10 +41,9 @@ from utils import random_seed, error_format, send_data_to_server, process_format
 from datetime import datetime
 
 # Import the Ray modules
-from ray_deploy.ray_setup import init_ray
-from ray import serve
-from ray_deploy.ray_utils import InferenceActor
-from ray_deploy.ray_utils import InferenceService, SSEQueueManager
+from ray_deploy import init_ray
+from ray_deploy import InferenceActor
+from ray_deploy import InferenceService, SSEQueueManager
 
 # ------ checking process of the thread level
 import logging
@@ -57,6 +56,7 @@ logging.basicConfig(
 )
 
 import ray
+from ray import serve
 import uuid
 import asyncio
 import time
