@@ -1,16 +1,9 @@
 # utils/utils_vector.py
 import json
-import numpy as np
 import torch
-import random
-import shutil
-from datetime import datetime, timedelta
 from transformers import (
     AutoModel,
     AutoTokenizer,
-    AutoModelForCausalLM,
-    BitsAndBytesConfig,
-    AutoConfig,
 )
 
 # Define the minimum valid file size (e.g., 10MB)

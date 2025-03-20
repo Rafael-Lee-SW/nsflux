@@ -7,10 +7,12 @@ from .utils import (
     process_to_format,
     process_format_to_response,
     error_format,
-    send_data_to_server,
+    send_data_to_server
+)
+from .utils_vector import (
     vectorize_content,
     normalize_text_vis,
-    diagnose_and_fix_dataset,
+    diagnose_and_fix_dataset
 )
 
 __all__ = [
