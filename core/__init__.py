@@ -35,10 +35,10 @@ from .RAG import (
     collect_vllm_text,
     generate_answer_stream,
     collect_vllm_text_stream,
+    generate_sql,
 )
 
 from .sql import (
-    generate_sql as generate_sql_sql,
     first_llm,
     extract_relevant_metadata,
     parse_and_augment_filter_conditions,
@@ -76,9 +76,9 @@ __all__ = [
     "collect_vllm_text",
     "generate_answer_stream",
     "collect_vllm_text_stream",
+    "generate_sql",
 
     # sql 모듈 관련 함수들 (sql.py)
-    "generate_sql_sql",
     "first_llm",
     "extract_relevant_metadata",
     "parse_and_augment_filter_conditions",

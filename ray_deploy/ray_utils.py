@@ -1,3 +1,4 @@
+
 # ray_deploy/ray_utils.py
 import ray  # Ray library
 from ray import serve
@@ -16,6 +17,7 @@ from core.RAG import (
     execute_rag,
     generate_answer,
     generate_answer_stream,
+    process_image_query,
 )  # hypothetically
 from utils import (
     load_model,
@@ -138,7 +140,7 @@ class InferenceActor:
                     await asyncio.sleep(0.01)
 
     # -------------------------------------------------------------------------
-    # 사용자 요청을 처리하는 메인 함수
+    # PROCESS SINGLE QUERY (TEXT TO TEXT)
     # -------------------------------------------------------------------------
     async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
         """
@@ -452,6 +454,24 @@ class InferenceActor:
                 except Exception as ex:
                     print(f"[DEBUG] Error putting STREAM_DONE: {str(ex)}")
                 await self.close_sse_queue(request_id)
+                
+    # -------------------------------------------------------------------------
+    # PROCESS IMAGE QUERY (IMAGE TO TEXT)
+    # -------------------------------------------------------------------------
+    async def process_image_query(self, http_query):
+        image_data = http_query.get("image_data")
+        query = http_query.get("query")
+        
+        answer = await process_image_query(
+            image_data,
+            query,
+            model=self.model,
+            tokenizer=self.tokenizer,
+            config=self.config
+        )
+        
+        return process_to_format([answer], type="Answer")
+
 
     # ------------------------------------------------------------
     # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
@@ -809,4 +829,9 @@ class InferenceService:
     # /reference
     async def get_reference_data(self, chunk_ids: list):
         result = await self.actor.get_reference_data.remote(chunk_ids)
+        return result
+    
+    # InferenceService 클래스에 메서드 추가
+    async def image_query(self, http_query: dict):
+        result = await self.actor.process_image_query.remote(http_query)
         return result

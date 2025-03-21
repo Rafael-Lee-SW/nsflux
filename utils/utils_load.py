@@ -228,6 +228,8 @@ def load_model(config):
             
         engine_args.max_model_len = vllm_conf.get("max_model_len")
         
+        engine_args.limit_mm_per_prompt={"image": 1}
+
         # # 새로 추가: disable_sliding_window 옵션 확인
         # if vllm_conf.get("disable_sliding_window", False):
         #     engine_args.sliding_window = (-1, -1)

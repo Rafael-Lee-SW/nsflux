@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -66,6 +67,9 @@
       <!-- Welcome content will be inserted here by JS -->
     </div>
 
+    <!-- 이미지 미리보기 -->
+    <div id="imagePreview" style="max-width: 300px; max-height: 300px; margin-top: 10px;"></div>
+
     <!-- Input Container -->
     <div class="input-container" id="inputContainer">
       <div class="input-box">
@@ -76,6 +80,10 @@
           rows="1"
           onkeydown="handleKeyDown(event)"
         ></textarea>
+        <!-- 이미지 업로드 input 추가 -->
+        <input type="file" id="imageUpload" accept="image/*" style="display: none;">
+        <button onclick="document.getElementById('imageUpload').click();">이미지 업로드</button>
+
         <button id="sendButton" class="send-btn" onclick="sendMessage()">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -750,20 +758,38 @@
      ************************************************************************/
     async function sendMessage() {
       const messageInput = document.getElementById("userMessage");
+      const imageInput = document.getElementById('imageUpload');
       const message = messageInput.value.trim();
-      if (!message || isProcessing) return;
-      
+  
+      // BLOCK if empty text AND no image, or if a request is in flight
+      if (!message && imageInput.files.length === 0) return;
+      if (isProcessing) return;
+
       isProcessing = true;
       document.getElementById("sendButton").disabled = true;
       
       // 사용자가 메시지를 보내면 환영 화면은 더 이상 필요 없으므로 별도 처리 없이 메시지 추가 시 제거됨
       
-      appendMessageToChatBox("사용자", message);
-      storeMessageInRoom(currentRequestId, "사용자", message);
-      messageInput.value = "";
-      messageInput.style.height = 'auto';
+      // 1) Append the user's text to the chatbox
+      if (message) {
+        appendMessageToChatBox("사용자", message);
+        storeMessageInRoom(currentRequestId, "사용자", message);
+        messageInput.value = "";
+        messageInput.style.height = 'auto';
+      }
       clearReferenceData();
-      
+
+      // 2) If an image is selected, run the single image query
+      if (imageInput.files.length > 0) {
+        console.log("Image detected, sending image query...");
+        await sendImageQuery(message);
+        // Done
+        isProcessing = false;
+        document.getElementById("sendButton").disabled = false;
+        return;
+      }
+
+      // 3) Otherwise do normal SSE streaming
       const originalRequestId = currentRequestId;
       const payload = {
         qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
@@ -781,14 +807,19 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
+
         if (!response.ok) {
           throw new Error("Response error: " + response.status);
         }
+
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
+
         let sseBuffer = "";
         let partialAnswer = "";
+
         startAIStreamingMessage();
+
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -1045,7 +1076,96 @@
       });
       currentlyViewingMsgIndex = null;
     }
+
+    // 이미지 업로드 처리
+    document.getElementById('imageUpload').addEventListener('change', function(event) {
+      const file = event.target.files[0];
+      if (file) {
+          const reader = new FileReader();
+          reader.onload = function(e) {
+              const img = document.createElement('img');
+              img.src = e.target.result;
+              img.style.maxWidth = '100%';
+              img.style.maxHeight = '100%';
+              const imagePreview = document.getElementById('imagePreview');
+              imagePreview.innerHTML = '';
+              imagePreview.appendChild(img);
+          }
+          reader.readAsDataURL(file);
+      }
+    });
+
+    /*********************************************************************
+    * IMAGE QUERY LOGIC (SINGLE-SHOT, NO STREAM)
+    *********************************************************************/
+    async function sendImageQuery(userText) {
+      const imageInput = document.getElementById('imageUpload');
+      if (imageInput.files.length === 0) {
+        return; // no image, do nothing
+      }
+      const file = imageInput.files[0];
+
+      // show AI message "Generating..." as a placeholder
+      startAIStreamingMessage();
+
+      try {
+        const base64Image = await readFileAsBase64(file);
+        // Call /image_query with the base64 data plus any user text
+        const payload = {
+          image_data: base64Image,
+          query: userText || ""  // the text typed by user
+        };
+        const response = await fetch('/image_query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(`Image query failed with status: ${response.status}`);
+        }
+        const result = await response.json();
+        console.log("Image Query Response:", result);
+
+        // Typically your server returns something like: 
+        // { ... possibly more fields ..., "rsp_data": [...], "answer": "some string" }
+        // If your server returns a single string or you store it under "answer", adapt below:
+
+        let finalAnswer = "";
+        if (typeof result === 'object' && result.answer) {
+          finalAnswer = result.answer;
+        } else if (typeof result === 'string') {
+          finalAnswer = result; 
+        } else {
+          finalAnswer = JSON.stringify(result); 
+        }
+
+        updateAIStreamingMessage(finalAnswer);
+        finalizeAIMessage(finalAnswer, currentRequestId);
+
+      } catch (error) {
+        const errMsg = "이미지 처리 중 오류: " + error.message;
+        updateAIStreamingMessage(errMsg);
+        finalizeAIMessage(errMsg, currentRequestId);
+      } finally {
+        // cleanup
+        imageInput.value = '';
+        document.getElementById('imagePreview').innerHTML = '';
+      }
+    }
+
+    // Helper to read file as base64
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64 = reader.result.split(',')[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
   </script>
 </body>
 </html>
-

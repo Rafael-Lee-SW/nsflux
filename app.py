@@ -1,4 +1,3 @@
-# app.py
 import os
 # Setting environment variable
 # os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
@@ -361,6 +360,16 @@ def get_reference():
         print(f"[ERROR /reference] {e}")
         error_resp = error_format(f"참조 조회 오류: {str(e)}", 500)
         return Response(error_resp, content_type="application/json; charset=utf-8")
+    
+@app.route("/image_query", methods=["POST"])
+async def image_query():
+    try:
+        http_query = request.json
+        result = await inference_handle.image_query.remote(http_query)
+        return Response(result, content_type=content_type)
+    except Exception as e:
+        error_resp = error_format(f"이미지 처리 중 오류 발생: {str(e)}", 500)
+        return Response(error_resp, content_type=content_type)
 
 # Flask app 실행
 if __name__ == "__main__":
