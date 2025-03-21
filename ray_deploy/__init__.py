@@ -6,8 +6,9 @@ Exports:
     - init_ray: ray_setup 모듈에서 가져온 Ray 초기화 함수
 """
 
-from .ray_utils import InferenceActor, InferenceService, SSEQueueManager
 from .ray_setup import init_ray
+from .ray_utils import InferenceActor, InferenceService
 from .langchain import CustomConversationBufferMemory
+from .sse_manager import SSEQueueManager
 
-__all__ = ["InferenceActor", "InferenceService", "SSEQueueManager", "init_ray", "CustomConversationBufferMemory"]
+__all__ = ["init_ray", "InferenceActor", "InferenceService","CustomConversationBufferMemory", "SSEQueueManager"]
