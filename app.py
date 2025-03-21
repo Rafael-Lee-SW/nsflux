@@ -101,7 +101,7 @@ def chat_page():
 from data_control.data_control import data_control_bp
 app.register_blueprint(data_control_bp, url_prefix="/data")
 
-# Query Endpoint (Non-streaming)
+# --------------------- Non Streaming part ----------------------------
 @app.route("/query", methods=["POST"])
 async def query():
     try:
@@ -126,56 +126,6 @@ async def query():
         return Response(error_resp, content_type=content_type)
 
 # --------------------- Streaming part ----------------------------
-
-# # Streaming Endpoint (POST 방식 SSE) → 동기식 뷰 함수로 변경
-# @app.route("/query_stream", methods=["POST"])
-# def query_stream():
-#     """
-#     POST 방식 SSE 스트리밍 엔드포인트.
-#     클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
-#     """
-#     body = request.json or {}
-#     user_input = body.get("input", "")
-#     # request_id 파트 추가
-#     client_request_id = body.get("request_id")
-#     print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', request_id='{client_request_id}'")
-    
-#     http_query = {"qry_contents": user_input}
-#     # request_id 파트 추가
-#     if client_request_id:
-#         http_query["request_id"] = client_request_id
-#     print(f"[DEBUG] Built http_query={http_query}")
-
-#     response = inference_handle.process_query_stream.remote(http_query)
-#     obj_ref = response._to_object_ref_sync()
-#     request_id = ray.get(obj_ref)
-    
-#     print(f"[DEBUG] streaming request_id={request_id}")
-    
-#     def sse_generator():
-#         try:
-#             while True:
-#                 # Retrieve token from SSEQueueManager
-#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
-#                 if token is None or token == "[[STREAM_DONE]]":
-#                     break
-#                 yield f"data: {token}\n\n"
-#         except Exception as e:
-#             error_token = json.dumps({"type": "error", "message": str(e)})
-#             yield f"data: {error_token}\n\n"
-#         finally:
-#             # Cleanup: close the SSE queue after streaming is done
-#             try:
-#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
-#                 ray.get(obj_ref)
-#             except Exception as ex:
-#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
-#             print("[DEBUG] SSE closed.")
-
-#     return Response(sse_generator(), mimetype="text/event-stream")
-
-# --------------------- Streaming part TEST for API format matching ----------------------------
-
 @app.route("/query_stream", methods=["POST"])
 def query_stream():
     """
@@ -236,8 +186,6 @@ def query_stream():
     return Response(sse_generator(), mimetype="text/event-stream")
 
 # --------------------- CLT Streaming part ----------------------------
-
-# --------------------- CLT Streaming part ----------------------------
 @app.route("/queryToSLLM", methods=["POST"])
 def query_stream_to_clt():
     """
@@ -255,7 +203,6 @@ def query_stream_to_clt():
     qry_time = body.get("qry_time", "")
     
     response_url = config.response_url
-
 
     print(f"[DEBUG] /queryToSLLM called with qry_id='{qry_id}', user_id='{user_id}', "
           f"page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
@@ -354,7 +301,7 @@ def query_stream_to_clt():
     # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
 
-# ------------------------------------------------
+# --------------------- History & Reference part ----------------------------
 
 # 새로 추가1: request_id로 대화 기록을 조회하는 API 엔드포인트
 @app.route("/history", methods=["GET"])
@@ -376,7 +323,6 @@ def conversation_history():
         print(f"[ERROR /history] {e}")
         error_resp = error_format(f"대화 기록 조회 오류: {str(e)}", 500)
         return Response(error_resp, content_type="application/json; charset=utf-8")
-
 
 # 새로 추가2: request_id로 해당 답변의 참고자료를 볼 수 있는 API
 @app.route("/reference", methods=["GET"])
@@ -415,7 +361,6 @@ def get_reference():
         print(f"[ERROR /reference] {e}")
         error_resp = error_format(f"참조 조회 오류: {str(e)}", 500)
         return Response(error_resp, content_type="application/json; charset=utf-8")
-
 
 # Flask app 실행
 if __name__ == "__main__":

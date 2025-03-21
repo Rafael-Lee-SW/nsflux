@@ -40,40 +40,36 @@ class InferenceActor:
         )
         # 데이터는 캐시 파일을 통해 로드
         self.data = load_data(config.data_path)
-        # 비동기 큐와 배치 처리 설정 (마이크로 배칭)
+        
+        # 비동기 큐와 배치 처리 설정
         self.request_queue = asyncio.Queue()
         self.max_batch_size = config.ray.max_batch_size  # 최대 배치 수
-        self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간
+        self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간 - 이제 사용하지 아니함(연속 배치이기에 배치당 처리 시간이 무의미)
 
         # Actor 내부에서 ProcessPoolExecutor 생성 (직렬화 문제 회피)
         max_workers = int(min(config.ray.num_cpus * 0.8, (26*config.ray.actor_count)-4))
         self.process_pool = ProcessPoolExecutor(max_workers)
 
-        # --- SSE Queue Manager ---
-        # A dictionary to store SSE queues for streaming requests
+        # --- SSE Queue Manager --- 
         # Key = request_id, Value = an asyncio.Queue of partial token strings
+        # A dictionary to store SSE queues for streaming requests
         self.queue_manager = ray.get_actor("SSEQueueManager")
         self.active_sse_queues: Dict[str, asyncio.Queue] = {}
 
         self.batch_counter = 0  # New counter to track batches
 
         self.memory_map = {}
-
-        # Micro-batching로 바꾸기(아래 주석 해체)
-        # asyncio.create_task(self._batch_processor())
-        
-        # In-flight batching까지 추가 적용(Micro 사용할 경우 주석)
-        # asyncio.create_task(self._in_flight_batch_processor())
         
         # 활성 작업 추적을 위한 변수 추가
         self.active_tasks = set()
         self.max_concurrent_tasks = config.ray.max_batch_size
         
-        # 연속 배치 처리기 시작
+        # 연속 배치 처리기 시작 (Continuous batch)
         asyncio.create_task(self.continuous_batch_processor())
         
-
-
+    # -------------------------------------------------------------------------
+    # GET MEMORY FOR SESSION
+    # -------------------------------------------------------------------------
     def get_memory_for_session(self, request_id: str) -> CustomConversationBufferMemory:
         """
         세션별 Memory를 안전하게 가져오는 헬퍼 메서드.
@@ -83,120 +79,6 @@ class InferenceActor:
             print(f"[DEBUG] Creating new CustomConversationBufferMemory for session={request_id}")
             self.memory_map[request_id] = CustomConversationBufferMemory(return_messages=True)
         return self.memory_map[request_id]
-
-    # -------------------------------------------------------------------------
-    # Micro_batch_processor - OLD METHOD
-    # -------------------------------------------------------------------------
-    async def _batch_processor(self):
-        """
-        Continuously processes queued requests in batches (micro-batching).
-        We add new logic for streaming partial tokens if a request has an SSE queue.
-        """
-        while True:
-            batch = []
-            batch_start_time = time.time()
-            # 1) get first request from the queue
-            print("=== _batch_processor waiting for request_queue item... ===")
-            item = await self.request_queue.get()
-            print(
-                f"[DEBUG] 첫 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: 1)"
-            )
-            batch.append(item)
-
-            print(f"[DEBUG] Received first request at {time.strftime('%H:%M:%S')}")
-
-            # 2) try to fill the batch up to batch_size or until timeout
-            try:
-                while len(batch) < self.max_batch_size:
-                    print("현재 배치 사이즈 : ", len(batch))
-                    print("최대 배치 사이즈 : ", self.max_batch_size)
-                    item = await asyncio.wait_for(
-                        self.request_queue.get(), timeout=self.batch_wait_timeout
-                    )
-
-                    batch.append(item)
-                    print(
-                        f"[DEBUG] 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})"
-                    )
-            except asyncio.TimeoutError:
-                elapsed = time.time() - batch_start_time
-                print(
-                    f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})"
-                )
-                pass
-
-            print(
-                f"=== _batch_processor: 배치 사이즈 {len(batch)} 처리 시작 ({time.strftime('%H:%M:%S')}) ==="
-            )
-
-            # 각 요청 처리 전후에 로그 추가
-            start_proc = time.time()
-            await asyncio.gather(
-                *(
-                    self._process_single_query(req, fut, sse_queue)
-                    for (req, fut, sse_queue) in batch
-                )
-            )
-            proc_time = time.time() - start_proc
-            print(f"[DEBUG] 해당 배치 처리 완료 (처리시간: {proc_time:.2f}초)")
-            
-    # -------------------------------------------------------------------------
-    # In-flight BATCH PROCESSOR
-    # -------------------------------------------------------------------------
-    async def _in_flight_batch_processor(self):
-        while True:
-            # Wait for the first item (blocking until at least one is available)
-            print(
-                "=== [In-Flight Batching] Waiting for first item in request_queue... ==="
-            )
-            first_item = await self.request_queue.get()
-            batch = [first_item]
-            batch_start_time = time.time()
-
-            print(
-                "[In-Flight Batching] Got the first request. Attempting to fill a batch..."
-            )
-
-            # Attempt to fill up the batch until we hit max_batch_size or batch_wait_timeout
-            while len(batch) < self.max_batch_size:
-                try:
-                    remain_time = self.batch_wait_timeout - (
-                        time.time() - batch_start_time
-                    )
-                    if remain_time <= 0:
-                        print(
-                            "[In-Flight Batching] Timed out waiting for more requests; proceeding with current batch."
-                        )
-                        break
-                    item = await asyncio.wait_for(
-                        self.request_queue.get(), timeout=remain_time
-                    )
-                    batch.append(item)
-                    print(
-                        f"[In-Flight Batching] +1 request => batch size now {len(batch)} <<< {self.max_batch_size}"
-                    )
-                except asyncio.TimeoutError:
-                    print(
-                        "[In-Flight Batching] Timeout reached => proceeding with the batch."
-                    )
-                    break
-            self.batch_counter += 1
-            
-            # 현재 배치 정보 로깅
-            log_batch_info(batch)
-            log_system_info("배치 처리 전 상태")
-
-            # We have a batch of items: each item is ( http_query_or_stream_dict, future, sse_queue )
-            # We'll process them concurrently.
-            tasks = []
-            for request_tuple in batch:
-                request_obj, fut, sse_queue = request_tuple
-                tasks.append(self._process_single_query(request_obj, fut, sse_queue))
-
-            # Actually run them all concurrently
-            await asyncio.gather(*tasks)
-            log_system_info("배치 처리 후 상태")
-            
     # -------------------------------------------------------------------------
     # CONTINUOUOS BATCH PROCESSOR
     # -------------------------------------------------------------------------
@@ -255,7 +137,9 @@ class InferenceActor:
                 else:
                     await asyncio.sleep(0.01)
 
-
+    # -------------------------------------------------------------------------
+    # 사용자 요청을 처리하는 메인 함수
+    # -------------------------------------------------------------------------
     async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
         """
         Process a single query from the micro-batch. If 'sse_queue' is given,

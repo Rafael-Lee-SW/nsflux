@@ -6,9 +6,6 @@
 import logging
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-# 로깅 설정 (필요에 따라 파일 핸들러 등 추가 가능)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
-
 # LED 모델 및 토크나이저 로드
 led_model_name = "allenai/led-base-16384"
 led_tokenizer = AutoTokenizer.from_pretrained(led_model_name)

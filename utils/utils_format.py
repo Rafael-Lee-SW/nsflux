@@ -10,10 +10,6 @@ MIN_WEIGHT_SIZE = 10 * 1024 * 1024
 # For tracking execution time of functions
 from utils.tracking import time_tracker
 
-# Logging
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
 # -------------------------------------------------
 # Function: process_to_format
 # -------------------------------------------------

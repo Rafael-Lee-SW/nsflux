@@ -31,7 +31,6 @@ from utils.tracking import time_tracker
 
 # Logging
 import logging
-logging.basicConfig(level=logging.DEBUG)
 # -------------------------------------------------
 # Function: find_weight_directory - 허깅페이스 권한 문제 해결 후에 잘 사용되지 아니함
 # -------------------------------------------------
