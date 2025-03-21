@@ -1,4 +1,4 @@
-# prompts/prompt_rag.py
+# prompt/prompt_rag.py
 from datetime import datetime
 
 # Get today's date (this is computed when the module is loaded)

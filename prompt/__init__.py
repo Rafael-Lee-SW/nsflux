@@ -15,9 +15,14 @@ from .prompt_rag import (
     STREAM_PROMPT_TEMPLATE,
 )
 
+from .prompt_sql import (
+    SQL_EXTRACTION_PROMPT_TEMPLATE
+)
+
 __all__ = [
     "QUERY_SORT_PROMPT",
     "QUERY_SORT_PROMPT_OLD",
     "GENERATE_PROMPT_TEMPLATE",
     "STREAM_PROMPT_TEMPLATE",
+    "SQL_EXTRACTION_PROMPT_TEMPLATE"
 ]

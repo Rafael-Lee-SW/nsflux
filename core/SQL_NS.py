@@ -1,4 +1,4 @@
-# SQL_NS.py
+# core/SQL_NS.py
 
 import os
 import subprocess
@@ -7,9 +7,6 @@ import json
 import yaml
 from box import Box
 import re
-
-# [변경 전] from utils import load_model  # (삭제됨: 오직 SQL 용도만 남김)
-# [변경 전] import code  # (필요 시 디버깅용, 지금은 제거)
 
 # 환경 변수 설정
 os.environ['ORACLE_HOME'] = '/workspace/oracle/instantclient_23_7'
@@ -26,7 +23,6 @@ sqlplus_command = [
     "sqlplus", "-S", "LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR"
 ]
 
-
 '''
 ### ORACLE DB 정보 ###
 TABLE : ai_dg_check
@@ -35,28 +31,6 @@ TABLE : ai_dg_check
               PORT (포트 번호)
               ALLOW_YN (취급 가능 여부)
 '''
-
-SQL_UNNO_PROMPT = \
-"""
-<bos>
-<system>
-너는 남성해운의 내부 데이터를 기반으로 질문에 답하는 데이터 분석가야.
-- 문서를 바탕으로 사실적인 답변을 한다.
-- 문서에 없는 내용은 "내부 자료에 해당 자료 없음"이라고 명시한다.
-- 표 데이터를 말로 풀어 해석한 뒤 인사이트를 제공한다.
-- 출처 표기는 필수다.
-</system>
-
-<user>
-내부 자료: {docs}
-질문: {query}
-</user>
-
-<assistant>
-답변:
-</assistant>
-"""
-
 
 @time_tracker
 def check_sqlplus():
@@ -299,9 +273,6 @@ def get_metadata(config):
 
     return location_codes, unno_list_as_string
 
-
-# [중요] generate_sql 함수 제거됨 (이전에는 여기 존재했으나 RAG.py로 이동)
-#        오직 SQL만 담당하도록 변경.
 
 if __name__ == "__main__":
     # 아래는 테스트/디버깅용 코드
