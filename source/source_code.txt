@@ -4,16 +4,8 @@
 ├─ app.py
 ├─ config.yaml
 ├─ core/RAG.py
-├─ core/SQL_NS.py
-├─ prompt/prompt_rag.py
-├─ prompt/prompt_sql.py
-├─ ray_deploy/langchain.py
-├─ ray_deploy/ray_setup.py
 ├─ ray_deploy/ray_utils.py
-├─ templates/chatroom.html
-├─ utils/utils_format.py
-├─ utils/utils_load.py
-└─ utils/utils_vector.py
+└─ utils/utils_load.py
 ```
 
 --- config.yaml
@@ -89,7 +81,6 @@ k : 15                        # SQL Max Rows (None=MAX)
 
 ```python
 
-# app.py
 import os
 # Setting environment variable
 # os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
@@ -455,13 +446,22 @@ def get_reference():
     
 @app.route("/image_query", methods=["POST"])
 async def image_query():
+    """
+    JSON 예시:
+    {
+        "image_data": "base64....",
+        "qry_contents": "이미지 관련 질문",
+        "request_id": "some_id"
+    }
+    """
     try:
         http_query = request.json
-        result = await inference_handle.image_query.remote(http_query)
-        return Response(result, content_type=content_type)
+        # Ray Actor(inference_handle)로 전달
+        result_ref = inference_handle.image_query.remote(http_query)
+        result = await result_ref
+        return jsonify(result)
     except Exception as e:
-        error_resp = error_format(f"이미지 처리 중 오류 발생: {str(e)}", 500)
-        return Response(error_resp, content_type=content_type)
+        return jsonify({"error": str(e)}), 500
 
 # Flask app 실행
 if __name__ == "__main__":
@@ -470,45 +470,10 @@ if __name__ == "__main__":
 ```
 
 
---- ray_deploy/ray_setup.py
-
-```python
-
-# ray_deploy/ray_setup.py
-import ray
-from ray import serve
-
-########## Starting Banner ############
-from colorama import init, Fore, Style
-init(autoreset=True)
-
-BANNER = Fore.GREEN + r"""
-'########:'##:::::::'##::::'##:'##::::'##::::::::::'##::: ##::'######::
- ##.....:: ##::::::: ##:::: ##:. ##::'##::::::::::: ###:: ##:'##... ##:
- ##::::::: ##::::::: ##:::: ##::. ##'##:::::::::::: ####: ##: ##:::..::
- ######::: ##::::::: ##:::: ##:::. ###::::::::::::: ## ## ##:. ######::
- ##...:::: ##::::::: ##:::: ##::: ## ##:::::::::::: ##. ####::..... ##:
- ##::::::: ##::::::: ##:::: ##:: ##:. ##::::::::::: ##:. ###:'##::: ##:
- ##::::::: ########:. #######:: ##:::. ##:'#######: ##::. ##:. ######::
-..::::::::........:::.......:::..:::::..::.......::..::::..:::......:::
-"""
-
-def init_ray():
-    print(BANNER)
-    # Ray-Dashboard - GPU 상태, 사용 통계 등을 제공하는 모니터링 툴, host 0.0.0.0로 외부 접속을 허용하고, Default 포트인 8265으로 설정
-    ray.init(
-        include_dashboard=True,
-        dashboard_host="0.0.0.0" # External IP accessable
-        # dashboard_port=8265
-    )
-    print("Ray initialized. DashBoard running at http://192.222.54.254:8265") # New Server(2xH100)
-
-```
-
-
 --- ray_deploy/ray_utils.py
 
 ```python
+
 
 # ray_deploy/ray_utils.py
 import ray  # Ray library
@@ -528,7 +493,6 @@ from core.RAG import (
     execute_rag,
     generate_answer,
     generate_answer_stream,
-    process_image_query,
 )  # hypothetically
 from utils import (
     load_model,
@@ -966,22 +930,135 @@ class InferenceActor:
                     print(f"[DEBUG] Error putting STREAM_DONE: {str(ex)}")
                 await self.close_sse_queue(request_id)
                 
-    # -------------------------------------------------------------------------
+    # ---------------------------------------------------------
     # PROCESS IMAGE QUERY (IMAGE TO TEXT)
-    # -------------------------------------------------------------------------
+    # ---------------------------------------------------------
     async def process_image_query(self, http_query):
-        image_data = http_query.get("image_data")
-        query = http_query.get("query")
+        """
+        http_query 예시:
+        {
+            "image_data": "Base64 인코딩 문자열",
+            "qry_contents": "이미지 질문",
+            ...
+        }
+        """
+        try:
+            print("[DEBUG] Starting process_image_query")
+            # 1) HTTP 요청에서 파라미터 추출
+            image_data = http_query.get("image_data")
+            user_query = http_query.get("qry_contents")
+            request_id = http_query.get("request_id", str(uuid.uuid4()))
+            print(f"[DEBUG] Retrieved parameters: request_id={request_id}")
+        except Exception as e:
+            print(f"[ERROR] Error retrieving query parameters: {e}")
+            return {"type": "error", "message": f"Error retrieving query parameters: {e}"}
         
-        answer = await process_image_query(
-            image_data,
-            query,
-            model=self.model,
-            tokenizer=self.tokenizer,
-            config=self.config
-        )
+        try:
+            # 2) Base64 디코딩
+            import base64, io
+            decoded = base64.b64decode(image_data)
+            print("[DEBUG] Base64 decoding successful")
+        except Exception as e:
+            print(f"[ERROR] Error during Base64 decoding: {e}")
+            return {"type": "error", "message": f"Base64 decoding failed: {e}"}
         
-        return process_to_format([answer], type="Answer")
+        try:
+            # 3) PIL 이미지 객체 생성 및 RGB 변환
+            from PIL import Image
+            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+            print("[DEBUG] PIL image created successfully")
+        except Exception as e:
+            print(f"[ERROR] Error converting decoded data to PIL image: {e}")
+            return {"type": "error", "message": f"PIL image creation failed: {e}"}
+        
+        try:
+            # 4) 프롬프트 준비 (사용자 쿼리)
+            prompt = user_query if user_query else "질문이 없습니다."
+            print(f"[DEBUG] Prompt set to: {prompt}")
+        except Exception as e:
+            print(f"[ERROR] Error setting prompt: {e}")
+            prompt = "질문이 없습니다."
+        
+        try:
+            # 5) SamplingParams 생성
+            from vllm import SamplingParams
+            sampling_params = SamplingParams(
+                max_tokens=self.config.model.max_new_tokens,
+                temperature=self.config.model.temperature,
+                top_k=self.config.model.top_k,
+                top_p=self.config.model.top_p,
+                repetition_penalty=self.config.model.repetition_penalty,
+            )
+            print("[DEBUG] SamplingParams created successfully")
+        except Exception as e:
+            print(f"[ERROR] Error creating SamplingParams: {e}")
+            return {"type": "error", "message": f"SamplingParams creation failed: {e}"}
+        
+        try:
+            # 6) PIL 이미지를 텐서로 변환 (torchvision 사용)
+            from torchvision import transforms
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                # 필요 시 추가 Resize, Normalize 등을 적용
+            ])
+            image_tensor = transform(pil_image)
+            print("[DEBUG] Image converted to tensor successfully")
+        except Exception as e:
+            print(f"[ERROR] Error converting PIL image to tensor: {e}")
+            return {"type": "error", "message": f"Image tensor conversion failed: {e}"}
+        
+        try:
+            # 7) 이미지 임베딩 계산
+            # 먼저, 모델(self.model)이 멀티모달 메서드를 직접 제공하는지 확인
+            if hasattr(self.model, "get_multimodal_embeddings"):
+                image_embeddings = self.model.get_multimodal_embeddings(pixel_values=image_tensor)
+                print("[DEBUG] Obtained image embeddings via self.model.get_multimodal_embeddings")
+            # 만약 없다면, underlying model (예: self.model.model)에서 호출
+            elif hasattr(self.model, "model") and hasattr(self.model.model, "get_multimodal_embeddings"):
+                image_embeddings = self.model.model.get_multimodal_embeddings(pixel_values=image_tensor)
+                print("[DEBUG] Obtained image embeddings via self.model.model.get_multimodal_embeddings")
+            else:
+                raise AttributeError("Underlying model does not support get_multimodal_embeddings")
+        except Exception as e:
+            print(f"[ERROR] Error obtaining image embeddings: {e}")
+            return {"type": "error", "message": f"Image embeddings retrieval failed: {e}"}
+        
+        # 8) 모델의 generate 호출: 이미지 인자는 inputs_embeds로 전달 (images 인자는 사용하지 않음)
+        result_chunks = []
+        try:
+            print("[DEBUG] Starting model.generate call")
+            async for out in self.model.generate(
+                prompt=prompt,
+                sampling_params=sampling_params,
+                request_id=request_id,
+                inputs_embeds=image_embeddings  # 이미지 임베딩 전달
+            ):
+                result_chunks.append(out)
+            print("[DEBUG] model.generate call completed")
+        except Exception as e:
+            print(f"[ERROR] Error during model.generate: {e}")
+            return {"type": "error", "message": f"Model generation failed: {e}"}
+        
+        try:
+            # 9) 결과 처리 및 최종 응답 생성
+            if not result_chunks:
+                print("[ERROR] No output chunks received from model.generate")
+                return {"type": "error", "message": "No output from model."}
+            final_output = None
+            for c in result_chunks:
+                if hasattr(c, "finished") and c.finished:
+                    final_output = c
+                    print("[DEBUG] Found finished output chunk")
+                    break
+            if final_output is None:
+                final_output = result_chunks[-1]
+                print("[DEBUG] No finished chunk found; using last chunk")
+            answer_text = "".join(x.text for x in final_output.outputs)
+            print(f"[DEBUG] Final answer text: {answer_text}")
+            return {"result": answer_text, "request_id": request_id}
+        except Exception as e:
+            print(f"[ERROR] Error processing output chunks: {e}")
+            return {"type": "error", "message": f"Processing output failed: {e}"}
 
 
     # ------------------------------------------------------------
@@ -1350,365 +1427,6 @@ class InferenceService:
 ```
 
 
---- ray_deploy/langchain.py
-
-```python
-
-# ray_deploy/langchain.py
-
-# 랭체인 도입
-from langchain.memory import ConversationBufferMemory
-from langchain.schema import HumanMessage, AIMessage
-
-# =============================================================================
-# Custom Conversation Memory to store extra metadata (e.g., chunk_ids)
-# =============================================================================
-class CustomConversationBufferMemory(ConversationBufferMemory):
-    """대화 저장 시 추가 메타데이터를 함께 기록"""
-    def save_context(self, inputs: dict, outputs: dict) -> None:
-        """
-        inputs, outputs 예시:
-            inputs = {
-                "qry_contents": "사용자 질문",
-                "qry_id": "...",
-                "user_id": "...",
-                "auth_class": "...",
-                "qry_time": "..."
-            }
-            outputs = {
-                "output": "AI의 최종 답변",
-                "chunk_ids": [...참조 chunk_id 리스트...]
-            }
-        """
-        try:
-            user_content = inputs.get("qry_contents", "")
-            human_msg = HumanMessage(
-                content=user_content,
-                additional_kwargs={
-                    "qry_id": inputs.get("qry_id"),
-                    "user_id": inputs.get("user_id"),
-                    "auth_class": inputs.get("auth_class"),
-                    "qry_time": inputs.get("qry_time")
-                }
-            )
-            ai_content = outputs.get("output", "")
-            ai_msg = AIMessage(
-                content=ai_content,
-                additional_kwargs={
-                    "chunk_ids": outputs.get("chunk_ids", []),
-                    "qry_id": inputs.get("qry_id"),
-                    "user_id": inputs.get("user_id"),
-                    "auth_class": inputs.get("auth_class"),
-                    "qry_time": inputs.get("qry_time")
-                }
-            )
-
-            self.chat_memory.messages.append(human_msg)
-            self.chat_memory.messages.append(ai_msg)
-        except Exception as e:
-            print(f"[ERROR in save_context] {e}")
-        
-    def load_memory_variables(self, inputs: dict) -> dict:
-        """
-        랭체인 규약에 의해 {"history": [메시지 리스트]} 형태 리턴
-        """
-        try:
-            return {"history": self.chat_memory.messages}
-        except Exception as e:
-            print(f"[ERROR in load_memory_variables] {e}")
-            return {"history": []}
-
-# Serialization function for messages
-def serialize_message(msg):
-    """
-    HumanMessage -> {"role": "human", "content": ...}
-    AIMessage    -> {"role": "ai", "content": ..., "references": [...]}
-    """
-    try:
-        if isinstance(msg, HumanMessage):
-            return {"role": "human", "content": msg.content}
-        elif isinstance(msg, AIMessage):
-            refs = msg.additional_kwargs.get("chunk_ids", [])
-            # 디버그 출력
-            print(f"[DEBUG serialize_message] AI refs: {refs}")
-            return {"role": "ai", "content": msg.content, "references": refs}
-        else:
-            return {
-                "role": "unknown",
-                "content": getattr(msg, "content", str(msg))
-            }
-    except Exception as e:
-        print(f"[ERROR in serialize_message] {e}")
-        return {"role": "error", "content": str(e)}
-    
-# =============================================================================
-# =============================================================================
-
-```
-
-
---- utils/utils_format.py
-
-```python
-
-# utils/utils_format.py
-import json
-from datetime import datetime, timedelta
-
-import requests
-
-# Define the minimum valid file size (e.g., 10MB)
-MIN_WEIGHT_SIZE = 10 * 1024 * 1024
-
-# For tracking execution time of functions
-from utils.tracking import time_tracker
-
-# -------------------------------------------------
-# Function: process_to_format
-# -------------------------------------------------
-@time_tracker
-def process_to_format(qry_contents, type):
-    # 여기서 RAG 시스템을 호출하거나 답변을 생성하도록 구현하세요.
-    # 예제 응답 형식
-    ### rsp_type : RA(Retrieval All), RT(Retrieval Text), RB(Retrieval taBle), AT(Answer Text), AB(Answer taBle) ###
-    print("[SOOWAN] process_to_format 진입")
-    if type == "Retrieval":
-        print("[SOOWAN] 타입 : 리트리버")
-        tmp_format = {"rsp_type": "R", "rsp_tit": "남성 내부 데이터", "rsp_data": []}
-        for i, form in enumerate(qry_contents):
-            tmp_format_ = {
-                "rsp_tit": f"{i+1}번째 검색데이터: {form['title']} (출처:{form['file_name']})",
-                "rsp_data": form["contents"],
-                "chunk_id": form.get("chunk_id"),
-            }
-            tmp_format["rsp_data"].append(tmp_format_)
-        return tmp_format
-
-    elif type == "SQL":
-        print("[SOOWAN] 타입 : SQL")
-        tmp_format = {
-            "rsp_type": "R",
-            "rsp_tit": "남성 내부 데이터",
-            "rsp_data": [{"rsp_tit": "SQL Query 결과표", "rsp_data": []}],
-        }
-        tmp_format_sql = {
-            "rsp_type": "TB",
-            "rsp_tit": qry_contents[0]["title"],
-            "rsp_data": qry_contents[0]["data"],
-        }
-        tmp_format_chart = {
-            "rsp_type": "CT",
-            "rsp_tit": qry_contents[1]["title"],
-            "rsp_data": {"chart_tp": "BAR", "chart_data": qry_contents[1]["data"]},
-        }
-        tmp_format["rsp_data"][0]["rsp_data"].append(tmp_format_sql)
-        # tmp_format['rsp_data'].append(tmp_format_chart)
-        return tmp_format, tmp_format_chart
-
-    elif type == "Answer":
-        print("[SOOWAN] 타입 : 대답")
-        tmp_format = {"rsp_type": "A", "rsp_tit": "답변", "rsp_data": []}
-        # for i, form in enumerate(qry_contents):
-            # if i == 0:
-        tmp_format_ = {"rsp_type": "TT", "rsp_data": qry_contents}
-        tmp_format["rsp_data"].append(tmp_format_)
-            # elif i == 1:
-            #     tmp_format["rsp_data"].append(form)
-            # else:
-            #     None
-
-        return tmp_format
-
-    else:
-        print("Error! Type Not supported!")
-        return None
-
-# @time_tracker
-# def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
-#     # Get multiple formats to tuple
-
-#     ans_format = {
-#         "status_code": 200,
-#         "result": "OK",
-#         "detail": "",
-#         "continue":continue_,
-#         "qry_id": qry_id,
-#         "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-#         "data_list": [],
-#     }
-
-#     # 누적된 토큰을 하나의 문자열로 결합합니다.
-#     aggregated_answer = "".join(token.get("answer", "") for token in formats)
-#     ans_format["data_list"].append({
-#         "rsp_type": "A",
-#         "rsp_tit": f"답변{update_index}",
-#         "rsp_data": [
-#             {
-#                 "rsp_type": "TT",
-#                 "rsp_data": aggregated_answer
-#             }
-#         ]
-#     })
-    
-#     # Validate JSON before returning
-#     try:
-#         json.dumps(ans_format, ensure_ascii=False)  # Test JSON validity
-#     except Exception as e:
-#         print(f"[ERROR] Invalid JSON structure: {str(e)}")
-#         ans_format["status_code"] = 500
-#         ans_format["result"] = "ERROR"
-#         ans_format["detail"] = f"JSON Error: {str(e)}"
-
-#     # for format in formats:
-#     #     ans_format["data_list"].append(format)
-
-#     # return json.dumps(ans_format, ensure_ascii=False)
-#     return ans_format
-
-@time_tracker
-def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
-    # If there are any reference tokens, return only them.
-    reference_tokens = [token for token in formats if token.get("type") == "reference"]
-    if reference_tokens:
-        # For this example, we'll use the first reference token.
-        ref = reference_tokens[0]
-        # Add the extra keys.
-        ref["qry_id"] = qry_id
-        ref["continue"] = continue_
-        ref["rsp_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-        # Ensure that a "rsp_tit" key exists to satisfy downstream requirements.
-        if "rsp_tit" not in ref:
-            ref["rsp_tit"] = "Reference"
-        return ref
-
-    # Otherwise, aggregate the normal answer tokens.
-    normal_tokens = [token.get("answer", "") for token in formats if token.get("type") != "reference"]
-    aggregated_answer = "".join(normal_tokens)
-    
-    ans_format = {
-        "status_code": 200,
-        "result": "OK",
-        "detail": "",
-        "continue": continue_,
-        "qry_id": qry_id,
-        "rsp_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-        "data_list": [{
-            "rsp_type": "A",
-            "rsp_tit": f"답변{update_index}",
-            "rsp_data": [{
-                "rsp_type": "TT",
-                "rsp_data": aggregated_answer
-            }]
-        }]
-    }
-    
-    # Validate JSON structure before returning.
-    try:
-        json.dumps(ans_format, ensure_ascii=False)
-    except Exception as e:
-        print(f"[ERROR] Invalid JSON structure: {str(e)}")
-        ans_format["status_code"] = 500
-        ans_format["result"] = "ERROR"
-        ans_format["detail"] = f"JSON Error: {str(e)}"
-    
-    return ans_format
-
-
-
-# @time_tracker
-# def process_format_to_response(formats, qry_id, continue_="C", update_index=1):
-#     # 누적된 토큰들을 하나의 문자열로 결합합니다.
-#     aggregated_answer = "".join(token.get("answer", "") for token in formats)
-    
-#     # retrieval과 동일한 구조를 위해, 답변 데이터는 내부 data_list가 딕셔너리 형태로 구성됩니다.
-#     answer = {
-#         "rsp_type": "A",                # Answer
-#         "rsp_tit": f"답변{update_index}",
-#         "rsp_data": [                    # 바로 텍스트 응답 리스트를 구성
-#             {
-#                 "rsp_tit": f"답변{update_index}",
-#                 "rsp_data": [
-#                     {
-#                         'rsp_type': 'TT',
-#                         'rsp_tit': '',
-#                         'rsp_data': aggregated_answer,
-#                     }
-#                 ]
-                
-#             }
-#         ]
-#     }
-    
-#     # 최종 응답 구조: 최상위에 data_list는 리스트이고, 내부에 딕셔너리로 답변 데이터를 포함합니다.
-#     ans_format = {
-#         "status_code": 200,
-#         "result": "OK",
-#         "detail": "Answer",
-#         "continue": continue_,
-#         "qry_id": qry_id,
-#         "rsp_time": datetime.now().isoformat(),
-#         "data_list": [
-#             {
-#                 "type": "answer",               # 응답 타입 answer
-#                 "status_code": 200,
-#                 "result": "OK",
-#                 "detail": "Answer",
-#                 "evt_time": datetime.now().isoformat(),
-#                 "data_list": answer              # retrieval의 data_list와 동일하게 딕셔너리 형태
-#             }
-#         ]
-#     }
-#     return ans_format
-
-@time_tracker
-def error_format(message, status, qry_id=""):
-    ans_format = {
-        "status_code": status,
-        "result": message,
-        "qry_id": qry_id,  # 추가: qry_id 포함
-        "detail": "",
-        "evt_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
-    }
-    return json.dumps(ans_format)
-
-# @time_tracker
-# def send_data_to_server(data, url):
-#     headers = {
-#         "Content-Type": "application/json; charset=utf-8"
-#     }
-#     try:
-#         # 다른 서버로 데이터를 전송 (POST 요청)
-#         response = requests.post(url, json=data, headers=headers)
-#         if response.status_code == 200:
-#             print(f"Data sent successfully: {data}")
-#         else:
-#             print(f"Failed to send data: {response.status_code}")
-#             print(f"Failed data: {data}")
-#     except requests.exceptions.RequestException as e:
-#         print(f"Error sending data: {e}")
-@time_tracker     
-def send_data_to_server(data, url):
-    try:
-        if not data or "data_list" not in data:
-            print("[ERROR] Empty or Invalid data structure")
-            return
-        # Log reference data if present
-        for item in data["data_list"]:
-            if item.get("rsp_type") == "A" and "references" in str(item):
-                print(f"[DEBUG] Sending reference data: {json.dumps(data, ensure_ascii=False, indent=2)}")
-        response = requests.post(url, json=data, timeout=10)
-        
-        if response.status_code != 200:
-            print(f"[ERROR] Failed to send data: {response.status_code}, {response.text}")
-        
-        return response
-
-    except Exception as e:
-        print(f"[ERROR] send_data_to_server encountered an error: {str(e)}")
-
-```
-
-
 --- utils/utils_load.py
 
 ```python
@@ -1871,27 +1589,34 @@ def load_model(config):
                 print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다.")
                 hf_config.vocab_size = getattr(embed_tokenizer, "vocab_size", 32000)
             config_dict = hf_config.to_dict()
+            # 패치: architectures 속성이 없으면 Gemma2로 기본 설정
             if not config_dict.get("architectures"):
                 print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
+            # 확인
+            print(f"[DEBUG] => Saving HF Config with architectures={config_dict['architectures']}")
+                
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
         else:
             # 이미 config_file이 존재하는 경우
             with open(config_file, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
-
+            
+            # 패치: vocab_size 속성이 없으면 embed_tokenizer의 값을 사용하여 추가
             if "vocab_size" not in config_dict:
                 # embed_tokenizer의 vocab_size가 존재하면 사용하고, 없으면 기본값 30522로 설정
                 config_dict["vocab_size"] = getattr(embed_tokenizer, "vocab_size", 30522)
                 print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다:", config_dict["vocab_size"])
-                with open(config_file, "w", encoding="utf-8") as f:
-                    json.dump(config_dict, f)
+            # 패치: architectures 속성이 없으면 Gemma2로 기본 설정
             if not config_dict.get("architectures"):
                 print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
-                with open(config_file, "w", encoding="utf-8") as f:
-                    json.dump(config_dict, f)
+            # 확인
+            print(f"[DEBUG] => Saving HF Config with architectures={config_dict['architectures']}")
+
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump(config_dict, f)
 
         weight_dir, weight_format = find_weight_directory(local_model_path)
         if weight_dir is None:
@@ -1942,6 +1667,10 @@ def load_model(config):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
             
         engine_args.max_model_len = vllm_conf.get("max_model_len")
+        
+        # Image 기능 추가
+        engine_args.mm_processor_kwargs={"do_pan_and_scan":True}
+        engine_args.disable_mm_preprocessor_cache = False
         
         # # 새로 추가: disable_sliding_window 옵션 확인
         # if vllm_conf.get("disable_sliding_window", False):
@@ -2204,204 +1933,10 @@ def random_seed(seed):
 ```
 
 
---- utils/utils_vector.py
-
-```python
-
-# utils/utils_vector.py
-import json
-import torch
-from transformers import (
-    AutoModel,
-    AutoTokenizer,
-)
-
-# Define the minimum valid file size (e.g., 10MB)
-MIN_WEIGHT_SIZE = 10 * 1024 * 1024
-
-# For tracking execution time of functions
-from utils.tracking import time_tracker
-
-# ---------------------- 벡터화 -----------------------
-import yaml
-from box import Box
-# Configuration
-with open("./config.yaml", "r") as f:
-    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
-    config = Box(config_yaml)
-
-# 임베딩 모델 및 토크나이저 (청크 벡터화를 위해 별도 로드)
-embedding_model = AutoModel.from_pretrained(config.embed_model_id, cache_dir=config.cache_dir)
-embedding_tokenizer = AutoTokenizer.from_pretrained(config.embed_model_id, cache_dir=config.cache_dir)
-embedding_model.eval()
-
-# -------------------- 벡터화 함수 --------------------
-@time_tracker
-def vectorize_content(content):
-    try:
-        inputs = embedding_tokenizer(content, padding=True, truncation=True, return_tensors="pt")
-        with torch.no_grad():
-            outputs = embedding_model(**inputs, return_dict=False)
-        # 첫 토큰의 임베딩을 사용 (1D 벡터)
-        vector = outputs[0][:, 0, :].squeeze(0).tolist()
-        
-        # 벡터 일관성 확인
-        expected_dim = 768  # 임베딩 모델 차원에 맞게 조정
-        
-        # 리스트가 아닌 경우 변환 시도
-        if not isinstance(vector, list):
-            print(f"경고: 벡터가 리스트가 아님, 타입: {type(vector)}")
-            try:
-                vector = list(vector)
-            except Exception as e:
-                print("오류: 벡터를 리스트로 변환 실패:", e)
-                vector = [0.0] * expected_dim  # 기본 벡터 제공
-        
-        # 벡터 차원 확인 및 조정
-        if len(vector) != expected_dim:
-            print(f"경고: 벡터 차원 불일치. 예상: {expected_dim}, 실제: {len(vector)}")
-            if len(vector) < expected_dim:
-                # 부족한 차원은 0으로 패딩
-                vector.extend([0.0] * (expected_dim - len(vector)))
-            else:
-                # 초과 차원은 자르기
-                vector = vector[:expected_dim]
-        
-        # 기존 파일 형식과 일치하도록 항상 2차원 배열 형식으로 반환 ([[...] 형태])
-        if vector and not isinstance(vector[0], list):
-            return [vector]
-        return vector
-    except Exception as e:
-        print(f"vectorize_content 함수 오류: {str(e)}")
-        # 오류 시 기본 벡터 반환 (2차원 형식)
-        return [[0.0] * 768]
-
-# -------------------- 텍스트 출력 필드 정규화 함수 --------------------
-def normalize_text_vis(text_vis):
-    """
-    text_vis가 이미 올바른 리스트-딕셔너리 구조이면 그대로 반환하고,
-    그렇지 않은 경우 기본 구조로 감싸서 반환합니다.
-    """
-    if isinstance(text_vis, list) and len(text_vis) > 0 and isinstance(text_vis[0], dict):
-        # 필요한 키가 존재하는지 확인
-        if all(k in text_vis[0] for k in ("rsp_type", "rsp_tit", "rsp_data")):
-            return text_vis
-    if isinstance(text_vis, str):
-        return [{
-            "rsp_type": "TT",
-            "rsp_tit": "",
-            "rsp_data": text_vis
-        }]
-    return [{
-        "rsp_type": "TT",
-        "rsp_tit": "",
-        "rsp_data": str(text_vis)
-    }]
-
-# -------------------- 데이터셋 진단 및 수정 도구 --------------------
-# 데이터셋 진단 및 복구 함수 (utils.py 또는 별도 파일에 추가)
-def diagnose_and_fix_dataset(data_path, output_path=None):
-    """
-    데이터셋의 벡터 차원 문제를 진단하고 수정합니다.
-    """
-    try:
-        print(f"데이터셋 진단 중: {data_path}")
-        with open(data_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        
-        print(f"데이터셋 내 파일 수: {len(data)}")
-        dimensions = {}
-        fixed_count = 0
-        problem_count = 0
-        
-        # 1단계: 가장 흔한 차원 찾기
-        for file_idx, file in enumerate(data):
-            file_name = file.get("file_name", f"Unknown-{file_idx}")
-            for chunk_idx, chunk in enumerate(file.get("chunks", [])):
-                if "vector" in chunk and chunk["vector"]:
-                    vector = chunk["vector"]
-                    try:
-                        if isinstance(vector, list):
-                            dim = len(vector)
-                            dimensions[dim] = dimensions.get(dim, 0) + 1
-                        else:
-                            print(f"벡터가 리스트가 아님: {file_name}, 청크 {chunk_idx}")
-                            problem_count += 1
-                    except Exception as e:
-                        print(f"벡터 길이 확인 실패: {file_name}, 청크 {chunk_idx} - {str(e)}")
-                        problem_count += 1
-        
-        if dimensions:
-            # 가장 흔한 차원 찾기
-            expected_dim = max(dimensions.items(), key=lambda x: x[1])[0]
-            print(f"가장 흔한 벡터 차원: {expected_dim} (총 {dimensions[expected_dim]}개 발견)")
-            print(f"발견된 모든 차원: {dimensions}")
-        else:
-            print("데이터셋에서 유효한 벡터를 찾을 수 없습니다!")
-            return False
-        
-        # 2단계: 잘못된 차원의 벡터 수정
-        for file_idx, file in enumerate(data):
-            file_name = file.get("file_name", f"Unknown-{file_idx}")
-            for chunk_idx, chunk in enumerate(file.get("chunks", [])):
-                if "vector" in chunk and chunk["vector"]:
-                    vector = chunk["vector"]
-                    try:
-                        if not isinstance(vector, list):
-                            print(f"리스트가 아닌 벡터 수정 시도: {file_name}, 청크 {chunk_idx}")
-                            try:
-                                vector = list(vector)
-                                chunk["vector"] = vector
-                                fixed_count += 1
-                            except:
-                                # 변환 실패 시 빈 벡터 생성
-                                chunk["vector"] = [0.0] * expected_dim
-                                fixed_count += 1
-                                print(f"리스트 변환 실패, 기본 벡터 사용")
-                        
-                        dim = len(vector)
-                        if dim != expected_dim:
-                            print(f"벡터 차원 수정: {file_name}, 청크 {chunk_idx} (차원: {dim})")
-                            if dim < expected_dim:
-                                # 0으로 패딩
-                                chunk["vector"] = vector + [0.0] * (expected_dim - dim)
-                            else:
-                                # 자르기
-                                chunk["vector"] = vector[:expected_dim]
-                            fixed_count += 1
-                    except Exception as e:
-                        print(f"벡터 처리 중 오류: {file_name}, 청크 {chunk_idx} - {str(e)}")
-                        problem_count += 1
-        
-        print(f"고정된 벡터 수: {fixed_count}, 문제 벡터 수: {problem_count}")
-        
-        # 수정된 데이터셋 저장
-        if output_path is None:
-            output_path = data_path
-        
-        # 덮어쓰기 전 백업 생성
-        if output_path == data_path:
-            backup_path = f"{data_path}.bak"
-            print(f"백업 생성: {backup_path}")
-            with open(backup_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        
-        print(f"수정된 데이터셋 저장: {output_path}")
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        
-        return True
-    
-    except Exception as e:
-        print(f"데이터셋 진단 중 오류: {str(e)}")
-        return False
-
-```
-
-
 --- core/RAG.py
 
 ```python
+
 
 # core/RAG.py
 import torch
@@ -2420,6 +1955,8 @@ from utils.tracking import time_tracker
 
 # Import the vLLM to use the AsyncLLMEngine
 from vllm.engine.async_llm_engine import AsyncLLMEngine
+# 이미지 임베딩을 별도로 계산하여 프롬프트에 포함하기
+from vllm.model_executor.models.interfaces import SupportsMultiModal
 
 # In RAG.py (at the top, add an import for prompts)
 from prompt import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE, SQL_EXTRACTION_PROMPT_TEMPLATE
@@ -2437,11 +1974,6 @@ async def execute_rag(QU, KE, TA, TI, **kwargs):
     data = kwargs.get("data")
     config = kwargs.get("config")
     
-    if 'image_data' in kwargs:
-        # 이미지 쿼리 처리
-        answer = await process_image_query(kwargs['image_data'], QU, **kwargs)
-        return answer, []
-
     if TA == "yes":  # Table 이 필요하면
         print("[SOOWAN]: execute_rag : 테이블 필요 (TA == yes). SQL 생성 시작합니다.")
         try:
@@ -3093,39 +2625,89 @@ async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_para
 # -------------------------------------------------------------------------
 # PROCESS IMAGE QUERY (IMAGE TO TEXT)
 # -------------------------------------------------------------------------
-from PIL import Image
-import base64
-import io
+# async def process_image_query(image_data: str, query: str, **kwargs):
+#     """
+#     Process an image query by decoding the image, optionally obtaining its embeddings
+#     if the model supports multimodal inputs (e.g. gemma3 image processor), and then
+#     incorporating that image information into the text prompt for generation.
 
-async def process_image_query(image_data: str, query: str, **kwargs):
-    model = kwargs.get("model")
-    tokenizer = kwargs.get("tokenizer")
-    config = kwargs.get("config")
-
-    # Base64 디코딩 및 이미지 로드
-    image_bytes = base64.b64decode(image_data)
-    image = Image.open(io.BytesIO(image_bytes))
-
-    # vLLM을 사용한 이미지 처리
-    prompt = f"<image>\n사용자: {query}\n시스템: "
+#     Args:
+#         image_data (str): Base64-encoded image data.
+#         query (str): The user's text query.
+#         **kwargs: Must include:
+#             - model: The loaded model.
+#             - tokenizer: The tokenizer.
+#             - config: The configuration object with model parameters.
+#             - request_id (optional): The request id for tracking.
     
-    from vllm import SamplingParams
-    sampling_params = SamplingParams(
-        max_tokens=config.model.max_new_tokens,
-        temperature=config.model.temperature,
-        top_k=config.model.top_k,
-        top_p=config.model.top_p,
-        repetition_penalty=config.model.repetition_penalty,
-    )
+#     Returns:
+#         str: The generated answer text.
+#     """
+#     import base64, io
+#     from PIL import Image
+#     import uuid
+#     from vllm.model_executor.models.interfaces import SupportsMultiModal
 
-    outputs = await model.generate(
-        prompt=prompt,
-        sampling_params=sampling_params,
-        multi_modal_data={"image": image}
-    )
-
-    answer = outputs[0].outputs[0].text
-    return answer
+#     model = kwargs.get("model")
+#     tokenizer = kwargs.get("tokenizer")
+#     config = kwargs.get("config")
+    
+#     # Obtain or generate a request_id
+#     request_id = kwargs.get("request_id", str(uuid.uuid4()))
+    
+#     print("[MULTI-MODAL] image processing is starting")
+    
+#     # Decode the image from base64 and load it with PIL
+#     try:
+#         image_bytes = base64.b64decode(image_data)
+#         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+#     except Exception as e:
+#         raise ValueError(f"Failed to decode image data: {e}")
+    
+#     # If the model supports multimodal inputs, try to obtain image embeddings.
+#     if isinstance(model, SupportsMultiModal):
+#         try:
+#             # Get image embeddings using the model's method
+#             image_embeddings = model.get_multimodal_embeddings(image=image)
+#             # Convert embeddings to a string snippet for inclusion in the prompt.
+#             image_info = f"[IMAGE_EMBEDDING: {str(image_embeddings)[:200]}...]"
+#         except Exception as e:
+#             logging.error("Failed to obtain image embeddings: %s", e)
+#             image_info = "[IMAGE_EMBEDDING_ERROR]"
+#     else:
+#         image_info = "[IMAGE]"
+    
+#     # Construct the prompt that includes the image information and the query.
+#     prompt = f"{image_info}\n사용자: {query}\n시스템: "
+    
+#     print("[MULTI-MODAL] image_info is generated : ", image_info)
+    
+#     # Create sampling parameters from the configuration.
+#     from vllm import SamplingParams
+#     sampling_params = SamplingParams(
+#         max_tokens=config.model.max_new_tokens,
+#         temperature=config.model.temperature,
+#         top_k=config.model.top_k,
+#         top_p=config.model.top_p,
+#         repetition_penalty=config.model.repetition_penalty,
+#     )
+    
+#     # Since model.generate returns an async generator, we collect its outputs into a list.
+#     outputs = [output async for output in model.generate(
+#         prompt=prompt,
+#         sampling_params=sampling_params,
+#         request_id=request_id,
+#     )]
+    
+    
+#     # Extract the generated text from the first output if available.
+#     if outputs and hasattr(outputs[0], "outputs") and outputs[0].outputs:
+#         answer = outputs[0].outputs[0].text
+#         print("[MULTI-MODAL] Output is generated : ", answer)
+#     else:
+#         answer = ""
+#         print("[MULTI-MODAL] Output is generated is empty")
+#     return answer
 
 # ---------------------------
 # *** 새로 추가된 generate_sql 함수 ***
@@ -3234,1651 +2816,26 @@ async def generate_sql(user_query, model, tokenizer, config):
 
 ```
 
-
---- core/SQL_NS.py
-
-```python
-
-# core/SQL_NS.py
-
-import os
-import subprocess
-from utils.tracking import time_tracker
-import json
-import yaml
-from box import Box
-import re
-
-# ÌôòÍ≤Ω Î≥ÄÏàò ÏÑ§Ï†ï
-os.environ['ORACLE_HOME'] = '/workspace/oracle/instantclient_23_7'
-os.environ['LD_LIBRARY_PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('LD_LIBRARY_PATH', '')
-os.environ['PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('PATH', '')
-
-# Config Î∂àÎü¨Ïò§Í∏∞ (DB Ï†ëÏÜç Îì± Í∏∞ÌÉÄ Ï†ïÎ≥¥Î•º config.yamlÏóêÏÑú Í∞ÄÏ†∏Ïò®Îã§Í≥† Í∞ÄÏ†ï)
-with open("./config.yaml", "r") as f:
-    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
-    config = Box(config_yaml)
-
-# Í∏∞Î≥∏ SQL Ï†ëÏÜçÏΩîÎìú (‚Äª Ïã§Ï†ú DB Ï†ëÏÜç Í≥ÑÏ†ï/Ï£ºÏÜåÎäî Î≥∏Ïù∏ ÌôòÍ≤ΩÏóê ÎßûÍ≤å ÏàòÏ†ï ÌïÑÏöî)
-sqlplus_command = [
-    "sqlplus", "-S", "LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR"
-]
-
-'''
-### ORACLE DB Ï†ïÎ≥¥ ###
-TABLE : ai_dg_check
-    COLUMNS : CLS (ÏúÑÌóòÎ¨º ÌÅ¥ÎûòÏä§)
-              UNNO (ÏúÑÌóòÎ¨º UN Î≤àÌò∏)
-              PORT (Ìè¨Ìä∏ Î≤àÌò∏)
-              ALLOW_YN (Ï∑®Í∏â Í∞ÄÎä• Ïó¨Î∂Ä)
-'''
-
-@time_tracker
-def check_sqlplus():
-    """
-    sqlplus Î≤ÑÏ†Ñ Ï†ïÎ≥¥ ÌôïÏù∏
-    """
-    try:
-        result = subprocess.run(['sqlplus', '-version'], capture_output=True, text=True, check=True)
-        print(" SQL*Plus is working!")
-        print("Version info:\n", result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f"Error: {e.stderr}")
-
-
-@time_tracker
-def check_db_connection():
-    """
-    DB Ïó∞Í≤∞Ïù¥ Ï†ïÏÉÅÏ†ÅÏù∏ÏßÄ ÌÖåÏä§Ìä∏
-    """
-    try:
-        sql_query = "SELECT 1 FROM dual;\nEXIT;\n"
-        result = subprocess.run(
-            sqlplus_command,
-            input=sql_query,
-            capture_output=True,
-            text=True
-        )
-
-        if "1" in result.stdout:
-            print("  Successfully connected to the Namsung database!")
-        else:
-            print(" Connection to the database failed!")
-
-    except subprocess.CalledProcessError as e:
-        print(f" Error: {e.stderr}")
-
-
-@time_tracker
-def get_all_schema_tables():
-    """
-    Î™®Îì† Ïä§ÌÇ§Îßà, ÌÖåÏù¥Î∏î Î™©Î°ù Ï°∞Ìöå
-    """
-    try:
-        sqlplus_cmd = [
-            'sqlplus', '-S', 'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR'
-        ]
-        sql_query = """SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF;
-        SELECT OWNER, TABLE_NAME FROM ALL_TABLES ORDER BY OWNER, TABLE_NAME;
-        EXIT;"""
-
-        result = subprocess.run(
-            sqlplus_cmd,
-            input=sql_query,
-            capture_output=True,
-            text=True
-        )
-
-        schema_tables = {}
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if line:
-                parts = line.split()
-                if len(parts) >= 2:
-                    schema, table = parts[0], parts[1]
-                    if schema not in schema_tables:
-                        schema_tables[schema] = []
-                    schema_tables[schema].append(table)
-
-        if schema_tables:
-            print("  Ïä§ÌÇ§ÎßàÎ≥Ñ ÌÖåÏù¥Î∏î Î™©Î°ù:")
-            for schema, tables in schema_tables.items():
-                print(f"\nüîπ Ïä§ÌÇ§Îßà: {schema}")
-                for t in tables:
-                    print(f"  - {t}")
-        else:
-            print(" ÌÖåÏù¥Î∏îÏù¥ Ï°¥Ïû¨ÌïòÏßÄ ÏïäÏäµÎãàÎã§.")
-
-        return schema_tables
-
-    except subprocess.CalledProcessError as e:
-        print(f" Error: {e.stderr}")
-        return {}
-
-
-def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
-    """
-    ÏòàÏãú Ìï®Ïàò: OPRAIMDG ÌÖåÏù¥Î∏îÎ°úÎ∂ÄÌÑ∞ UN, CLASS, DESCRIPTION Ï†ïÎ≥¥Î•º JSONÏúºÎ°ú ÎßåÎìúÎäî Ìï®Ïàò
-    """
-    sql_query = f"""
-    SET LINESIZE 2000;
-    SET PAGESIZE 0;
-    SET TRIMSPOOL ON;
-    COL IMDCOM FORMAT A200;
-    SELECT IMDUNM, IMDCLS, REPLACE(REPLACE(IMDCOM, CHR(10), ' '), CHR(13), ' ') AS IMDCOM 
-    FROM {schema_name}.{table_name};
-    EXIT;
-    """
-
-    try:
-        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
-        print(f"  RESULT: \n{str(result)[:1000]}")
-        output = result.stdout
-        print(f"  OUTPUT: \n{str(output)[:1000]}")
-
-        lines = output.strip().split("\n")
-        print(f"  LINE: \n{str(lines)[:1000]}")
-        metadata = []
-
-        for line in lines[:-1]:
-            values = line.split(None, 2)
-            if len(values) == 3:
-                imdunm = values[0].strip()
-                imdcls = values[1].strip()
-                imdcom = values[2].strip()
-                metadata.append({
-                    "UNNO": imdunm,
-                    "Class": imdcls,
-                    "Description": imdcom
-                })
-
-        json_filename = "/workspace/data/METADATA_OPRAIMDG.json"
-        with open(json_filename, "w", encoding="utf-8") as json_file:
-            json.dump(metadata, json_file, indent=4, ensure_ascii=False)
-
-        print(f"  Metadata saved to {json_filename}")
-
-    except subprocess.CalledProcessError as e:
-        print(f" SQL Execution Error: {e.stderr}")
-
-
-@time_tracker
-def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
-    """
-    ai_dg_check ÌÖåÏù¥Î∏îÏóêÏÑú CLS, UNNO, PORTÏóê ÎåÄÌïú DG ÏÑ†Ï†Å Í∞ÄÎä• Ïó¨Î∂Ä Ï°∞Ìöå
-    """
-    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
-    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
-
-    sql_query = f"""
-    SET LINESIZE 150;
-    SET PAGESIZE 1000;
-    SET TRIMSPOOL ON;
-
-    SELECT 
-        p.cls  AS CLS,
-        p.unno AS UNNO,
-        p.port AS POL_PORT,
-        d.port AS POD_PORT,
-        DECODE(p.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Landing_STATUS,
-        DECODE(d.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Departure_STATUS
-    FROM icon.ai_dg_check p
-    JOIN icon.ai_dg_check d 
-        ON p.unno = d.unno 
-        AND p.cls = d.cls
-    WHERE (p.cls={cls_val} OR {cls_val} IS NULL) AND (p.unno={unno_val} OR {unno_val} IS NULL) 
-      AND p.port LIKE '{pol_port}'
-      AND (p.cls={cls_val} OR {cls_val} IS NULL) AND (d.unno={unno_val} OR {unno_val} IS NULL) 
-      AND d.port LIKE '{pod_port}';
-    EXIT;
-    """
-
-    try:
-        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
-        print("  SQL Query Results:\n", result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f" Error: {e.stderr}")
-
-    return sql_query, result.stdout
-
-
-@time_tracker
-def run_sql_bl(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
-    """
-    B/L ÏÉÅÏÑ∏ Ï°∞Ìöå
-    """
-    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
-    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
-
-    sql_query = f"""
-    SELECT *
-    FROM (
-        SELECT
-            MST.FRTBNO AS "B/L No",
-            MST.FRTOBD AS onBoard_Date,
-            MST.FRTPOL AS POL,
-            MST.FRTPOD AS POD,
-            MST.FRTSBM AS ship_back,
-            CNT.KCTUNN AS UNNO,
-            CNT.KCTCLS AS CLASS,
-            COUNT(*) AS "DG_Container_Count"
-        FROM ICON.WSDAMST MST
-        JOIN ICON.WSDACNT CNT ON CNT.KCTBNO = MST.FRTBNO
-        WHERE MST.BUKRS = '1000'
-        AND CNT.BUKRS = '1000'
-        AND MST.FRTOBD BETWEEN TO_CHAR(SYSDATE-1095,'YYYYMMDD')+1 AND TO_CHAR(SYSDATE+1,'YYYYMMDD')
-        AND CNT.KCTUNN = {unno_val}
-        AND CNT.KCTCLS = {cls_val}
-        AND MST.FRTPOL = '{pol_port}'
-        AND MST.FRTPOD = '{pod_port}'
-        GROUP BY
-            MST.FRTBNO,
-            MST.FRTOBD,
-            MST.FRTPOL,
-            MST.FRTPOD,
-            MST.FRTSBM,
-            CNT.KCTUNN,
-            CNT.KCTCLS
-    )
-    WHERE ROWNUM <= 5;
-    EXIT;
-    """
-
-    try:
-        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
-        print("[SQL_NS] SQL Query run_sql_bl Results:\n", result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f"[SQL_NS] run_sql_bl Error: {e.stderr}")
-
-    return sql_query, result.stdout
-
-
-def get_metadata(config):
-    """
-    metadata_path (port Îç∞Ïù¥ÌÑ∞), metadata_unno (UN Î≤àÌò∏ Î¶¨Ïä§Ìä∏)Ïóê ÏûàÎäî ÎÇ¥Ïö©ÏùÑ Î∂àÎü¨ÏôÄ Î∞òÌôò
-    """
-    print("[SOOWAN] get_metadata ÏßÑÏûÖ")
-    if not config or not hasattr(config, "metadata_unno"):
-        raise ValueError("Config Í∞ùÏ≤¥Ïóê 'metadata_unno' ÏÜçÏÑ±Ïù¥ ÏóÜÏäµÎãàÎã§.")
-
-    unno_path = config.metadata_unno
-    port_path = config.metadata_path
-
-    with open(port_path, "r", encoding="utf-8") as f:
-        port_data = json.load(f)
-    location_codes = json.dumps(port_data.get("location_code"), ensure_ascii=False)
-
-    with open(unno_path, "r", encoding="utf-8") as f:
-        unno_data = json.load(f)
-    unno_list_as_string = json.dumps(unno_data, ensure_ascii=False)
-
-    return location_codes, unno_list_as_string
-
-
-if __name__ == "__main__":
-    # ÏïÑÎûòÎäî ÌÖåÏä§Ìä∏/ÎîîÎ≤ÑÍπÖÏö© ÏΩîÎìú
-    # ÌïÑÏöîÌïú Í≤ΩÏö∞ÏóêÎßå ÏÇ¨Ïö© Í∞ÄÎä•. Ïã§Ï†ú Ïö¥ÏòÅ ÏãúÏóî Ï†úÍ±∞Ìï† ÏàòÎèÑ ÏûàÏùå.
-
-    check_sqlplus()             # sqlplusÍ∞Ä Ïûò ÎèôÏûëÌïòÎäîÏßÄ ÌôïÏù∏
-    check_db_connection()       # Îç∞Ïù¥ÌÑ∞Î≤†Ïù¥Ïä§ Ï†ëÏÜç Ïó¨Î∂Ä ÌôïÏù∏
-    schema_info = get_all_schema_tables()
-    print("Schema info:", schema_info)
-    # make_metadata_from_table()  # ÌäπÏ†ï ÌÖåÏù¥Î∏îÎ°úÎ∂ÄÌÑ∞ Î©îÌÉÄÎç∞Ïù¥ÌÑ∞ ÏÉùÏÑ±ÌïòÎäî ÏòàÏãú
-    # ÏòàÏãú SQL Ïã§Ìñâ
-    sql_q, sql_res = run_sql_unno(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
-    print("[TEST] run_sql_unno result:", sql_q, sql_res)
-    sql_q2, sql_res2 = run_sql_bl(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
-    print("[TEST] run_sql_bl result:", sql_q2, sql_res2)
-
+# logs that indicate the which architecture is running
+```log
+(InferenceActor pid=493) [DEBUG] => Saving HF Config with architectures=['Gemma3ForConditionalGeneration']
 ```
 
+# error logs
+```log
 
---- prompt/prompt_rag.py
+(InferenceActor pid=493) [DEBUG] Starting process_image_query
+(InferenceActor pid=493) [DEBUG] Retrieved parameters: request_id=bb60fe54-1102-4b11-b0bc-852e8c0d63f5
+(InferenceActor pid=493) [DEBUG] Base64 decoding successful
+(InferenceActor pid=493) [DEBUG] PIL image created successfully
+(InferenceActor pid=493) [DEBUG] Prompt set to: 질문이 없습니다.
+(InferenceActor pid=493) [DEBUG] SamplingParams created successfully
+(InferenceActor pid=493) [DEBUG] Image converted to tensor successfully
+(InferenceActor pid=493) [ERROR] Error obtaining image embeddings: Underlying model does not support get_multimodal_embeddings
 
-```python
 
-# prompt/prompt_rag.py
-from datetime import datetime
-
-# Get today's date (this is computed when the module is loaded)
-TODAY = datetime.today()
-
-### 수정 : --- 3개 질문 유형에 대해서만 SQL로 넘어감 ---
-# New Prompt for query sorting
-QUERY_SORT_PROMPT = f"""
-<bos><start_of_turn>user
-너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. 
-query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. 
-keyword는 질문의 키워드를 뽑는거야. 
-table은 질문에 대한 답을 할때 정형 데이터가 필요한지 여부야, 현재는 선적 가능성 관련 질문만 가능하니 이때만 yes로 답해줘.
-time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는 {TODAY.year}년 {TODAY.month}월 {TODAY.day}일). 
-시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) 
-또한, '최근'이라는 말이 들어가면 2024-06-01:{TODAY.year}-{TODAY.month}-{TODAY.day}로 설정해줘.
-
-내가 먼저 예시를 줄게
-
-질문: UN 번호 1689 DG화물, 부산에서 미즈시마 선적 가능 여부를 확인해 주세요.
-답변:
-<query/>UN 번호 1689 화물의 부산항에서 미즈시마항 선적 가능 여부를 확인해 주세요.<query>
-<keyword/>UN번호 1689, 부산항, 미즈시마항, 선적가능성<keyword>
-<table/>yes<table>
-<time/>2024-08-01:2024-{TODAY.month}-{TODAY.day}<time>
-
-질문: 올해 3월에 중국 시장 전망에 대해 조사했던 내용을 정리해줘
-답변:
-<query/>2024년 3월 중국시장 전망에 대한 조사내용을 알려주고 정리해줘<query>
-<keyword/>2024년 3월 중국시장 전망<keyword>
-<table/>no<table>
-<time/>2024-02-01:2024-05-01<time>
-
-질문: 부산발 인도네시아착 경쟁사 서비스 및 항차수를 알려줘
-답변:
-<query/>부산 출발 인도네시아 도착 경쟁사 서비스 및 항차수<query>
-<keyword/>부산발 인도네시아착 경쟁사 서비스 항차수<keyword>
-<table/>no<table>
-<time/>all<time>
-
-질문: 남성해운의 인도 대리점 선정 과정은 어떻게 돼?
-답변:
-<query/>인도 대리점 선정과정을 보기 좋게 정리해줘<query>
-<keyword/>인도 대리점 선정과정<keyword>
-<table/>no<table>
-<time/>all<time>
-
-### 아래 구분자를 추가하여 실제 사용자 질문을 명확히 구분합니다.
-### 새로운 질문: {{user_query}}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-# Prompt for query sorting
-QUERY_SORT_PROMPT_OLD = f"""
-<bos><start_of_turn>user
-너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. 
-query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. 
-keyword는 질문의 키워드를 뽑는거야. 
-table은 질문에 대한 답을 할때 표형식 데이터가 필요한지 여부야, 현재는 매출액 관련 질문만 대응 가능하니 이때만 yes로 답해줘.
-time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는 {TODAY.year}년 {TODAY.month}월 {TODAY.day}일). 
-시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) 
-또한, '최근'이라는 말이 들어가면 2024-06-01:{TODAY.year}-{TODAY.month}-{TODAY.day}로 설정해줘.
-
-내가 먼저 예시를 줄게
-
-질문: 최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?
-답변:
-<query/>최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?<query>
-<keyword/>일본발 베트남착 매출 기여도 화주 고객<keyword>
-<table/>yes<table>
-<time/>2024-08-01:2024-{TODAY.month}-{TODAY.day}<time>
-
-질문: 올해 3월에 중국 시장 전망에 대해 조사했던 내용을 정리해줘
-답변:
-<query/>2024년 3월 중국시장 전망에 대한 조사내용을 알려주고 정리해줘<query>
-<keyword/>2024년 3월 중국시장 전망<keyword>
-<table/>no<table>
-<time/>2024-02-01:2024-05-01<time>
-
-질문: 부산발 인도네시아착 경쟁사 서비스 및 항차수를 알려줘
-답변:
-<query/>부산 출발 인도네시아 도착 경쟁사 서비스 및 항차수<query>
-<keyword/>부산발 인도네시아착 경쟁사 서비스 항차수<keyword>
-<table/>no<table>
-<time/>all<time>
-
-질문: 남성해운의 인도 대리점 선정 과정은 어떻게 돼?
-답변:
-<query/>인도 대리점 선정과정을 보기 좋게 정리해줘<query>
-<keyword/>인도 대리점 선정과정<keyword>
-<table/>no<table>
-<time/>all<time>
-
-### 아래 구분자를 추가하여 실제 사용자 질문을 명확히 구분합니다.
-### 새로운 질문: {{user_query}}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-# Template for generating an answer based on internal documents
-GENERATE_PROMPT_TEMPLATE = """
-<bos><start_of_turn>user
-너는 남성해운의 도움을 주는 데이터 분석가야.
-
-주어진 **내부 자료**를 바탕으로 **내 질문**에 **상세하고 논리정연한** 답변을 작성해줘.
-**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**으로 작성해줘.
-
-1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 **한 줄 이상의 공백**을 넣어줘.
-2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
-3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
-4. **표**: SQL 표 결과가 답변에 포함될 경우, 반드시 표의 시작 부분에 "<<<TABLE>>>"와 끝 부분에 "<<<END_TABLE>>>"라는 구분자를 추가해서 출력해줘.
-5. **코드 블록**: 예시 코드나 특수한 데이터는 ``` ``` 언어명 ... ``` ``` 을 사용해 표시해줘.
-6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
-7. **각주(footnotes)**: 답변에 각주가 필요한 경우, 본문 중에 `[^1]`, `[^2]`와 같은 형태로 표시하고, 마크다운 형식과 같게 답변 마지막에 해당 각주 내용을 작성해줘.
-
-만약 **주어진 자료**에 질문에 해당하는 내용이 **없다면**, `"내부 자료에 해당 자료 없음"`이라고만 답변해줘.
-
-**주의**: 
-- 너무 짧거나 단답형이 아닌, 충분히 **길고 자세한 보고서 형태**로 답변해줘.
-- 가능하면 **논리적 근거**와 **예시**를 들어 설명해줘.
-- **문단**을 명확히 구분하여 **읽기 편하게** 작성해줘.
-
-아래는 **내부 자료**와 **질문**이 주어질 것이니, 꼭 이 지침을 따라 답변해줘.
-
-내부 자료: {docs}
-
-질문: {query}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-# Template for the streaming version of answer generation
-STREAM_PROMPT_TEMPLATE = """
-<bos><start_of_turn>user
-너는 남성해운의 도움을 주는 데이터 분석가야.
-
-주어진 **내부 자료**를 바탕으로 **내 질문**에 **상세하고 논리정연한** 답변을 작성해줘.
-**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**으로 작성해줘.
-
-1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 **한 줄 이상의 공백**을 넣어줘.
-2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
-3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
-4. **표**: SQL 표 결과가 답변에 포함될 경우, 반드시 표의 시작 부분에 "<<<TABLE>>>"와 끝 부분에 "<<<END_TABLE>>>"라는 구분자를 추가해서 출력해줘.
-5. **코드 블록**: 예시 코드나 특수한 데이터는 ``` ``` 언어명 ... ``` ``` 을 사용해 표시해줘.
-6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
-7. **각주(footnotes)**: 답변에 각주가 필요한 경우, 본문 중에 `[^1]`, `[^2]`와 같은 형태로 표시하고, 마크다운 형식과 같게 답변 마지막에 해당 각주 내용을 작성해줘.
-
-만약 **주어진 자료**에 질문에 해당하는 내용이 **없다면**, `"내부 자료에 해당 자료 없음"`이라고만 답변해줘.
-
-**주의**: 
-- 너무 짧거나 단답형이 아닌, 충분히 **길고 자세한 보고서 형태**로 답변해줘.
-- 가능하면 **논리적 근거**와 **예시**를 들어 설명해줘.
-- **문단**을 명확히 구분하여 **읽기 편하게** 작성해줘.
-
-아래는 **내부 자료**와 **질문**이 주어질 것이니, 꼭 이 지침을 따라 답변해줘.
-
-내부 자료: {docs}
-
-질문: {query}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
 
 ```
-
-
---- prompt/prompt_sql.py
-
-```python
-
-# prompt/prompt_sql.py
-
-"""
-Prompt templates for SQL extraction tasks.
-"""
-
-SQL_EXTRACTION_PROMPT_TEMPLATE = """
-<bos>
-<system>
-"YourRole": "질문으로 부터 조건을 추출하는 역할",
-"YourJob": "아래 요구 사항에 맞추어 'unno', 'class', 'pol_port', 'pod_port' 정보를 추출하여, 예시처럼 답변을 구성해야 합니다.",
-"Requirements": [
-    unno: UNNO Number는 4개의 숫자로 이루어진 위험물 번호 코드야.
-    class : UN Class는 2.1, 6.0,,, 의 숫자로 이루어진 코드야.
-    pol_port, pod_port: 항구 코드는 5개의 알파벳 또는, 나라는 2개의 알파벳과 %로 이루어져 있어. 다음은 항구 코드에 대한 메타데이터야 {metadata_location}. 여기에서 매칭되는 코드만을 사용해야 해. 항구는 항구코드, 나라는 2개의 나라코드와 %를 사용해.
-    unknown : 질문에서 찾을 수 없는 정보는 NULL을 출력해줘.
-]
-"Examples": [
-    "질문": "UN 번호 1689 화물의 부산에서 미즈시마로의 선적 가능 여부를 확인해 주세요.",
-    "답변": "<unno/>1689<unno>\\n<class/>NULL<class>\\n<pol_port/>KRPUS<pol_port>\\n<pod_port/>JPMIZ<pod_port>",
-    "질문": "UN 클래스 2.1 화물의 한국에서 일본으로의 선적 가능 여부를 확인해 주세요.",
-    "답변": "<unno/>NULL<unno>\\n<class/>2.1<class>\\n<pol_port/>KR%<pol_port>\\n<pod_port/>JP%<pod_port>"
-]
-- 최종 출력은 반드시 다음 4가지 항목을 포함해야 합니다:
-    <unno/>...<unno>
-    <class/>...<class>
-    <pol_port/>...<pol_port>
-    <pod_port/>...<pod_port>
-</system>
-<user>
-질문: "{query}"
-</user>
-<assistant>
-답변:
-</assistant>
-"""
-
-```
-
-
---- templates/chatroom.html
-
-```html
-
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FLUX_NS Chat</title>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
-  <link rel="stylesheet" href="/static/chat_styles.css">
-</head>
-<body>
-  <!-- Sidebar -->
-  <div class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <div class="sidebar-logo">
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg>
-        <h2>FLUX_NS</h2>
-      </div>
-      <button class="sidebar-toggle" onclick="toggleSidebar()">
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="18" y1="6" x2="6" y2="18"></line>
-          <line x1="6" y1="6" x2="18" y2="18"></line>
-        </svg>
-      </button>
-    </div>
-    <button class="new-chat-btn" onclick="createNewChatFromSidebar()">
-      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="12" y1="5" x2="12" y2="19"></line>
-        <line x1="5" y1="12" x2="19" y2="12"></line>
-      </svg>
-      New Chat
-    </button>
-    <ul id="chatRoomList" class="chat-room-list"></ul>
-  </div>
-
-  <!-- Main Container -->
-  <div class="main-container">
-    <!-- Chat Header -->
-    <div class="chat-header">
-      <button id="sidebarOpener" class="sidebar-opener" onclick="toggleSidebar()">
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="3" y1="12" x2="21" y2="12"></line>
-          <line x1="3" y1="6" x2="21" y2="6"></line>
-          <line x1="3" y1="18" x2="21" y2="18"></line>
-        </svg>
-      </button>
-      <h2 id="chatRoomId">Chat Room: -</h2>
-      <div class="header-actions">
-        <button id="toggleRefBtn" class="toggle-ref-btn" onclick="toggleReferences()">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ref-icon">
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-            <polyline points="15 3 21 3 21 9"></polyline>
-            <line x1="10" y1="14" x2="21" y2="3"></line>
-          </svg>
-          <span>Show All References</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- Reference Container -->
-    <div id="referenceContainer" class="reference-container"></div>
-
-    <!-- Chat Box -->
-    <div class="chat-box" id="chatBox">
-      <!-- Welcome content will be inserted here by JS -->
-    </div>
-
-    <!-- 이미지 미리보기 -->
-    <div id="imagePreview" style="max-width: 300px; max-height: 300px; margin-top: 10px;"></div>
-
-    <!-- Input Container -->
-    <div class="input-container" id="inputContainer">
-      <div class="input-box">
-        <textarea 
-          id="userMessage" 
-          class="message-input" 
-          placeholder="메시지를 입력하세요..."
-          rows="1"
-          onkeydown="handleKeyDown(event)"
-        ></textarea>
-        <!-- 이미지 업로드 input 추가 -->
-        <input type="file" id="imageUpload" accept="image/*" style="display: none;">
-        <button onclick="document.getElementById('imageUpload').click();">이미지 업로드</button>
-
-        <button id="sendButton" class="send-btn" onclick="sendMessage()">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-          </svg>
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    /************************************************************************
-     * Global Variables and Data Structures
-     ************************************************************************/
-    let currentRequestId = null; // 현재 활성 채팅방의 requestId
-    let chatRooms = []; // [{ requestId, messages: [{role, content, references?}] }]
-    let referenceList = []; // 현재 쿼리로부터 수집된 참조 데이터
-    let isProcessing = false; // 동시 요청 방지 플래그
-    let isMobileView = window.innerWidth <= 768;
-    let currentlyViewingMsgIndex = null; // 현재 보고 있는 메시지 인덱스
-
-    // welcome 화면 HTML 템플릿 (id 대신 클래스만 사용)
-    const welcomeContentHTML = `
-      <div class="welcome-screen">
-        <div class="welcome-header">
-          <img src="/static/NS_LOGO_ONLY.svg?height=80&width=80" alt="FLUX_NS Logo" class="welcome-logo" />
-          <h1>Welcome to FLUX_NS</h1>
-          <p class="welcome-subtitle">Ask me anything about NS information</p>
-        </div>
-        <div class="welcome-content">
-          <div class="example-prompts">
-            <h2>Examples</h2>
-            <div class="example-cards">
-              <button class="example-card" onclick="fillExamplePrompt('디지털 기획팀의 우선과제가 어떻게 돼?')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
-                </svg>
-                <span>디지털 기획팀의 우선과제가 어떻게 돼?</span>
-              </button>
-              <button class="example-card" onclick="fillExamplePrompt('UN 클래스 2.1, UNNO 1033인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
-                </svg>
-                <span>UN 클래스 2.1, UNNO 1033인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.</span>
-              </button>
-              <button class="example-card" onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
-                </svg>
-                <span>IOT 컨테이너 사업 근황에 대해서 알려줘</span>
-              </button>
-              <button class="example-card" onclick="fillExamplePrompt('최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
-                </svg>
-                <span>최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.</span>
-              </button>
-            </div>
-          </div>
-          
-          <div class="features-container">
-            <div class="capabilities">
-              <h2>Capabilities</h2>
-              <ul class="capability-list">
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                  <span>최신 정보와 데이터 기반 응답</span>
-                </li>
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                  <span>남성해운의 주간회의, 계약서, 인사규범 등에 대한 답변</span>
-                </li>
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                  <span>상세한 답변 및 해설</span>
-                </li>
-              </ul>
-            </div>
-            <div class="limitations">
-              <h2>Limitations</h2>
-              <ul class="limitation-list">
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                  <span>현재 모든 정보를 가지고 있지 아니함</span>
-                </li>
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                  <span>가끔 정확하지 않은 정보를 제공할 수 있음</span>
-                </li>
-                <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                  <span>민감한 요청에 대한 응답이 제한될 수 있음</span>
-                </li>
-              </ul>
-            </div>
-          </div>
-        </div>
-        
-        <div class="welcome-input-container">
-          <div class="input-prompt">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="16" x2="12" y2="12"></line>
-              <line x1="12" y1="8" x2="12.01" y2="8"></line>
-            </svg>
-            <span>질문을 입력하거나 위의 예시를 선택하세요</span>
-          </div>
-          <div class="welcome-input-box">
-            <textarea 
-              id="welcomeMessage" 
-              class="welcome-message-input" 
-              placeholder="메시지를 입력하세요..."
-              rows="1"
-              onkeydown="handleWelcomeKeyDown(event)"
-              oninput="autoResizeTextarea(this)"
-            ></textarea>
-            <button id="welcomeSendButton" class="welcome-send-btn" onclick="sendWelcomeMessage()">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-    `;
-
-    /************************************************************************
-     * Markdown Parser
-     ************************************************************************/
-    function parseMarkdown(text) {
-      if (!text) return '';
-
-      // 먼저 "<<<TABLE>>>" 구분자로 감싼 표를 변환합니다.
-      text = text.replace(/<<<TABLE>>>([\s\S]*?)<<<END_TABLE>>>/g, function(match, tableContent) {
-        return convertMarkdownTable(tableContent);
-      });
-    
-      // 그리고 plain text 형식의 표 (예: SQL 출력 형태)를 변환합니다.
-      text = parsePlainTextTables(text);
-    
-      // 각주 정의 추출 및 제거
-      // 각주는 텍스트의 마지막에 별도의 줄로 "[^번호]: 내용" 형식으로 존재한다고 가정합니다.
-      const footnoteRegex = /^\[\^(\d+)\]:\s*(.+)$/gm;
-      const footnotesDict = {};
-      let match;
-      while ((match = footnoteRegex.exec(text)) !== null) {
-        const num = match[1];
-        const content = match[2];
-        footnotesDict[num] = content;
-      }
-      // footnote 정의 라인 제거
-      text = text.replace(footnoteRegex, '').trim();
-    
-      // 입력 텍스트가 이미 HTML 태그로 시작하면 그대로 반환
-      if (text.trim().startsWith('<')) {
-        return text;
-      }
-      
-      // 1. 인라인 Markdown 변환 수행
-      // 코드 블록 처리
-      text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(match, language, code) {
-        return `<pre><code class="language-${language}">${escapeHtml(code.trim())}</code></pre>`;
-      });
-      // 인라인 코드 처리
-      text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-      // 굵은 글씨 처리
-      text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      // 기울임 글씨 처리
-      text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-      // 링크 처리 (필요시 수정)
-      text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
-      // 제목 처리
-      text = text.replace(/^###### (.*)$/gm, '<h6>$1</h6>');
-      text = text.replace(/^##### (.*)$/gm, '<h5>$1</h5>');
-      text = text.replace(/^#### (.*)$/gm, '<h4>$1</h4>');
-      text = text.replace(/^### (.*)$/gm, '<h3>$1</h3>');
-      text = text.replace(/^## (.*)$/gm, '<h2>$1</h2>');
-      text = text.replace(/^# (.*)$/gm, '<h1>$1</h1>');
-      // 목록 처리
-      text = text.replace(/^\s*\* (.*)$/gm, '<li>$1</li>');
-      text = text.replace(/^\s*\d+\. (.*)$/gm, '<li>$1</li>');
-      // 목록 아이템을 <ul>로 감싸기 (이미 <ul>이면 건너뜀)
-      text = text.replace(/(<li>[\s\S]*?<\/li>)/gm, function(match) {
-        if (match.trim().startsWith('<ul>')) {
-          return match;
-        }
-        return '<ul>' + match + '</ul>';
-      });
-      // 인용문 처리
-      text = text.replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>');
-      
-      // 2. 문단 구분 처리: 두 줄 이상의 줄바꿈(\n\n)으로 블록을 나눕니다.
-      const blocks = text.split(/\n\s*\n/);
-      
-      // 블록 수준 태그 목록: 해당 태그로 시작하면 이미 블록 요소로 간주합니다.
-      const blockLevelTags = ['<h1>', '<h2>', '<h3>', '<ul>', '<ol>', '<blockquote>', '<pre>'];
-      
-      // 각 블록을 처리: blockLevelTags로 시작하지 않으면 <p> 태그로 감쌉니다.
-      const htmlBlocks = blocks.map(block => {
-        const trimmed = block.trim();
-        // 블록 수준 태그로 시작하면 그대로 반환
-        for (let tag of blockLevelTags) {
-          if (trimmed.startsWith(tag)) {
-            return trimmed;
-          }
-        }
-        // 그렇지 않으면 단일 줄바꿈은 <br>로 변환 후 <p>로 감쌉니다.
-        const replaced = trimmed.replace(/\n/g, '<br>');
-        return `<p>${replaced}</p>`;
-      });
-      
-      let html = htmlBlocks.join('');
-
-      // 3. 기존 Markdown 표 처리 (파이프 '|' 기반)
-      html = parseMarkdownTables(html);   
-
-      // 각주 영역 생성: footnotesDict에 있는 각주 정의들을 <ol> 목록으로 추가합니다.
-      const footnotesKeys = Object.keys(footnotesDict);
-      if (footnotesKeys.length > 0) {
-        let footnotesHTML = '<div class="footnotes"><hr><ol>';
-        // 번호 순서대로 정렬
-        footnotesKeys.sort((a, b) => Number(a) - Number(b)).forEach(num => {
-          footnotesHTML += `<li id="fn${num}">${footnotesDict[num]} <a href="#ref${num}" title="Back to content">↩</a></li>`;
-        });
-        footnotesHTML += '</ol></div>';
-        html += footnotesHTML;
-      }
-      
-      // 3. 불필요한 <br> 태그 제거 (필요한 경우)
-      html = html.replace(/<\/(h1|h2|h3|ul|ol|blockquote|pre)><br><p>/g, '</$1><p>');
-      return html;
-    }
-    
-    function escapeHtml(unsafe) {
-      return unsafe
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-    }
-    
-    // 기존 Markdown 표 처리 함수 (파이프 '|' 기반)
-    function parseMarkdownTables(text) {
-      const tableRegex = /((?:^\|.*\|(?:\r?\n|$))+)/gm;
-      return text.replace(tableRegex, function(match) {
-        return convertMarkdownTable(match);
-      });
-    }
-
-    // "<<<TABLE>>>" 블록과 기존 마크다운 표 모두를 변환하는 함수
-    function convertMarkdownTable(tableContent) {
-      const lines = tableContent.trim().split(/\r?\n/);
-      if (lines.length < 2) return tableContent;
-      const headers = lines[0].split('|').map(s => s.trim()).filter(s => s);
-      const dataRows = lines.slice(2).map(line => line.split('|').map(s => s.trim()).filter(s => s));
-      let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
-      headers.forEach(header => { html += `<th>${header}</th>`; });
-      html += '</tr></thead><tbody>';
-      dataRows.forEach(row => {
-        html += '<tr>';
-        row.forEach(cell => { html += `<td>${cell}</td>`; });
-        html += '</tr>';
-      });
-      html += '</tbody></table>';
-      return html;
-    }
-
-    // Plain text 형식의 표 (SQL 출력 등)를 감지하고 변환하는 함수
-    function parsePlainTextTables(text) {
-      // 탭(\t)을 4칸의 공백으로 변환 (필수)
-      text = text.replace(/\t/g, "    ");
-      
-      const lines = text.split(/\r?\n/);
-      let outputLines = [];
-      let i = 0;
-      while (i < lines.length) {
-        // 헤더 행: 최소 2개 이상의 공백으로 구분된 단어가 있어야 함
-        if (lines[i].trim() && lines[i].match(/\S+(?:\s{2,}\S+)+/)) {
-          const headerLine = lines[i];
-          // 바로 다음 줄이 구분선 (대시와 공백만)
-          if (i + 1 < lines.length && lines[i+1].trim().match(/^[-\s]+$/)) {
-            let tableLines = [];
-            tableLines.push(headerLine);
-            tableLines.push(lines[i+1]);
-            i += 2;
-            // 데이터 행: 공백으로 구분된 여러 단어가 있는 행
-            while (i < lines.length && lines[i].trim() && lines[i].match(/\S+(?:\s{2,}\S+)+/)) {
-              tableLines.push(lines[i]);
-              i++;
-            }
-            outputLines.push(convertPlainTextTableToHTML(tableLines));
-            continue;
-          }
-        }
-        outputLines.push(lines[i]);
-        i++;
-      }
-      return outputLines.join("\n");
-    }
-
-    // Plain text 표를 HTML 테이블로 변환하는 함수
-    function convertPlainTextTableToHTML(lines) {
-      // 헤더 행과 구분선 행은 반드시 존재함
-      const headerLine = lines[0];
-      // 최소 2개 이상의 공백으로 분할 (탭은 이미 공백으로 변환됨)
-      const headers = headerLine.trim().split(/\s{2,}/);
-      let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
-      headers.forEach(header => {
-        html += `<th>${header}</th>`;
-      });
-      html += '</tr></thead><tbody>';
-      // 데이터 행 처리
-      for (let j = 2; j < lines.length; j++) {
-        const row = lines[j].trim().split(/\s{2,}/);
-        // 만약 열 개수가 헤더보다 작으면 그대로 셀을 출력합니다.
-        html += '<tr>';
-        row.forEach(cell => {
-          html += `<td>${cell}</td>`;
-        });
-        html += '</tr>';
-      }
-      html += '</tbody></table>';
-      return html;
-    }
-    
-    /************************************************************************
-     * Welcome Screen Rendering
-     ************************************************************************/
-    function renderWelcomeScreen() {
-      const chatBox = document.getElementById('chatBox');
-      chatBox.innerHTML = welcomeContentHTML;
-      
-      // Hide the regular input container when welcome screen is shown
-      document.getElementById('inputContainer').classList.add('hidden');
-      
-      // Auto-resize the welcome textarea
-      const welcomeTextarea = document.getElementById('welcomeMessage');
-      if (welcomeTextarea) {
-        welcomeTextarea.addEventListener('input', function() {
-          autoResizeTextarea(this);
-        });
-      }
-    }
-
-    /************************************************************************
-     * Function Definitions
-     ************************************************************************/
-    function createNewChatFromSidebar() {
-      createNewChatRoom();
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.remove('open');
-        document.getElementById('sidebar').classList.add('collapsed');
-        updateSidebarOpenerVisibility();
-      }
-    }
-    
-    function fillExamplePrompt(text) {
-      // If welcome screen is visible, fill the welcome textarea
-      const welcomeTextarea = document.getElementById('welcomeMessage');
-      if (welcomeTextarea) {
-        welcomeTextarea.value = text;
-        autoResizeTextarea(welcomeTextarea);
-        welcomeTextarea.focus();
-      } else {
-        // Otherwise fill the regular textarea
-        const messageInput = document.getElementById('userMessage');
-        messageInput.value = text;
-        autoResizeTextarea(messageInput);
-        messageInput.focus();
-      }
-    }
-    
-    function autoResizeTextarea(textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = textarea.scrollHeight + 'px';
-    }
-    
-    function handleWelcomeKeyDown(event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendWelcomeMessage();
-      }
-    }
-    
-    function sendWelcomeMessage() {
-      const welcomeTextarea = document.getElementById('welcomeMessage');
-      if (welcomeTextarea && welcomeTextarea.value.trim()) {
-        const message = welcomeTextarea.value.trim();
-        // Copy the message to the regular input
-        document.getElementById('userMessage').value = message;
-        // Remove welcome screen
-        document.getElementById('inputContainer').classList.remove('hidden');
-        // Send the message
-        sendMessage();
-      }
-    }
-
-    /************************************************************************
-     * Page Load and Initialization
-     ************************************************************************/
-    window.addEventListener('load', () => {
-      createNewChatRoom();
-      setupTextareaAutoResize();
-      setupMobileMenu();
-      
-      // Check for mobile view
-      checkMobileView();
-      window.addEventListener('resize', checkMobileView);
-      
-      // Initialize sidebar state
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.add('collapsed');
-        updateSidebarOpenerVisibility();
-      }
-    });
-    
-    function checkMobileView() {
-      isMobileView = window.innerWidth <= 768;
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.add('collapsed');
-      } else {
-        document.getElementById('sidebar').classList.remove('collapsed');
-      }
-      updateSidebarOpenerVisibility();
-    }
-
-    function setupTextareaAutoResize() {
-      const textarea = document.getElementById('userMessage');
-      textarea.addEventListener('input', function() {
-        autoResizeTextarea(this);
-      });
-    }
-
-    function setupMobileMenu() {
-      document.addEventListener('click', (e) => {
-        const sidebar = document.getElementById('sidebar');
-        const sidebarOpener = document.getElementById('sidebarOpener');
-        
-        if (isMobileView && 
-            sidebar.classList.contains('open') &&
-            !sidebar.contains(e.target) &&
-            !sidebarOpener.contains(e.target)) {
-          sidebar.classList.remove('open');
-          sidebar.classList.add('collapsed');
-          updateSidebarOpenerVisibility();
-        }
-      });
-    }
-
-    function toggleSidebar() {
-      const sidebar = document.getElementById('sidebar');
-      
-      if (isMobileView) {
-        sidebar.classList.toggle('open');
-        sidebar.classList.toggle('collapsed');
-      } else {
-        sidebar.classList.toggle('collapsed');
-      }
-      
-      updateSidebarOpenerVisibility();
-    }
-    
-    function updateSidebarOpenerVisibility() {
-      const sidebar = document.getElementById('sidebar');
-      const opener = document.getElementById('sidebarOpener');
-      
-      if (sidebar.classList.contains('collapsed')) {
-        opener.style.display = 'flex';
-      } else {
-        opener.style.display = 'none';
-      }
-    }
-
-    /************************************************************************
-     * History Loading and Chat Room Rendering
-     ************************************************************************/
-    async function loadHistory(requestId) {
-      try {
-        const response = await fetch(`/history?request_id=${requestId}`);
-        if (response.ok) {
-          const historyData = await response.json();
-          const roomIndex = chatRooms.findIndex(r => r.requestId === requestId);
-          if (roomIndex !== -1) {
-            chatRooms[roomIndex].messages = historyData.history;
-          } else {
-            chatRooms.push({ requestId: requestId, messages: historyData.history });
-          }
-        } else {
-          console.error("History load error:", response.status);
-        }
-      } catch (error) {
-        console.error("Error loading history:", error);
-      }
-    }
-
-    // renderChatBox: 만약 해당 채팅방에 메시지가 없으면 무조건 환영 화면을 보여줍니다.
-    function renderChatBox(requestId) {
-      const chatBox = document.getElementById("chatBox");
-      chatBox.innerHTML = "";
-      const room = chatRooms.find(r => r.requestId === requestId);
-      
-      if (room && room.messages && room.messages.length > 0) {
-        // Show regular input container
-        document.getElementById('inputContainer').classList.remove('hidden');
-        
-        room.messages.forEach((msg, index) => {
-          let sender = msg.role === "human" ? "사용자" : "AI";
-          appendMessageToChatBox(sender, msg.content, index);
-        });
-      } else {
-        renderWelcomeScreen();
-      }
-      
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    // setActiveChatRoom: 새로운 채팅방이면 바로 환영 화면, 기존 채팅방이면 history를 로드한 후 렌더링
-    async function setActiveChatRoom(requestId) {
-      currentRequestId = requestId;
-      document.getElementById("chatRoomId").innerText = `Chat Room: ${requestId}`;
-      let room = chatRooms.find(r => r.requestId === requestId);
-      if (!room) {
-        room = { requestId: requestId, messages: [] };
-        chatRooms.push(room);
-        renderWelcomeScreen();
-      } else {
-        await loadHistory(requestId);
-        renderChatBox(requestId);
-      }
-      renderChatRoomList();
-      clearReferenceData();
-      
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.remove('open');
-        document.getElementById('sidebar').classList.add('collapsed');
-        updateSidebarOpenerVisibility();
-      }
-    }
-    
-    function handleKeyDown(event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-      }
-    }
-
-    /************************************************************************
-     * Chat Room Management
-     ************************************************************************/
-    function createNewChatRoom() {
-      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
-      // 새로운 채팅방은 messages 배열이 비어 있으므로 renderWelcomeScreen()에서 환영 화면이 나타납니다.
-      chatRooms.push({ requestId: newRequestId, messages: [] });
-      setActiveChatRoom(newRequestId);
-      renderChatRoomList();
-    }
-
-    function renderChatRoomList() {
-      const ul = document.getElementById("chatRoomList");
-      ul.innerHTML = "";
-      chatRooms.forEach((room) => {
-        const li = document.createElement("li");
-        const btn = document.createElement("button");
-        let chatName = "New Chat";
-        if (room.messages && room.messages.length > 0) {
-          const firstUserMsg = room.messages.find(msg => msg.role === "human");
-          if (firstUserMsg) {
-            chatName = firstUserMsg.content.substring(0, 20) + (firstUserMsg.content.length > 20 ? "..." : "");
-          }
-        }
-        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg> ${chatName}`;
-        if (room.requestId === currentRequestId) {
-          btn.classList.add("active");
-        }
-        btn.onclick = () => setActiveChatRoom(room.requestId);
-        li.appendChild(btn);
-        ul.appendChild(li);
-      });
-    }
-
-    /************************************************************************
-     * Chat Message Display Helpers
-     ************************************************************************/
-    function appendMessageToChatBox(sender, message, msgIndex = null) {
-      const chatBox = document.getElementById("chatBox");
-      // 만약 채팅창 내에 환영 화면(.welcome-screen)이 있다면 제거
-      const welcomeElem = chatBox.querySelector('.welcome-screen');
-      if (welcomeElem) {
-        chatBox.removeChild(welcomeElem);
-        // Show the regular input container when welcome screen is removed
-        document.getElementById('inputContainer').classList.remove('hidden');
-      }
-      
-      const msgDiv = document.createElement("div");
-      msgDiv.classList.add("message-line");
-      let messageClass = "";
-      let senderIcon = "";
-      
-      if (sender === "사용자") {
-        messageClass = "message-user";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-          <circle cx="12" cy="7" r="4"></circle>
-        </svg>`;
-      } else if (sender === "AI") {
-        messageClass = "message-ai";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="3" y1="9" x2="21" y2="9"></line>
-          <line x1="9" y1="21" x2="9" y2="9"></line>
-        </svg>`;
-      } else {
-        messageClass = "message-system";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>`;
-      }
-      
-      const messageContent = sender === "AI" ? parseMarkdown(message) : escapeHtml(message);
-      msgDiv.classList.add(messageClass);
-      
-      // 레퍼런스 버튼 추가 (AI 메시지에만)
-      let referenceButton = '';
-      if (sender === "AI" && msgIndex !== null) {
-        referenceButton = `
-          <button class="message-ref-btn" onclick="loadReferenceForMessage(${msgIndex})">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-              <polyline points="15 3 21 3 21 9"></polyline>
-              <line x1="10" y1="14" x2="21" y2="3"></line>
-            </svg>
-            <span>References</span>
-          </button>
-        `;
-      }
-      
-      msgDiv.innerHTML = `
-        <div class="message-header">
-          ${senderIcon}
-          ${sender}
-          ${referenceButton}
-        </div>
-        <div class="message-content">${messageContent}</div>
-      `;
-      chatBox.appendChild(msgDiv);
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    /************************************************************************
-     * Streaming (SSE) Message Sending and Receiving
-     ************************************************************************/
-    async function sendMessage() {
-      const messageInput = document.getElementById("userMessage");
-      const message = messageInput.value.trim();
-      if (!message || isProcessing) return;
-      
-      isProcessing = true;
-      document.getElementById("sendButton").disabled = true;
-      
-      // 사용자가 메시지를 보내면 환영 화면은 더 이상 필요 없으므로 별도 처리 없이 메시지 추가 시 제거됨
-      
-      appendMessageToChatBox("사용자", message);
-      storeMessageInRoom(currentRequestId, "사용자", message);
-      messageInput.value = "";
-      messageInput.style.height = 'auto';
-      clearReferenceData();
-      
-      const originalRequestId = currentRequestId;
-      const payload = {
-        qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
-        user_id: "user123",
-        page_id: originalRequestId,
-        auth_class: "admin",
-        qry_contents: message,
-        qry_time: new Date().toISOString()
-      };
-      console.log("Sending payload:", payload);
-      
-      
-      const imageInput = document.getElementById('imageUpload');
-      if (imageInput.files.length > 0) {
-        await sendImageQuery();
-        document.getElementById('userInput').value = '';
-        document.getElementById('imageUpload').value = '';
-        document.getElementById('imagePreview').innerHTML = '';
-        return
-      }
-
-      try {
-        const response = await fetch('/query_stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!response.ok) {
-          throw new Error("Response error: " + response.status);
-        }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let sseBuffer = "";
-        let partialAnswer = "";
-        startAIStreamingMessage();
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          sseBuffer += chunk;
-          const lines = sseBuffer.split("\n");
-          sseBuffer = lines.pop();
-          for (let line of lines) {
-            if (!line) continue;
-            if (line.startsWith("data:")) {
-              const jsonStr = line.slice(5); // 추가적인 공백 제거 없이 그대로 사용
-              if (jsonStr === "[[STREAM_DONE]]") {
-                finalizeAIMessage(partialAnswer, originalRequestId);
-                isProcessing = false;
-                document.getElementById("sendButton").disabled = false;
-                return;
-              }
-              try {
-                const sseData = JSON.parse(jsonStr);
-                if (sseData.type === "answer") {
-                  partialAnswer += sseData.answer;
-                  updateAIStreamingMessage(partialAnswer);
-                } else if (sseData.type === "reference") {
-                  addReferenceData(sseData);
-                } else {
-                  console.log("Other SSE data:", sseData);
-                }
-              } catch (err) {
-                partialAnswer += jsonStr;
-                updateAIStreamingMessage(partialAnswer);
-              }
-            }
-          }
-        }
-        finalizeAIMessage(partialAnswer, originalRequestId);
-        isProcessing = false;
-        document.getElementById("sendButton").disabled = false;
-      } catch (err) {
-        appendMessageToChatBox("시스템", "Error occurred: " + err.message);
-        storeMessageInRoom(currentRequestId, "시스템", "Error occurred: " + err.message);
-        isProcessing = false;
-        document.getElementById("sendButton").disabled = false;
-      }
-    }
-    
-    function storeMessageInRoom(requestId, sender, text) {
-      const room = chatRooms.find(r => r.requestId === requestId);
-      if (room) {
-        room.messages.push({ role: sender === "사용자" ? "human" : "ai", content: text });
-      }
-    }
-
-    /************************************************************************
-     * AI Streaming Display (Temporary Message)
-     ************************************************************************/
-     let tempAiMsgDiv = null;
-     function startAIStreamingMessage() {
-       const chatBox = document.getElementById("chatBox");
-       tempAiMsgDiv = document.createElement("div");
-       tempAiMsgDiv.classList.add("message-line", "message-ai");
-       tempAiMsgDiv.innerHTML = `
-       <div class="message-header">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="3" y1="9" x2="21" y2="9"></line>
-          <line x1="9" y1="21" x2="9" y2="9"></line>
-          </svg>
-          AI
-          <div class="typing-indicator">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          </div>
-          <div class="message-content" id="aiTempText"></div>
-          `;
-          chatBox.appendChild(tempAiMsgDiv);
-          chatBox.scrollTop = chatBox.scrollHeight;
-        }
-        
-    function unescapeNewlines(text) {
-      // 만약 text 내에 리터럴 "\\n"이 있다면 이를 실제 줄바꿈으로 변환
-      return text.replace(/\\n/g, "\n");
-    }
-
-    function updateAIStreamingMessage(text) {
-      if (!tempAiMsgDiv) return;
-      const contentDiv = tempAiMsgDiv.querySelector("#aiTempText");
-      if (contentDiv) {
-        // 먼저, 리터럴 이스케이프된 줄바꿈을 실제 줄바꿈으로 변환
-        const unescapedText = unescapeNewlines(text);
-        contentDiv.innerHTML = parseMarkdown(unescapedText);
-      }
-      const chatBox = document.getElementById("chatBox");
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    function finalizeAIMessage(finalText, queryRequestId) {
-      storeMessageInRoom(queryRequestId, "AI", finalText);
-      if (currentRequestId === queryRequestId) {
-        renderChatRoomList();
-        renderChatBox(queryRequestId);
-      }
-      if (referenceList.length > 0) {
-        document.getElementById("toggleRefBtn").style.display = "flex";
-      }
-    }
-    
-    /************************************************************************
-     * Reference Data Related Functions
-     ************************************************************************/
-    function addReferenceData(refData) {
-      referenceList.push(refData);
-      console.log("Reference data received:", refData);
-    }
-    
-    function clearReferenceData() {
-      referenceList = [];
-      currentlyViewingMsgIndex = null;
-      document.getElementById("toggleRefBtn").style.display = "none";
-      document.getElementById("referenceContainer").style.display = "none";
-      document.getElementById("referenceContainer").innerHTML = "";
-      
-      // 선택된 메시지 하이라이트 제거
-      document.querySelectorAll(".message-ai.selected").forEach(el => {
-        el.classList.remove("selected");
-      });
-    }
-    
-    function toggleReferences() {
-      const container = document.getElementById("referenceContainer");
-      const toggleBtn = document.getElementById("toggleRefBtn");
-      
-      if (container.style.display === "none" || container.style.display === "") {
-        container.style.display = "block";
-        if (!container.innerHTML.trim()) {
-          renderReferenceData();
-        }
-        toggleBtn.querySelector('span').textContent = "Hide All References";
-      } else {
-        container.style.display = "none";
-        toggleBtn.querySelector('span').textContent = "Show All References";
-      }
-    }
-    
-    function renderReferenceData() {
-      const container = document.getElementById("referenceContainer");
-      container.innerHTML = "";
-      
-      if (referenceList.length === 0) {
-        container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
-        return;
-      }
-      
-      referenceList.forEach((refObj, idx) => {
-        const div = document.createElement("div");
-        div.className = "reference-item";
-        div.innerHTML = `
-          <div class="reference-header">
-            <h4>Reference #${idx + 1}</h4>
-          </div>
-          <pre>${JSON.stringify(refObj, null, 2)}</pre>
-        `;
-        container.appendChild(div);
-      });
-    }
-    
-    function loadReferenceForMessage(msgIndex) {
-      // 이미 선택된 메시지인 경우 참조 컨테이너 토글
-      if (currentlyViewingMsgIndex === msgIndex) {
-        const container = document.getElementById("referenceContainer");
-        if (container.style.display === "none" || container.style.display === "") {
-          container.style.display = "block";
-        } else {
-          container.style.display = "none";
-          // 선택 상태 해제
-          document.querySelectorAll(".message-ai.selected").forEach(el => {
-            el.classList.remove("selected");
-          });
-          currentlyViewingMsgIndex = null;
-          return;
-        }
-      } else {
-        // 다른 메시지 선택 시 하이라이트 변경
-        document.querySelectorAll(".message-ai.selected").forEach(el => {
-          el.classList.remove("selected");
-        });
-        
-        // 현재 메시지 하이라이트
-        const messages = document.querySelectorAll(".message-line.message-ai");
-        if (messages[msgIndex]) {
-          messages[msgIndex].classList.add("selected");
-        }
-        
-        currentlyViewingMsgIndex = msgIndex;
-      }
-      
-      const url = `/reference?request_id=${currentRequestId}&msg_index=${msgIndex}`;
-      fetch(url)
-        .then(response => response.json())
-        .then(data => {
-          if (data.error) {
-            alert(data.error);
-            return;
-          }
-          displayReferenceData(data.references, msgIndex);
-        })
-        .catch(err => {
-          console.error("참조 데이터 로딩 오류:", err);
-          alert("참조 데이터를 불러오는 중 오류 발생");
-        });
-    }
-    
-    function displayReferenceData(refs, msgIndex) {
-      const container = document.getElementById("referenceContainer");
-      container.innerHTML = "";
-      
-      // 메시지 인덱스 표시
-      const headerDiv = document.createElement("div");
-      headerDiv.className = "reference-container-header";
-      headerDiv.innerHTML = `<h3>References for Message #${msgIndex + 1}</h3>
-        <button class="close-ref-btn" onclick="closeReferences()">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>`;
-      container.appendChild(headerDiv);
-      
-      if (refs.length === 0) {
-        container.innerHTML += "<p class='no-references'>참조 데이터가 없습니다.</p>";
-      } else {
-        refs.forEach((ref, idx) => {
-          const div = document.createElement("div");
-          div.className = "reference-item";
-          div.innerHTML = `
-            <div class="reference-header">
-              <h4>Reference #${idx + 1}</h4>
-            </div>
-            <pre>${JSON.stringify(ref, null, 2)}</pre>
-          `;
-          container.appendChild(div);
-        });
-      }
-      
-      container.style.display = "block";
-    }
-    
-    function closeReferences() {
-      document.getElementById("referenceContainer").style.display = "none";
-      // 선택 상태 해제
-      document.querySelectorAll(".message-ai.selected").forEach(el => {
-        el.classList.remove("selected");
-      });
-      currentlyViewingMsgIndex = null;
-    }
-
-    // 이미지 업로드 처리
-    document.getElementById('imageUpload').addEventListener('change', function(event) {
-      const file = event.target.files[0];
-      if (file) {
-          const reader = new FileReader();
-          reader.onload = function(e) {
-              const img = document.createElement('img');
-              img.src = e.target.result;
-              img.style.maxWidth = '100%';
-              img.style.maxHeight = '100%';
-              const imagePreview = document.getElementById('imagePreview');
-              imagePreview.innerHTML = '';
-              imagePreview.appendChild(img);
-          }
-          reader.readAsDataURL(file);
-      }
-    });
-
-    // 이미지 쿼리 전송 함수
-    async function sendImageQuery() {
-      const imageInput = document.getElementById('imageUpload');
-      const messageInput = document.getElementById('userMessage').value;
-      
-      if (imageInput.files.length > 0) {
-          const file = imageInput.files[0];
-          const reader = new FileReader();
-          
-          reader.onload = async function(e) {
-              const base64Image = e.target.result.split(',')[1];
-              
-              const response = await fetch('/image_query', {
-                  method: 'POST',
-                  headers: {
-                      'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                      image_data: base64Image,
-                      query: messageInput
-                  }),
-              });
-
-              if (response.ok) {
-                  const result = await response.json();
-                  displayMessage('AI', result.answer);
-              } else {
-                  console.error('이미지 쿼리 전송 실패');
-              }
-          };
-          
-          reader.readAsDataURL(file);
-      } else {
-          console.error('이미지가 선택되지 않았습니다.');
-      }
-    }
-
-  </script>
-</body>
-</html>
-
-```
-
 
 -----------------
 

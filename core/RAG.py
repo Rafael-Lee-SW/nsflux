@@ -35,22 +35,6 @@ async def execute_rag(QU, KE, TA, TI, **kwargs):
     data = kwargs.get("data")
     config = kwargs.get("config")
     
-    # If an image is provided, use the image query processing path.
-    if 'image_data' in kwargs and kwargs['image_data']:
-        print("[MULTI-MODAL] Image data is detected : ", kwargs['image_data'])
-        # Ensure a request_id is available. If not, generate one.
-        request_id = kwargs.get("request_id", str(uuid.uuid4()))
-        # Pass request_id explicitly along with other kwargs.
-        answer = await process_image_query(
-            kwargs['image_data'], 
-            QU, 
-            request_id=request_id,
-            model=model, 
-            tokenizer=tokenizer, 
-            config=config
-        )
-        print("[MULTI-MODAL] Image data is proceessed : ", answer)
-        return answer, []
     if TA == "yes":  # Table 이 필요하면
         print("[SOOWAN]: execute_rag : 테이블 필요 (TA == yes). SQL 생성 시작합니다.")
         try:
@@ -702,89 +686,89 @@ async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_para
 # -------------------------------------------------------------------------
 # PROCESS IMAGE QUERY (IMAGE TO TEXT)
 # -------------------------------------------------------------------------
-async def process_image_query(image_data: str, query: str, **kwargs):
-    """
-    Process an image query by decoding the image, optionally obtaining its embeddings
-    if the model supports multimodal inputs (e.g. gemma3 image processor), and then
-    incorporating that image information into the text prompt for generation.
+# async def process_image_query(image_data: str, query: str, **kwargs):
+#     """
+#     Process an image query by decoding the image, optionally obtaining its embeddings
+#     if the model supports multimodal inputs (e.g. gemma3 image processor), and then
+#     incorporating that image information into the text prompt for generation.
 
-    Args:
-        image_data (str): Base64-encoded image data.
-        query (str): The user's text query.
-        **kwargs: Must include:
-            - model: The loaded model.
-            - tokenizer: The tokenizer.
-            - config: The configuration object with model parameters.
-            - request_id (optional): The request id for tracking.
+#     Args:
+#         image_data (str): Base64-encoded image data.
+#         query (str): The user's text query.
+#         **kwargs: Must include:
+#             - model: The loaded model.
+#             - tokenizer: The tokenizer.
+#             - config: The configuration object with model parameters.
+#             - request_id (optional): The request id for tracking.
     
-    Returns:
-        str: The generated answer text.
-    """
-    import base64, io
-    from PIL import Image
-    import uuid
+#     Returns:
+#         str: The generated answer text.
+#     """
+#     import base64, io
+#     from PIL import Image
+#     import uuid
+#     from vllm.model_executor.models.interfaces import SupportsMultiModal
 
-    model = kwargs.get("model")
-    tokenizer = kwargs.get("tokenizer")
-    config = kwargs.get("config")
+#     model = kwargs.get("model")
+#     tokenizer = kwargs.get("tokenizer")
+#     config = kwargs.get("config")
     
-    # Obtain or generate a request_id
-    request_id = kwargs.get("request_id", str(uuid.uuid4()))
+#     # Obtain or generate a request_id
+#     request_id = kwargs.get("request_id", str(uuid.uuid4()))
     
-    print("[MULTI-MODAL] image processing is starting")
+#     print("[MULTI-MODAL] image processing is starting")
     
-    # Decode the image from base64 and load it with PIL
-    try:
-        image_bytes = base64.b64decode(image_data)
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    except Exception as e:
-        raise ValueError(f"Failed to decode image data: {e}")
+#     # Decode the image from base64 and load it with PIL
+#     try:
+#         image_bytes = base64.b64decode(image_data)
+#         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+#     except Exception as e:
+#         raise ValueError(f"Failed to decode image data: {e}")
     
-    # If the model supports multimodal inputs, try to obtain image embeddings.
-    from vllm.model_executor.models.interfaces import SupportsMultiModal
-    if isinstance(model, SupportsMultiModal):
-        try:
-            # Get image embeddings using the model's method
-            image_embeddings = model.get_multimodal_embeddings(image=image)
-            # Convert embeddings to a string snippet for inclusion in the prompt.
-            image_info = f"[IMAGE_EMBEDDING: {str(image_embeddings)[:200]}...]"
-        except Exception as e:
-            logging.error("Failed to obtain image embeddings: %s", e)
-            image_info = "[IMAGE_EMBEDDING_ERROR]"
-    else:
-        image_info = "[IMAGE]"
+#     # If the model supports multimodal inputs, try to obtain image embeddings.
+#     if isinstance(model, SupportsMultiModal):
+#         try:
+#             # Get image embeddings using the model's method
+#             image_embeddings = model.get_multimodal_embeddings(image=image)
+#             # Convert embeddings to a string snippet for inclusion in the prompt.
+#             image_info = f"[IMAGE_EMBEDDING: {str(image_embeddings)[:200]}...]"
+#         except Exception as e:
+#             logging.error("Failed to obtain image embeddings: %s", e)
+#             image_info = "[IMAGE_EMBEDDING_ERROR]"
+#     else:
+#         image_info = "[IMAGE]"
     
-    # Construct the prompt that includes the image information and the query.
-    prompt = f"{image_info}\n사용자: {query}\n시스템: "
+#     # Construct the prompt that includes the image information and the query.
+#     prompt = f"{image_info}\n사용자: {query}\n시스템: "
     
-    print("[MULTI-MODAL] image_info is generated : ", image_info)
+#     print("[MULTI-MODAL] image_info is generated : ", image_info)
     
-    # Create sampling parameters from the configuration.
-    from vllm import SamplingParams
-    sampling_params = SamplingParams(
-        max_tokens=config.model.max_new_tokens,
-        temperature=config.model.temperature,
-        top_k=config.model.top_k,
-        top_p=config.model.top_p,
-        repetition_penalty=config.model.repetition_penalty,
-    )
+#     # Create sampling parameters from the configuration.
+#     from vllm import SamplingParams
+#     sampling_params = SamplingParams(
+#         max_tokens=config.model.max_new_tokens,
+#         temperature=config.model.temperature,
+#         top_k=config.model.top_k,
+#         top_p=config.model.top_p,
+#         repetition_penalty=config.model.repetition_penalty,
+#     )
     
-    # Since model.generate returns an async generator, we collect its outputs into a list.
-    outputs = [output async for output in model.generate(
-        prompt=prompt,
-        sampling_params=sampling_params,
-        request_id=request_id,
-    )]
+#     # Since model.generate returns an async generator, we collect its outputs into a list.
+#     outputs = [output async for output in model.generate(
+#         prompt=prompt,
+#         sampling_params=sampling_params,
+#         request_id=request_id,
+#     )]
     
     
-    # Extract the generated text from the first output if available.
-    if outputs and hasattr(outputs[0], "outputs") and outputs[0].outputs:
-        answer = outputs[0].outputs[0].text
-        print("[MULTI-MODAL] Output is generated : ", answer)
-    else:
-        answer = ""
-        print("[MULTI-MODAL] Output is generated is empty")
-    return answer
+#     # Extract the generated text from the first output if available.
+#     if outputs and hasattr(outputs[0], "outputs") and outputs[0].outputs:
+#         answer = outputs[0].outputs[0].text
+#         print("[MULTI-MODAL] Output is generated : ", answer)
+#     else:
+#         answer = ""
+#         print("[MULTI-MODAL] Output is generated is empty")
+#     return answer
 
 # ---------------------------
 # *** 새로 추가된 generate_sql 함수 ***

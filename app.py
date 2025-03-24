@@ -363,13 +363,22 @@ def get_reference():
     
 @app.route("/image_query", methods=["POST"])
 async def image_query():
+    """
+    JSON 예시:
+    {
+        "image_data": "base64....",
+        "qry_contents": "이미지 관련 질문",
+        "request_id": "some_id"
+    }
+    """
     try:
         http_query = request.json
-        result = await inference_handle.image_query.remote(http_query)
-        return Response(result, content_type=content_type)
+        # Ray Actor(inference_handle)로 전달
+        result_ref = inference_handle.image_query.remote(http_query)
+        result = await result_ref
+        return jsonify(result)
     except Exception as e:
-        error_resp = error_format(f"이미지 처리 중 오류 발생: {str(e)}", 500)
-        return Response(error_resp, content_type=content_type)
+        return jsonify({"error": str(e)}), 500
 
 # Flask app 실행
 if __name__ == "__main__":

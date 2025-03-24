@@ -156,27 +156,34 @@ def load_model(config):
                 print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다.")
                 hf_config.vocab_size = getattr(embed_tokenizer, "vocab_size", 32000)
             config_dict = hf_config.to_dict()
+            # 패치: architectures 속성이 없으면 Gemma2로 기본 설정
             if not config_dict.get("architectures"):
                 print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
+            # 확인
+            print(f"[DEBUG] => Saving HF Config with architectures={config_dict['architectures']}")
+                
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
         else:
             # 이미 config_file이 존재하는 경우
             with open(config_file, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
-
+            
+            # 패치: vocab_size 속성이 없으면 embed_tokenizer의 값을 사용하여 추가
             if "vocab_size" not in config_dict:
                 # embed_tokenizer의 vocab_size가 존재하면 사용하고, 없으면 기본값 30522로 설정
                 config_dict["vocab_size"] = getattr(embed_tokenizer, "vocab_size", 30522)
                 print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다:", config_dict["vocab_size"])
-                with open(config_file, "w", encoding="utf-8") as f:
-                    json.dump(config_dict, f)
+            # 패치: architectures 속성이 없으면 Gemma2로 기본 설정
             if not config_dict.get("architectures"):
                 print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
-                with open(config_file, "w", encoding="utf-8") as f:
-                    json.dump(config_dict, f)
+            # 확인
+            print(f"[DEBUG] => Saving HF Config with architectures={config_dict['architectures']}")
+
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump(config_dict, f)
 
         weight_dir, weight_format = find_weight_directory(local_model_path)
         if weight_dir is None:
@@ -228,8 +235,11 @@ def load_model(config):
             
         engine_args.max_model_len = vllm_conf.get("max_model_len")
         
-        engine_args.limit_mm_per_prompt={"image": 1}
-
+        # Image 기능 추가
+        engine_args.mm_processor_kwargs={"do_pan_and_scan":True}
+        engine_args.disable_mm_preprocessor_cache = False
+        engine_args.limit_mm_per_prompt = {"image": 2}
+        
         # # 새로 추가: disable_sliding_window 옵션 확인
         # if vllm_conf.get("disable_sliding_window", False):
         #     engine_args.sliding_window = (-1, -1)

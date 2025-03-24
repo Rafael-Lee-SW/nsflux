@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
 
 # # Solve the C compier
-# RUN apt-get update && apt-get install build-essential -y
+RUN apt-get update && apt-get install build-essential -y
 
 # combining apt-get calls for efficiency
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -10,6 +10,7 @@ import time
 from typing import Dict, Optional  # --- NEW OR MODIFIED ---
 import threading  # To find out the usage of thread
 import datetime
+import os
 
 from core.RAG import (
     query_sort,
@@ -17,7 +18,6 @@ from core.RAG import (
     execute_rag,
     generate_answer,
     generate_answer_stream,
-    process_image_query,
 )  # hypothetically
 from utils import (
     load_model,
@@ -32,6 +32,26 @@ from utils.debug_tracking import log_batch_info, log_system_info
 # Langchain Memory system
 from ray_deploy.langchain import CustomConversationBufferMemory
 
+# vLLM 멀티모달 관련 import (vllm GitHub 코드를 참고)
+from vllm.multimodal import MultiModalKwargs
+from vllm.multimodal.inputs import MultiModalInputs
+from vllm.multimodal.processing import BaseMultiModalProcessor
+
+# Gemma3 전용 멀티모달 프로세서와 관련 클래스
+from vllm.model_executor.models.gemma3_mm import (
+    Gemma3MultiModalProcessor,
+    Gemma3ProcessingInfo,
+)
+import requests
+from PIL import Image
+import io
+
+# 추가: multimodal_config에 사용할 Dummy 클래스 정의
+class DummyMultiModalConfig:
+    def get_limit_per_prompt(self, modality: str) -> int:
+        # 이미지 입력은 1개로 제한 (필요 시 적절한 값을 조정)
+        return 1
+    
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
     async def __init__(self, config):
@@ -42,6 +62,15 @@ class InferenceActor:
         )
         # 데이터는 캐시 파일을 통해 로드
         self.data = load_data(config.data_path)
+        
+                # 만약 모델이 vLLM Engine이면, 여기서 auto test:
+        if getattr(self.model, "is_vllm", False):
+            # vLLM 엔진만 멀티모달 로직을 가지고 있다고 가정
+            try:
+                test_result = await self.run_auto_test_inference()
+                print(f">>> [Auto-Test] Inference result: {test_result}")
+            except Exception as e:
+                print(f">>> [Auto-Test] Inference test failed: {e}")
         
         # 비동기 큐와 배치 처리 설정
         self.request_queue = asyncio.Queue()
@@ -68,7 +97,82 @@ class InferenceActor:
         
         # 연속 배치 처리기 시작 (Continuous batch)
         asyncio.create_task(self.continuous_batch_processor())
+
+    async def run_auto_test_inference(self):
+        """
+        vLLM 엔진(self.model)과 self.tokenizer를 이용해
+        샘플 이미지를 추론해보는 async 함수.
+        """
+        print(">>> [Auto-Test] Now performing an image inference test with a public image ...")
+
+        # 1) 샘플 이미지 가져오기
+        url = "http://images.cocodataset.org/val2017/000000039769.jpg"
+        resp = requests.get(url)
+        pil_image = Image.open(io.BytesIO(resp.content)).convert("RGB")
+
+        # 2) 프롬프트 구성
+        user_prompt = "이 이미지에서 어떤 사물이 보이나요?"
+
+        # 3) vLLM용 멀티모달 입력 생성
+        from vllm.inputs import InputProcessingContext
+        from vllm.multimodal import MultiModalKwargs
+        from vllm.multimodal.inputs import MultiModalInputs
+        from vllm.model_executor.models.gemma3_mm import (
+            Gemma3MultiModalProcessor, Gemma3ProcessingInfo, Gemma3DummyInputsBuilder
+        )
+        from transformers import AutoConfig
+        from vllm import SamplingParams
+
+        hf_config = getattr(self.model, "model_config", None)
+        if hf_config is None:
+            hf_config = AutoConfig.from_pretrained(
+                self.config.model_id,
+                cache_dir=self.config.cache_dir,
+                trust_remote_code=True,
+            )
+        ctx = InputProcessingContext(model_config=hf_config, tokenizer=self.tokenizer)
+        info = Gemma3ProcessingInfo(ctx)
+        dummy_inputs = Gemma3DummyInputsBuilder(info)
+        processor = Gemma3MultiModalProcessor(info, dummy_inputs)
+
+        mm_data = {"image": [pil_image]}
+        # 기존에 hf_kwargs 키워드 인자를 사용하던 부분을 위치 인자로 전달하도록 수정합니다.
+        hf_inputs = processor(user_prompt, mm_data, {})  # 수정: hf_kwargs 제거
+
+        config_by_key = processor._get_mm_fields_config(hf_inputs, {})
+        mm_kwargs = MultiModalKwargs.from_hf_inputs(hf_inputs, config_by_key)
+        mm_placeholders = processor.get_mm_placeholders(hf_inputs, config_by_key)
+        prompt_token_ids = hf_inputs["input_ids"][0].tolist()
+
+        mm_input: MultiModalInputs = {
+            "type": "multimodal",
+            "prompt": hf_inputs["prompt"],
+            "prompt_token_ids": prompt_token_ids,
+            "token_type_ids": hf_inputs.get("token_type_ids", [])[0].tolist() if "token_type_ids" in hf_inputs else None,
+            "mm_kwargs": mm_kwargs,
+            "mm_placeholders": mm_placeholders,
+        }
+
+        sampling_params = SamplingParams(
+            max_tokens=64,
+            temperature=0.7,
+            top_p=0.9,
+        )
+
+        # 4) async generate
+        chunks = []
+        async for out in self.model.generate(prompt=mm_input,
+                                            sampling_params=sampling_params):
+            chunks.append(out)
+
+        if not chunks:
+            return "[ERROR] No output from engine."
+
+        final_chunk = next((c for c in chunks if getattr(c, "finished", False)), chunks[-1])
+        answer_text = "".join(token.text for token in final_chunk.outputs)
+        return answer_text
         
+
     # -------------------------------------------------------------------------
     # GET MEMORY FOR SESSION
     # -------------------------------------------------------------------------
@@ -455,23 +559,121 @@ class InferenceActor:
                     print(f"[DEBUG] Error putting STREAM_DONE: {str(ex)}")
                 await self.close_sse_queue(request_id)
                 
-    # -------------------------------------------------------------------------
+    # ---------------------------------------------------------
     # PROCESS IMAGE QUERY (IMAGE TO TEXT)
-    # -------------------------------------------------------------------------
+    # ---------------------------------------------------------
     async def process_image_query(self, http_query):
-        image_data = http_query.get("image_data")
-        query = http_query.get("query")
-        
-        answer = await process_image_query(
-            image_data,
-            query,
-            model=self.model,
-            tokenizer=self.tokenizer,
-            config=self.config
-        )
-        
-        return process_to_format([answer], type="Answer")
+        try:
+            print("[DEBUG] Starting process_image_query")
+            image_input = http_query.get("image_data")
+            user_query = http_query.get("qry_contents") or "이 이미지에 대해 알려줘."
+            request_id = http_query.get("request_id", str(uuid.uuid4()))
 
+            # PIL.Image 변환
+            from PIL import Image
+            import base64, io
+            if isinstance(image_input, str) and image_input.startswith(("http://", "https://")):
+                from vllm.multimodal.utils import fetch_image
+                pil_image = fetch_image(image_input)
+            else:
+                decoded = base64.b64decode(image_input)
+                pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+            print("[DEBUG] PIL image ready:", pil_image)
+
+            # 2) AutoConfig.from_pretrained 시 trust_remote_code=True로 설정
+            from transformers import AutoConfig
+            token = os.getenv("HF_TOKEN_PATH")
+            if token and not token.startswith("hf_"):
+                # 파일 경로 처리
+                if os.path.isfile(token):
+                    with open(token, 'r') as f:
+                        token = f.read().strip()
+                else:
+                    token = None
+
+            hf_model_config = AutoConfig.from_pretrained(
+                self.config.model_id,
+                cache_dir=self.config.cache_dir,
+                trust_remote_code=True,   # <--- 여기 중요
+                token=token
+            )
+
+            # 기존처럼 multimodal_config 없는 경우 Dummy 추가
+            if not hasattr(hf_model_config, "multimodal_config"):
+                hf_model_config.multimodal_config = DummyMultiModalConfig()
+            # 모델 구조 기입 (예: Gemma3ForCausalLM 등)
+            if not hasattr(hf_model_config, "model"):
+                hf_model_config.model = (
+                    hf_model_config.architectures[0]
+                    if hasattr(hf_model_config, "architectures") and hf_model_config.architectures
+                    else "Gemma3ForCausalLM"
+                )
+
+            # InputProcessingContext 생성
+            from vllm.inputs import InputProcessingContext
+            ctx = InputProcessingContext(model_config=hf_model_config, tokenizer=self.tokenizer)
+            
+            # Gemma3ProcessingInfo 및 프로세서 생성
+            from vllm.model_executor.models.gemma3_mm import Gemma3ProcessingInfo, Gemma3DummyInputsBuilder
+            info = Gemma3ProcessingInfo(ctx)
+            dummy_inputs = Gemma3DummyInputsBuilder(info)
+            processor = Gemma3MultiModalProcessor(info, dummy_inputs)
+
+            # 멀티모달 데이터 구성 및 HF 입력 생성
+            mm_data = {"image": [pil_image]}
+            prompt_text = f"당신은 한국어 Vision-LLM입니다.\n사용자 질문: {user_query}"
+            hf_inputs = processor(prompt_text, mm_data, {})  # __call__은 prompt, mm_data, hf_kwargs 순서
+
+            # 후속 처리: config_by_key, MultiModalKwargs, mm_placeholders 등
+            config_by_key = processor._get_mm_fields_config(hf_inputs, hf_processor_mm_kwargs={})
+            from vllm.multimodal import MultiModalKwargs
+            mm_kwargs = MultiModalKwargs.from_hf_inputs(hf_inputs, config_by_key)
+            mm_placeholders = processor.get_mm_placeholders(hf_inputs, config_by_key)
+            prompt_token_ids = hf_inputs["input_ids"][0].tolist()
+
+            from vllm.multimodal.inputs import MultiModalInputs
+            mm_input: MultiModalInputs = {
+                "type": "multimodal",
+                "prompt": hf_inputs["prompt"],
+                "prompt_token_ids": prompt_token_ids,
+                "token_type_ids": hf_inputs.get("token_type_ids", [])[0].tolist() if "token_type_ids" in hf_inputs else None,
+                "mm_kwargs": mm_kwargs,
+                "mm_placeholders": mm_placeholders,
+            }
+
+            from vllm import SamplingParams
+            sampling_params = SamplingParams(
+                max_tokens=self.config.model.max_new_tokens,
+                temperature=self.config.model.temperature,
+                top_k=self.config.model.top_k,
+                top_p=self.config.model.top_p,
+                repetition_penalty=self.config.model.repetition_penalty,
+            )
+
+            result_chunks = []
+            async for out in self.model.generate(
+                prompt=mm_input,
+                sampling_params=sampling_params,
+                request_id=request_id
+            ):
+                result_chunks.append(out)
+
+            if not result_chunks:
+                print("[ERROR] No output chunks received from model.generate")
+                return {"type": "error", "message": "No output from model."}
+
+            final_chunk = next((c for c in result_chunks if getattr(c, "finished", False)), result_chunks[-1])
+            answer_text = "".join(token.text for token in final_chunk.outputs)
+            print(f"[DEBUG] Final answer text: {answer_text}")
+            return {
+                "result": answer_text,
+                "request_id": request_id,
+                "status_code": 200
+            }
+        except Exception as e:
+            err_msg = f"[ERROR] {str(e)}"
+            print(err_msg)
+            return {"type": "error", "message": err_msg}
 
     # ------------------------------------------------------------
     # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)

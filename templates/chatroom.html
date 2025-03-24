@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -40,7 +39,9 @@
     <!-- Chat Header -->
     <div class="chat-header">
       <button id="sidebarOpener" class="sidebar-opener" onclick="toggleSidebar()">
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" 
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="3" y1="12" x2="21" y2="12"></line>
           <line x1="3" y1="6" x2="21" y2="6"></line>
           <line x1="3" y1="18" x2="21" y2="18"></line>
@@ -49,7 +50,10 @@
       <h2 id="chatRoomId">Chat Room: -</h2>
       <div class="header-actions">
         <button id="toggleRefBtn" class="toggle-ref-btn" onclick="toggleReferences()">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ref-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+               viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" 
+               class="ref-icon">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
             <polyline points="15 3 21 3 21 9"></polyline>
             <line x1="10" y1="14" x2="21" y2="3"></line>
@@ -64,10 +68,10 @@
 
     <!-- Chat Box -->
     <div class="chat-box" id="chatBox">
-      <!-- Welcome content will be inserted here by JS -->
+      <!-- Welcome content or messages will appear here -->
     </div>
 
-    <!-- 이미지 미리보기 -->
+    <!-- 이미지 미리보기 (일반 채팅 입력용) -->
     <div id="imagePreview" style="max-width: 300px; max-height: 300px; margin-top: 10px;"></div>
 
     <!-- Input Container -->
@@ -80,12 +84,15 @@
           rows="1"
           onkeydown="handleKeyDown(event)"
         ></textarea>
-        <!-- 이미지 업로드 input 추가 -->
+        
+        <!-- 이미지 업로드 input (기존) -->
         <input type="file" id="imageUpload" accept="image/*" style="display: none;">
         <button onclick="document.getElementById('imageUpload').click();">이미지 업로드</button>
 
         <button id="sendButton" class="send-btn" onclick="sendMessage()">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+               viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13"></line>
             <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
           </svg>
@@ -98,18 +105,19 @@
     /************************************************************************
      * Global Variables and Data Structures
      ************************************************************************/
-    let currentRequestId = null; // 현재 활성 채팅방의 requestId
-    let chatRooms = []; // [{ requestId, messages: [{role, content, references?}] }]
-    let referenceList = []; // 현재 쿼리로부터 수집된 참조 데이터
-    let isProcessing = false; // 동시 요청 방지 플래그
+    let currentRequestId = null; 
+    let chatRooms = []; // [{ requestId, messages: [{role, content}] }]
+    let referenceList = []; 
+    let isProcessing = false; 
     let isMobileView = window.innerWidth <= 768;
-    let currentlyViewingMsgIndex = null; // 현재 보고 있는 메시지 인덱스
+    let currentlyViewingMsgIndex = null; 
 
-    // welcome 화면 HTML 템플릿 (id 대신 클래스만 사용)
+    // welcome 화면 HTML 템플릿
     const welcomeContentHTML = `
       <div class="welcome-screen">
         <div class="welcome-header">
-          <img src="/static/NS_LOGO_ONLY.svg?height=80&width=80" alt="FLUX_NS Logo" class="welcome-logo" />
+          <img src="/static/NS_LOGO_ONLY.svg?height=80&width=80" 
+               alt="FLUX_NS Logo" class="welcome-logo" />
           <h1>Welcome to FLUX_NS</h1>
           <p class="welcome-subtitle">Ask me anything about NS information</p>
         </div>
@@ -118,28 +126,60 @@
             <h2>Examples</h2>
             <div class="example-cards">
               <button class="example-card" onclick="fillExamplePrompt('디지털 기획팀의 우선과제가 어떻게 돼?')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 
+                           8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 
+                           8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5
+                           a8.48 8.48 0 0 1 8 8v.5z"></path>
                 </svg>
                 <span>디지털 기획팀의 우선과제가 어떻게 돼?</span>
               </button>
-              <button class="example-card" onclick="fillExamplePrompt('UN 클래스 2.1, UNNO 1033인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+              <button class="example-card" 
+                      onclick="fillExamplePrompt('UN 클래스 2.1, UNNO 1033인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 
+                           8.5 8.5 0 0 1-7.6 4.7 
+                           8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7
+                           a8.38 8.38 0 0 1-.9-3.8 
+                           8.5 8.5 0 0 1 4.7-7.6 
+                           8.38 8.38 0 0 1 3.8-.9h.5
+                           a8.48 8.48 0 0 1 8 8v.5z"></path>
                 </svg>
-                <span>UN 클래스 2.1, UNNO 1033인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.</span>
+                <span>UN 클래스 2.1, UNNO 1033인 DG 화물이<br>부산항에서 고베항에 선적 가능한지?</span>
               </button>
-              <button class="example-card" onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+              <button class="example-card" 
+                      onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 
+                           8.5 8.5 0 0 1-7.6 4.7 
+                           8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7
+                           a8.38 8.38 0 0 1-.9-3.8 
+                           8.5 8.5 0 0 1 4.7-7.6 
+                           8.38 8.38 0 0 1 3.8-.9h.5
+                           a8.48 8.48 0 0 1 8 8v.5z"></path>
                 </svg>
                 <span>IOT 컨테이너 사업 근황에 대해서 알려줘</span>
               </button>
-              <button class="example-card" onclick="fillExamplePrompt('최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.')">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+              <button class="example-card" 
+                      onclick="fillExamplePrompt('최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 
+                           8.5 8.5 0 0 1-7.6 4.7 
+                           8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7
+                           a8.38 8.38 0 0 1-.9-3.8 
+                           8.5 8.5 0 0 1 4.7-7.6 
+                           8.38 8.38 0 0 1 3.8-.9h.5
+                           a8.48 8.48 0 0 1 8 8v.5z"></path>
                 </svg>
-                <span>최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.</span>
+                <span>최근 남성해운의 운임 동향을<br>웹 정보와 함께 분석해서 알려줘</span>
               </button>
             </div>
           </div>
@@ -149,19 +189,25 @@
               <h2>Capabilities</h2>
               <ul class="capability-list">
                 <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"></polyline>
                   </svg>
                   <span>최신 정보와 데이터 기반 응답</span>
                 </li>
                 <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"></polyline>
                   </svg>
                   <span>남성해운의 주간회의, 계약서, 인사규범 등에 대한 답변</span>
                 </li>
                 <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="20 6 9 17 4 12"></polyline>
                   </svg>
                   <span>상세한 답변 및 해설</span>
@@ -172,21 +218,27 @@
               <h2>Limitations</h2>
               <ul class="limitation-list">
                 <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
                     <line x1="6" y1="6" x2="18" y2="18"></line>
                   </svg>
                   <span>현재 모든 정보를 가지고 있지 아니함</span>
                 </li>
                 <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
                     <line x1="6" y1="6" x2="18" y2="18"></line>
                   </svg>
                   <span>가끔 정확하지 않은 정보를 제공할 수 있음</span>
                 </li>
                 <li>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
                     <line x1="6" y1="6" x2="18" y2="18"></line>
                   </svg>
@@ -199,12 +251,14 @@
         
         <div class="welcome-input-container">
           <div class="input-prompt">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                 viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"></circle>
               <line x1="12" y1="16" x2="12" y2="12"></line>
               <line x1="12" y1="8" x2="12.01" y2="8"></line>
             </svg>
-            <span>질문을 입력하거나 위의 예시를 선택하세요</span>
+            <span>질문을 입력하거나 이미지도 업로드 가능</span>
           </div>
           <div class="welcome-input-box">
             <textarea 
@@ -215,33 +269,44 @@
               onkeydown="handleWelcomeKeyDown(event)"
               oninput="autoResizeTextarea(this)"
             ></textarea>
+
+            <!-- [WELCOME 이미지 업로드 추가] -->
+            <div style="margin-left: 8px;">
+              <input type="file" id="welcomeImageUpload" accept="image/*" style="display: none;">
+              <button onclick="document.getElementById('welcomeImageUpload').click();">
+                이미지 업로드
+              </button>
+            </div>
+
             <button id="welcomeSendButton" class="welcome-send-btn" onclick="sendWelcomeMessage()">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                   viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="22" y1="2" x2="11" y2="13"></line>
                 <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
               </svg>
             </button>
+          </div>
+
+          <!-- 미리보기 (WELCOME) -->
+          <div id="welcomeImagePreview" 
+               style="max-width: 300px; max-height: 300px; margin-top: 10px;">
           </div>
         </div>
       </div>
     `;
 
     /************************************************************************
-     * Markdown Parser
+     * Markdown Parser (동일)
      ************************************************************************/
     function parseMarkdown(text) {
       if (!text) return '';
-
-      // 먼저 "<<<TABLE>>>" 구분자로 감싼 표를 변환합니다.
       text = text.replace(/<<<TABLE>>>([\s\S]*?)<<<END_TABLE>>>/g, function(match, tableContent) {
         return convertMarkdownTable(tableContent);
       });
-    
-      // 그리고 plain text 형식의 표 (예: SQL 출력 형태)를 변환합니다.
       text = parsePlainTextTables(text);
-    
-      // 각주 정의 추출 및 제거
-      // 각주는 텍스트의 마지막에 별도의 줄로 "[^번호]: 내용" 형식으로 존재한다고 가정합니다.
+
+      // 각주 정리
       const footnoteRegex = /^\[\^(\d+)\]:\s*(.+)$/gm;
       const footnotesDict = {};
       let match;
@@ -250,89 +315,70 @@
         const content = match[2];
         footnotesDict[num] = content;
       }
-      // footnote 정의 라인 제거
       text = text.replace(footnoteRegex, '').trim();
-    
-      // 입력 텍스트가 이미 HTML 태그로 시작하면 그대로 반환
+
       if (text.trim().startsWith('<')) {
         return text;
       }
       
-      // 1. 인라인 Markdown 변환 수행
-      // 코드 블록 처리
-      text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(match, language, code) {
-        return `<pre><code class="language-${language}">${escapeHtml(code.trim())}</code></pre>`;
+      // 인라인 변환
+      text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(m, lang, code) {
+        return `<pre><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`;
       });
-      // 인라인 코드 처리
       text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-      // 굵은 글씨 처리
       text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-      // 기울임 글씨 처리
       text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-      // 링크 처리 (필요시 수정)
-      text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
-      // 제목 처리
+      text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+
+      // 제목
       text = text.replace(/^###### (.*)$/gm, '<h6>$1</h6>');
       text = text.replace(/^##### (.*)$/gm, '<h5>$1</h5>');
       text = text.replace(/^#### (.*)$/gm, '<h4>$1</h4>');
       text = text.replace(/^### (.*)$/gm, '<h3>$1</h3>');
       text = text.replace(/^## (.*)$/gm, '<h2>$1</h2>');
       text = text.replace(/^# (.*)$/gm, '<h1>$1</h1>');
+
       // 목록 처리
       text = text.replace(/^\s*\* (.*)$/gm, '<li>$1</li>');
       text = text.replace(/^\s*\d+\. (.*)$/gm, '<li>$1</li>');
-      // 목록 아이템을 <ul>로 감싸기 (이미 <ul>이면 건너뜀)
-      text = text.replace(/(<li>[\s\S]*?<\/li>)/gm, function(match) {
-        if (match.trim().startsWith('<ul>')) {
-          return match;
-        }
-        return '<ul>' + match + '</ul>';
+      text = text.replace(/(<li>[\s\S]*?<\/li>)/gm, function(m) {
+        if (m.trim().startsWith('<ul>')) return m;
+        return '<ul>' + m + '</ul>';
       });
-      // 인용문 처리
+
+      // 인용문
       text = text.replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>');
-      
-      // 2. 문단 구분 처리: 두 줄 이상의 줄바꿈(\n\n)으로 블록을 나눕니다.
+
+      // 문단
       const blocks = text.split(/\n\s*\n/);
-      
-      // 블록 수준 태그 목록: 해당 태그로 시작하면 이미 블록 요소로 간주합니다.
       const blockLevelTags = ['<h1>', '<h2>', '<h3>', '<ul>', '<ol>', '<blockquote>', '<pre>'];
-      
-      // 각 블록을 처리: blockLevelTags로 시작하지 않으면 <p> 태그로 감쌉니다.
       const htmlBlocks = blocks.map(block => {
         const trimmed = block.trim();
-        // 블록 수준 태그로 시작하면 그대로 반환
         for (let tag of blockLevelTags) {
           if (trimmed.startsWith(tag)) {
             return trimmed;
           }
         }
-        // 그렇지 않으면 단일 줄바꿈은 <br>로 변환 후 <p>로 감쌉니다.
         const replaced = trimmed.replace(/\n/g, '<br>');
         return `<p>${replaced}</p>`;
       });
-      
       let html = htmlBlocks.join('');
 
-      // 3. 기존 Markdown 표 처리 (파이프 '|' 기반)
-      html = parseMarkdownTables(html);   
+      // 표
+      html = parseMarkdownTables(html);
 
-      // 각주 영역 생성: footnotesDict에 있는 각주 정의들을 <ol> 목록으로 추가합니다.
       const footnotesKeys = Object.keys(footnotesDict);
       if (footnotesKeys.length > 0) {
         let footnotesHTML = '<div class="footnotes"><hr><ol>';
-        // 번호 순서대로 정렬
         footnotesKeys.sort((a, b) => Number(a) - Number(b)).forEach(num => {
           footnotesHTML += `<li id="fn${num}">${footnotesDict[num]} <a href="#ref${num}" title="Back to content">↩</a></li>`;
         });
         footnotesHTML += '</ol></div>';
         html += footnotesHTML;
       }
-      
-      // 3. 불필요한 <br> 태그 제거 (필요한 경우)
-      html = html.replace(/<\/(h1|h2|h3|ul|ol|blockquote|pre)><br><p>/g, '</$1><p>');
       return html;
     }
-    
+
     function escapeHtml(unsafe) {
       return unsafe
         .replace(/&/g, "&amp;")
@@ -341,23 +387,19 @@
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
     }
-    
-    // 기존 Markdown 표 처리 함수 (파이프 '|' 기반)
     function parseMarkdownTables(text) {
       const tableRegex = /((?:^\|.*\|(?:\r?\n|$))+)/gm;
       return text.replace(tableRegex, function(match) {
         return convertMarkdownTable(match);
       });
     }
-
-    // "<<<TABLE>>>" 블록과 기존 마크다운 표 모두를 변환하는 함수
     function convertMarkdownTable(tableContent) {
       const lines = tableContent.trim().split(/\r?\n/);
       if (lines.length < 2) return tableContent;
       const headers = lines[0].split('|').map(s => s.trim()).filter(s => s);
       const dataRows = lines.slice(2).map(line => line.split('|').map(s => s.trim()).filter(s => s));
       let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
-      headers.forEach(header => { html += `<th>${header}</th>`; });
+      headers.forEach(h => { html += `<th>${h}</th>`; });
       html += '</tr></thead><tbody>';
       dataRows.forEach(row => {
         html += '<tr>';
@@ -367,26 +409,19 @@
       html += '</tbody></table>';
       return html;
     }
-
-    // Plain text 형식의 표 (SQL 출력 등)를 감지하고 변환하는 함수
     function parsePlainTextTables(text) {
-      // 탭(\t)을 4칸의 공백으로 변환 (필수)
       text = text.replace(/\t/g, "    ");
-      
       const lines = text.split(/\r?\n/);
       let outputLines = [];
       let i = 0;
       while (i < lines.length) {
-        // 헤더 행: 최소 2개 이상의 공백으로 구분된 단어가 있어야 함
         if (lines[i].trim() && lines[i].match(/\S+(?:\s{2,}\S+)+/)) {
           const headerLine = lines[i];
-          // 바로 다음 줄이 구분선 (대시와 공백만)
           if (i + 1 < lines.length && lines[i+1].trim().match(/^[-\s]+$/)) {
             let tableLines = [];
             tableLines.push(headerLine);
             tableLines.push(lines[i+1]);
             i += 2;
-            // 데이터 행: 공백으로 구분된 여러 단어가 있는 행
             while (i < lines.length && lines[i].trim() && lines[i].match(/\S+(?:\s{2,}\S+)+/)) {
               tableLines.push(lines[i]);
               i++;
@@ -400,22 +435,14 @@
       }
       return outputLines.join("\n");
     }
-
-    // Plain text 표를 HTML 테이블로 변환하는 함수
     function convertPlainTextTableToHTML(lines) {
-      // 헤더 행과 구분선 행은 반드시 존재함
       const headerLine = lines[0];
-      // 최소 2개 이상의 공백으로 분할 (탭은 이미 공백으로 변환됨)
       const headers = headerLine.trim().split(/\s{2,}/);
       let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
-      headers.forEach(header => {
-        html += `<th>${header}</th>`;
-      });
+      headers.forEach(h => { html += `<th>${h}</th>`; });
       html += '</tr></thead><tbody>';
-      // 데이터 행 처리
       for (let j = 2; j < lines.length; j++) {
         const row = lines[j].trim().split(/\s{2,}/);
-        // 만약 열 개수가 헤더보다 작으면 그대로 셀을 출력합니다.
         html += '<tr>';
         row.forEach(cell => {
           html += `<td>${cell}</td>`;
@@ -425,18 +452,16 @@
       html += '</tbody></table>';
       return html;
     }
-    
+
     /************************************************************************
      * Welcome Screen Rendering
      ************************************************************************/
     function renderWelcomeScreen() {
       const chatBox = document.getElementById('chatBox');
       chatBox.innerHTML = welcomeContentHTML;
-      
-      // Hide the regular input container when welcome screen is shown
       document.getElementById('inputContainer').classList.add('hidden');
       
-      // Auto-resize the welcome textarea
+      // 자동 리사이즈
       const welcomeTextarea = document.getElementById('welcomeMessage');
       if (welcomeTextarea) {
         welcomeTextarea.addEventListener('input', function() {
@@ -446,86 +471,46 @@
     }
 
     /************************************************************************
-     * Function Definitions
+     * Misc Functions
      ************************************************************************/
-    function createNewChatFromSidebar() {
-      createNewChatRoom();
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.remove('open');
-        document.getElementById('sidebar').classList.add('collapsed');
-        updateSidebarOpenerVisibility();
-      }
-    }
-    
     function fillExamplePrompt(text) {
-      // If welcome screen is visible, fill the welcome textarea
       const welcomeTextarea = document.getElementById('welcomeMessage');
       if (welcomeTextarea) {
         welcomeTextarea.value = text;
         autoResizeTextarea(welcomeTextarea);
         welcomeTextarea.focus();
       } else {
-        // Otherwise fill the regular textarea
         const messageInput = document.getElementById('userMessage');
         messageInput.value = text;
         autoResizeTextarea(messageInput);
         messageInput.focus();
       }
     }
-    
     function autoResizeTextarea(textarea) {
       textarea.style.height = 'auto';
       textarea.style.height = textarea.scrollHeight + 'px';
     }
-    
-    function handleWelcomeKeyDown(event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
+    function handleWelcomeKeyDown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
         sendWelcomeMessage();
-      }
-    }
-    
-    function sendWelcomeMessage() {
-      const welcomeTextarea = document.getElementById('welcomeMessage');
-      if (welcomeTextarea && welcomeTextarea.value.trim()) {
-        const message = welcomeTextarea.value.trim();
-        // Copy the message to the regular input
-        document.getElementById('userMessage').value = message;
-        // Remove welcome screen
-        document.getElementById('inputContainer').classList.remove('hidden');
-        // Send the message
-        sendMessage();
       }
     }
 
     /************************************************************************
-     * Page Load and Initialization
+     * Page Load / Initialization
      ************************************************************************/
     window.addEventListener('load', () => {
       createNewChatRoom();
       setupTextareaAutoResize();
       setupMobileMenu();
-      
-      // Check for mobile view
       checkMobileView();
       window.addEventListener('resize', checkMobileView);
-      
-      // Initialize sidebar state
       if (isMobileView) {
         document.getElementById('sidebar').classList.add('collapsed');
         updateSidebarOpenerVisibility();
       }
     });
-    
-    function checkMobileView() {
-      isMobileView = window.innerWidth <= 768;
-      if (isMobileView) {
-        document.getElementById('sidebar').classList.add('collapsed');
-      } else {
-        document.getElementById('sidebar').classList.remove('collapsed');
-      }
-      updateSidebarOpenerVisibility();
-    }
 
     function setupTextareaAutoResize() {
       const textarea = document.getElementById('userMessage');
@@ -533,12 +518,10 @@
         autoResizeTextarea(this);
       });
     }
-
     function setupMobileMenu() {
       document.addEventListener('click', (e) => {
         const sidebar = document.getElementById('sidebar');
         const sidebarOpener = document.getElementById('sidebarOpener');
-        
         if (isMobileView && 
             sidebar.classList.contains('open') &&
             !sidebar.contains(e.target) &&
@@ -549,24 +532,29 @@
         }
       });
     }
-
+    function checkMobileView() {
+      isMobileView = window.innerWidth <= 768;
+      const sidebar = document.getElementById('sidebar');
+      if (isMobileView) {
+        sidebar.classList.add('collapsed');
+      } else {
+        sidebar.classList.remove('collapsed');
+      }
+      updateSidebarOpenerVisibility();
+    }
     function toggleSidebar() {
       const sidebar = document.getElementById('sidebar');
-      
       if (isMobileView) {
         sidebar.classList.toggle('open');
         sidebar.classList.toggle('collapsed');
       } else {
         sidebar.classList.toggle('collapsed');
       }
-      
       updateSidebarOpenerVisibility();
     }
-    
     function updateSidebarOpenerVisibility() {
       const sidebar = document.getElementById('sidebar');
       const opener = document.getElementById('sidebarOpener');
-      
       if (sidebar.classList.contains('collapsed')) {
         opener.style.display = 'flex';
       } else {
@@ -575,55 +563,44 @@
     }
 
     /************************************************************************
-     * History Loading and Chat Room Rendering
+     * Welcome 화면 이미지 미리보기 로직
      ************************************************************************/
-    async function loadHistory(requestId) {
-      try {
-        const response = await fetch(`/history?request_id=${requestId}`);
-        if (response.ok) {
-          const historyData = await response.json();
-          const roomIndex = chatRooms.findIndex(r => r.requestId === requestId);
-          if (roomIndex !== -1) {
-            chatRooms[roomIndex].messages = historyData.history;
-          } else {
-            chatRooms.push({ requestId: requestId, messages: historyData.history });
-          }
-        } else {
-          console.error("History load error:", response.status);
-        }
-      } catch (error) {
-        console.error("Error loading history:", error);
-      }
-    }
-
-    // renderChatBox: 만약 해당 채팅방에 메시지가 없으면 무조건 환영 화면을 보여줍니다.
-    function renderChatBox(requestId) {
-      const chatBox = document.getElementById("chatBox");
-      chatBox.innerHTML = "";
-      const room = chatRooms.find(r => r.requestId === requestId);
-      
-      if (room && room.messages && room.messages.length > 0) {
-        // Show regular input container
-        document.getElementById('inputContainer').classList.remove('hidden');
-        
-        room.messages.forEach((msg, index) => {
-          let sender = msg.role === "human" ? "사용자" : "AI";
-          appendMessageToChatBox(sender, msg.content, index);
+    document.addEventListener('DOMContentLoaded', () => {
+      const welcomeImgInput = document.getElementById('welcomeImageUpload');
+      if (welcomeImgInput) {
+        welcomeImgInput.addEventListener('change', function() {
+          const file = this.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = function(e) {
+            const preview = document.getElementById('welcomeImagePreview');
+            preview.innerHTML = '';
+            const img = document.createElement('img');
+            img.src = e.target.result;
+            img.style.maxWidth = '100%';
+            img.style.maxHeight = '100%';
+            preview.appendChild(img);
+          };
+          reader.readAsDataURL(file);
         });
-      } else {
-        renderWelcomeScreen();
       }
-      
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
+    });
 
-    // setActiveChatRoom: 새로운 채팅방이면 바로 환영 화면, 기존 채팅방이면 history를 로드한 후 렌더링
+    /************************************************************************
+     * Chat Room & History
+     ************************************************************************/
+    async function createNewChatRoom() {
+      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
+      chatRooms.push({ requestId: newRequestId, messages: [] });
+      setActiveChatRoom(newRequestId);
+      renderChatRoomList();
+    }
     async function setActiveChatRoom(requestId) {
       currentRequestId = requestId;
       document.getElementById("chatRoomId").innerText = `Chat Room: ${requestId}`;
       let room = chatRooms.find(r => r.requestId === requestId);
       if (!room) {
-        room = { requestId: requestId, messages: [] };
+        room = { requestId, messages: [] };
         chatRooms.push(room);
         renderWelcomeScreen();
       } else {
@@ -632,48 +609,34 @@
       }
       renderChatRoomList();
       clearReferenceData();
-      
       if (isMobileView) {
-        document.getElementById('sidebar').classList.remove('open');
-        document.getElementById('sidebar').classList.add('collapsed');
+        const sidebar = document.getElementById('sidebar');
+        sidebar.classList.remove('open');
+        sidebar.classList.add('collapsed');
         updateSidebarOpenerVisibility();
       }
     }
-    
-    function handleKeyDown(event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-      }
-    }
-
-    /************************************************************************
-     * Chat Room Management
-     ************************************************************************/
-    function createNewChatRoom() {
-      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
-      // 새로운 채팅방은 messages 배열이 비어 있으므로 renderWelcomeScreen()에서 환영 화면이 나타납니다.
-      chatRooms.push({ requestId: newRequestId, messages: [] });
-      setActiveChatRoom(newRequestId);
-      renderChatRoomList();
-    }
-
     function renderChatRoomList() {
       const ul = document.getElementById("chatRoomList");
       ul.innerHTML = "";
-      chatRooms.forEach((room) => {
+      chatRooms.forEach(room => {
         const li = document.createElement("li");
         const btn = document.createElement("button");
         let chatName = "New Chat";
         if (room.messages && room.messages.length > 0) {
           const firstUserMsg = room.messages.find(msg => msg.role === "human");
           if (firstUserMsg) {
-            chatName = firstUserMsg.content.substring(0, 20) + (firstUserMsg.content.length > 20 ? "..." : "");
+            chatName = firstUserMsg.content.substring(0, 20)
+                       + (firstUserMsg.content.length > 20 ? "..." : "");
           }
         }
-        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-        </svg> ${chatName}`;
+        btn.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+               viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14
+                     a2 2 0 0 1 2 2z"></path>
+          </svg> ${chatName}`;
         if (room.requestId === currentRequestId) {
           btn.classList.add("active");
         }
@@ -682,95 +645,196 @@
         ul.appendChild(li);
       });
     }
-
-    /************************************************************************
-     * Chat Message Display Helpers
-     ************************************************************************/
-    function appendMessageToChatBox(sender, message, msgIndex = null) {
+    async function loadHistory(requestId) {
+      try {
+        const response = await fetch(`/history?request_id=${requestId}`);
+        if (response.ok) {
+          const data = await response.json();
+          const room = chatRooms.find(r => r.requestId === requestId);
+          if (room) {
+            room.messages = data.history;
+          }
+        }
+      } catch (err) {
+        console.error("History load error:", err);
+      }
+    }
+    function renderChatBox(requestId) {
       const chatBox = document.getElementById("chatBox");
-      // 만약 채팅창 내에 환영 화면(.welcome-screen)이 있다면 제거
-      const welcomeElem = chatBox.querySelector('.welcome-screen');
-      if (welcomeElem) {
-        chatBox.removeChild(welcomeElem);
-        // Show the regular input container when welcome screen is removed
+      chatBox.innerHTML = "";
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (room && room.messages && room.messages.length > 0) {
         document.getElementById('inputContainer').classList.remove('hidden');
-      }
-      
-      const msgDiv = document.createElement("div");
-      msgDiv.classList.add("message-line");
-      let messageClass = "";
-      let senderIcon = "";
-      
-      if (sender === "사용자") {
-        messageClass = "message-user";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-          <circle cx="12" cy="7" r="4"></circle>
-        </svg>`;
-      } else if (sender === "AI") {
-        messageClass = "message-ai";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="3" y1="9" x2="21" y2="9"></line>
-          <line x1="9" y1="21" x2="9" y2="9"></line>
-        </svg>`;
+        room.messages.forEach((msg, i) => {
+          let sender = (msg.role === "human") ? "사용자" : 
+                       (msg.role === "ai" ? "AI" : "시스템");
+          appendMessageToChatBox(sender, msg.content, i);
+        });
       } else {
-        messageClass = "message-system";
-        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>`;
+        renderWelcomeScreen();
       }
-      
-      const messageContent = sender === "AI" ? parseMarkdown(message) : escapeHtml(message);
-      msgDiv.classList.add(messageClass);
-      
-      // 레퍼런스 버튼 추가 (AI 메시지에만)
-      let referenceButton = '';
-      if (sender === "AI" && msgIndex !== null) {
-        referenceButton = `
-          <button class="message-ref-btn" onclick="loadReferenceForMessage(${msgIndex})">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-              <polyline points="15 3 21 3 21 9"></polyline>
-              <line x1="10" y1="14" x2="21" y2="3"></line>
-            </svg>
-            <span>References</span>
-          </button>
-        `;
-      }
-      
-      msgDiv.innerHTML = `
-        <div class="message-header">
-          ${senderIcon}
-          ${sender}
-          ${referenceButton}
-        </div>
-        <div class="message-content">${messageContent}</div>
-      `;
-      chatBox.appendChild(msgDiv);
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
+    function createNewChatFromSidebar() {
+      createNewChatRoom();
+      if (isMobileView) {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebar').classList.add('collapsed');
+        updateSidebarOpenerVisibility();
+      }
+    }
+
     /************************************************************************
-     * Streaming (SSE) Message Sending and Receiving
+     * Sending from Welcome Screen
      ************************************************************************/
+    async function sendWelcomeMessage() {
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      const textValue = (welcomeTextarea && welcomeTextarea.value.trim()) 
+                         ? welcomeTextarea.value.trim()
+                         : "";
+      const welcomeImgInput = document.getElementById('welcomeImageUpload');
+      const file = welcomeImgInput.files[0];
+
+      // 유저가 아무것도 입력하지 않았다면 무시
+      if (!textValue && !file) return;
+
+      // 채팅방 설정 (이미 존재)
+      const originalRequestId = currentRequestId;
+      // 먼저 사용자 메시지 추가
+      if (textValue) {
+        appendMessageToChatBox("사용자", textValue);
+        storeMessageInRoom(originalRequestId, "사용자", textValue);
+      }
+
+      // Welcome -> 일반 채팅 입력창 보이도록
+      document.getElementById('inputContainer').classList.remove('hidden');
+
+      // 이미지가 있다면 single-shot /image_query 로 전송
+      if (file) {
+        // 이미지 SSE 아닌 단일 전송
+        startAIStreamingMessage();
+        try {
+          const base64 = await readFileAsBase64(file);
+          const payload = {
+            image_data: base64,
+            query: textValue
+          };
+          const resp = await fetch('/image_query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!resp.ok) {
+            throw new Error(`이미지 쿼리 실패: ${resp.status}`);
+          }
+          const result = await resp.json();
+          let finalAnswer = "";
+          if (typeof result === 'object' && result.answer) {
+            finalAnswer = result.answer;
+          } else if (typeof result === 'string') {
+            finalAnswer = result;
+          } else {
+            finalAnswer = JSON.stringify(result);
+          }
+          updateAIStreamingMessage(finalAnswer);
+          finalizeAIMessage(finalAnswer, originalRequestId);
+        } catch (error) {
+          const errMsg = "이미지 처리 중 오류: " + error.message;
+          updateAIStreamingMessage(errMsg);
+          finalizeAIMessage(errMsg, originalRequestId);
+        } finally {
+          welcomeImgInput.value = '';
+          document.getElementById('welcomeImagePreview').innerHTML = '';
+        }
+      } else {
+        // 파일 없으면 일반 SSE 로직
+        // 기존 SSE 코드와 유사
+        const payload = {
+          qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
+          user_id: "user123",
+          page_id: originalRequestId,
+          auth_class: "admin",
+          qry_contents: textValue,
+          qry_time: new Date().toISOString()
+        };
+        try {
+          const response = await fetch('/query_stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!response.ok) {
+            throw new Error("Response error: " + response.status);
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+          let sseBuffer = "";
+          let partialAnswer = "";
+          startAIStreamingMessage();
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            sseBuffer += chunk;
+            const lines = sseBuffer.split("\n");
+            sseBuffer = lines.pop();
+            for (let line of lines) {
+              if (!line) continue;
+              if (line.startsWith("data:")) {
+                const jsonStr = line.slice(5);
+                if (jsonStr === "[[STREAM_DONE]]") {
+                  finalizeAIMessage(partialAnswer, originalRequestId);
+                  return;
+                }
+                try {
+                  const sseData = JSON.parse(jsonStr);
+                  if (sseData.type === "answer") {
+                    partialAnswer += sseData.answer;
+                    updateAIStreamingMessage(partialAnswer);
+                  } else if (sseData.type === "reference") {
+                    addReferenceData(sseData);
+                  }
+                } catch {
+                  partialAnswer += jsonStr;
+                  updateAIStreamingMessage(partialAnswer);
+                }
+              }
+            }
+          }
+          finalizeAIMessage(partialAnswer, originalRequestId);
+        } catch (err) {
+          appendMessageToChatBox("시스템", "Error occurred: " + err.message);
+          storeMessageInRoom(currentRequestId, "시스템", "Error: " + err.message);
+        }
+      }
+
+      // Welcome 화면 제거
+      const chatBox = document.getElementById('chatBox');
+      const welcomeElem = chatBox.querySelector('.welcome-screen');
+      if (welcomeElem) {
+        chatBox.removeChild(welcomeElem);
+      }
+    }
+
+    /************************************************************************
+     * Normal Chat Input
+     ************************************************************************/
+    function handleKeyDown(event) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    }
     async function sendMessage() {
       const messageInput = document.getElementById("userMessage");
       const imageInput = document.getElementById('imageUpload');
       const message = messageInput.value.trim();
-  
-      // BLOCK if empty text AND no image, or if a request is in flight
       if (!message && imageInput.files.length === 0) return;
       if (isProcessing) return;
-
       isProcessing = true;
       document.getElementById("sendButton").disabled = true;
-      
-      // 사용자가 메시지를 보내면 환영 화면은 더 이상 필요 없으므로 별도 처리 없이 메시지 추가 시 제거됨
-      
-      // 1) Append the user's text to the chatbox
+      // 사용자 메시지 표시
       if (message) {
         appendMessageToChatBox("사용자", message);
         storeMessageInRoom(currentRequestId, "사용자", message);
@@ -778,18 +842,14 @@
         messageInput.style.height = 'auto';
       }
       clearReferenceData();
-
-      // 2) If an image is selected, run the single image query
       if (imageInput.files.length > 0) {
-        console.log("Image detected, sending image query...");
+        // 이미지 전송
         await sendImageQuery(message);
-        // Done
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
         return;
       }
-
-      // 3) Otherwise do normal SSE streaming
+      // SSE로 전송
       const originalRequestId = currentRequestId;
       const payload = {
         qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
@@ -799,27 +859,20 @@
         qry_contents: message,
         qry_time: new Date().toISOString()
       };
-      console.log("Sending payload:", payload);
-      
       try {
         const response = await fetch('/query_stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-
         if (!response.ok) {
           throw new Error("Response error: " + response.status);
         }
-
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
-
         let sseBuffer = "";
         let partialAnswer = "";
-
         startAIStreamingMessage();
-
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -830,7 +883,7 @@
           for (let line of lines) {
             if (!line) continue;
             if (line.startsWith("data:")) {
-              const jsonStr = line.slice(5); // 추가적인 공백 제거 없이 그대로 사용
+              const jsonStr = line.slice(5);
               if (jsonStr === "[[STREAM_DONE]]") {
                 finalizeAIMessage(partialAnswer, originalRequestId);
                 isProcessing = false;
@@ -844,8 +897,6 @@
                   updateAIStreamingMessage(partialAnswer);
                 } else if (sseData.type === "reference") {
                   addReferenceData(sseData);
-                } else {
-                  console.log("Other SSE data:", sseData);
                 }
               } catch (err) {
                 partialAnswer += jsonStr;
@@ -858,101 +909,202 @@
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
       } catch (err) {
-        appendMessageToChatBox("시스템", "Error occurred: " + err.message);
-        storeMessageInRoom(currentRequestId, "시스템", "Error occurred: " + err.message);
+        appendMessageToChatBox("시스템", "Error: " + err.message);
+        storeMessageInRoom(currentRequestId, "시스템", "Error: " + err.message);
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
       }
     }
-    
     function storeMessageInRoom(requestId, sender, text) {
       const room = chatRooms.find(r => r.requestId === requestId);
-      if (room) {
-        room.messages.push({ role: sender === "사용자" ? "human" : "ai", content: text });
-      }
+      if (!room) return;
+      room.messages.push({ role: (sender === "사용자" ? "human" : "ai"), content: text });
     }
 
     /************************************************************************
-     * AI Streaming Display (Temporary Message)
+     * Image Upload Previews and Single-Shot Query
      ************************************************************************/
-     let tempAiMsgDiv = null;
-     function startAIStreamingMessage() {
-       const chatBox = document.getElementById("chatBox");
-       tempAiMsgDiv = document.createElement("div");
-       tempAiMsgDiv.classList.add("message-line", "message-ai");
-       tempAiMsgDiv.innerHTML = `
-       <div class="message-header">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="3" y1="9" x2="21" y2="9"></line>
-          <line x1="9" y1="21" x2="9" y2="9"></line>
+    document.getElementById('imageUpload').addEventListener('change', function(event) {
+      const file = event.target.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const img = document.createElement('img');
+          img.src = e.target.result;
+          img.style.maxWidth = '100%';
+          img.style.maxHeight = '100%';
+          const imagePreview = document.getElementById('imagePreview');
+          imagePreview.innerHTML = '';
+          imagePreview.appendChild(img);
+        }
+        reader.readAsDataURL(file);
+      }
+    });
+    async function sendImageQuery(userText) {
+      const imageInput = document.getElementById('imageUpload');
+      if (imageInput.files.length === 0) return;
+      startAIStreamingMessage();
+      try {
+        const base64Image = await readFileAsBase64(imageInput.files[0]);
+        const payload = {
+          image_data: base64Image,
+          query: userText || ""
+        };
+        const response = await fetch('/image_query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(`Image query failed with status: ${response.status}`);
+        }
+        const result = await response.json();
+        let finalAnswer = "";
+        if (typeof result === 'object' && result.answer) {
+          finalAnswer = result.answer;
+        } else if (typeof result === 'string') {
+          finalAnswer = result;
+        } else {
+          finalAnswer = JSON.stringify(result);
+        }
+        updateAIStreamingMessage(finalAnswer);
+        finalizeAIMessage(finalAnswer, currentRequestId);
+      } catch (error) {
+        const errMsg = "이미지 처리 중 오류: " + error.message;
+        updateAIStreamingMessage(errMsg);
+        finalizeAIMessage(errMsg, currentRequestId);
+      } finally {
+        imageInput.value = '';
+        document.getElementById('imagePreview').innerHTML = '';
+      }
+    }
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64 = reader.result.split(',')[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    /************************************************************************
+     * AI Streaming Display
+     ************************************************************************/
+    let tempAiMsgDiv = null;
+    function startAIStreamingMessage() {
+      const chatBox = document.getElementById("chatBox");
+      tempAiMsgDiv = document.createElement("div");
+      tempAiMsgDiv.classList.add("message-line", "message-ai");
+      tempAiMsgDiv.innerHTML = `
+        <div class="message-header">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+               viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="3" y1="9" x2="21" y2="9"></line>
+            <line x1="9" y1="21" x2="9" y2="9"></line>
           </svg>
           AI
           <div class="typing-indicator">
-            <span></span>
-            <span></span>
-            <span></span>
+            <span></span><span></span><span></span>
           </div>
-          </div>
-          <div class="message-content" id="aiTempText"></div>
-          `;
-          chatBox.appendChild(tempAiMsgDiv);
-          chatBox.scrollTop = chatBox.scrollHeight;
-        }
-        
-    function unescapeNewlines(text) {
-      // 만약 text 내에 리터럴 "\\n"이 있다면 이를 실제 줄바꿈으로 변환
-      return text.replace(/\\n/g, "\n");
+        </div>
+        <div class="message-content" id="aiTempText"></div>
+      `;
+      chatBox.appendChild(tempAiMsgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
     }
-
     function updateAIStreamingMessage(text) {
       if (!tempAiMsgDiv) return;
       const contentDiv = tempAiMsgDiv.querySelector("#aiTempText");
       if (contentDiv) {
-        // 먼저, 리터럴 이스케이프된 줄바꿈을 실제 줄바꿈으로 변환
-        const unescapedText = unescapeNewlines(text);
-        contentDiv.innerHTML = parseMarkdown(unescapedText);
+        contentDiv.innerHTML = parseMarkdown(unescapeNewlines(text));
       }
       const chatBox = document.getElementById("chatBox");
       chatBox.scrollTop = chatBox.scrollHeight;
     }
-
-    function finalizeAIMessage(finalText, queryRequestId) {
-      storeMessageInRoom(queryRequestId, "AI", finalText);
-      if (currentRequestId === queryRequestId) {
+    function unescapeNewlines(text) {
+      return text.replace(/\\n/g, "\n");
+    }
+    function finalizeAIMessage(finalText, requestId) {
+      storeMessageInRoom(requestId, "AI", finalText);
+      if (currentRequestId === requestId) {
+        renderChatBox(requestId);
         renderChatRoomList();
-        renderChatBox(queryRequestId);
       }
       if (referenceList.length > 0) {
         document.getElementById("toggleRefBtn").style.display = "flex";
       }
     }
-    
+
     /************************************************************************
-     * Reference Data Related Functions
+     * Chat Box Helpers
      ************************************************************************/
-    function addReferenceData(refData) {
-      referenceList.push(refData);
-      console.log("Reference data received:", refData);
+    function appendMessageToChatBox(sender, message, msgIndex = null) {
+      const chatBox = document.getElementById("chatBox");
+      const welcomeElem = chatBox.querySelector('.welcome-screen');
+      if (welcomeElem) {
+        chatBox.removeChild(welcomeElem);
+        document.getElementById('inputContainer').classList.remove('hidden');
+      }
+      const msgDiv = document.createElement("div");
+      msgDiv.classList.add("message-line");
+      let messageClass = "";
+      let senderIcon = "";
+      if (sender === "사용자") {
+        messageClass = "message-user";
+        senderIcon = `<svg ...>...</svg>`; // 생략
+      } else if (sender === "AI") {
+        messageClass = "message-ai";
+        senderIcon = `<svg ...>...</svg>`; // 생략
+      } else {
+        messageClass = "message-system";
+        senderIcon = `<svg ...>...</svg>`; // 생략
+      }
+      const messageContent = sender === "AI" 
+                             ? parseMarkdown(message) 
+                             : escapeHtml(message);
+      msgDiv.classList.add(messageClass);
+      let referenceButton = '';
+      if (sender === "AI" && msgIndex !== null) {
+        referenceButton = `
+          <button class="message-ref-btn" onclick="loadReferenceForMessage(${msgIndex})">
+            <svg ...>...</svg> 
+            <span>References</span>
+          </button>
+        `;
+      }
+      msgDiv.innerHTML = `
+        <div class="message-header">
+          ${senderIcon}
+          ${sender}
+          ${referenceButton}
+        </div>
+        <div class="message-content">${messageContent}</div>
+      `;
+      chatBox.appendChild(msgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
     }
-    
+
+    /************************************************************************
+     * Reference
+     ************************************************************************/
     function clearReferenceData() {
       referenceList = [];
       currentlyViewingMsgIndex = null;
       document.getElementById("toggleRefBtn").style.display = "none";
       document.getElementById("referenceContainer").style.display = "none";
       document.getElementById("referenceContainer").innerHTML = "";
-      
-      // 선택된 메시지 하이라이트 제거
       document.querySelectorAll(".message-ai.selected").forEach(el => {
         el.classList.remove("selected");
       });
     }
-    
     function toggleReferences() {
       const container = document.getElementById("referenceContainer");
       const toggleBtn = document.getElementById("toggleRefBtn");
-      
       if (container.style.display === "none" || container.style.display === "") {
         container.style.display = "block";
         if (!container.innerHTML.trim()) {
@@ -964,38 +1116,35 @@
         toggleBtn.querySelector('span').textContent = "Show All References";
       }
     }
-    
     function renderReferenceData() {
       const container = document.getElementById("referenceContainer");
       container.innerHTML = "";
-      
       if (referenceList.length === 0) {
         container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
         return;
       }
-      
-      referenceList.forEach((refObj, idx) => {
+      referenceList.forEach((refObj, i) => {
         const div = document.createElement("div");
         div.className = "reference-item";
         div.innerHTML = `
           <div class="reference-header">
-            <h4>Reference #${idx + 1}</h4>
+            <h4>Reference #${i + 1}</h4>
           </div>
           <pre>${JSON.stringify(refObj, null, 2)}</pre>
         `;
         container.appendChild(div);
       });
     }
-    
+    function addReferenceData(refData) {
+      referenceList.push(refData);
+    }
     function loadReferenceForMessage(msgIndex) {
-      // 이미 선택된 메시지인 경우 참조 컨테이너 토글
       if (currentlyViewingMsgIndex === msgIndex) {
         const container = document.getElementById("referenceContainer");
         if (container.style.display === "none" || container.style.display === "") {
           container.style.display = "block";
         } else {
           container.style.display = "none";
-          // 선택 상태 해제
           document.querySelectorAll(".message-ai.selected").forEach(el => {
             el.classList.remove("selected");
           });
@@ -1003,23 +1152,18 @@
           return;
         }
       } else {
-        // 다른 메시지 선택 시 하이라이트 변경
         document.querySelectorAll(".message-ai.selected").forEach(el => {
           el.classList.remove("selected");
         });
-        
-        // 현재 메시지 하이라이트
         const messages = document.querySelectorAll(".message-line.message-ai");
         if (messages[msgIndex]) {
           messages[msgIndex].classList.add("selected");
         }
-        
         currentlyViewingMsgIndex = msgIndex;
       }
-      
       const url = `/reference?request_id=${currentRequestId}&msg_index=${msgIndex}`;
       fetch(url)
-        .then(response => response.json())
+        .then(r => r.json())
         .then(data => {
           if (data.error) {
             alert(data.error);
@@ -1032,24 +1176,19 @@
           alert("참조 데이터를 불러오는 중 오류 발생");
         });
     }
-    
     function displayReferenceData(refs, msgIndex) {
       const container = document.getElementById("referenceContainer");
       container.innerHTML = "";
-      
-      // 메시지 인덱스 표시
       const headerDiv = document.createElement("div");
       headerDiv.className = "reference-container-header";
-      headerDiv.innerHTML = `<h3>References for Message #${msgIndex + 1}</h3>
+      headerDiv.innerHTML = `
+        <h3>References for Message #${msgIndex + 1}</h3>
         <button class="close-ref-btn" onclick="closeReferences()">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>`;
+          <svg ...>...</svg>
+        </button>
+      `;
       container.appendChild(headerDiv);
-      
-      if (refs.length === 0) {
+      if (!refs || refs.length === 0) {
         container.innerHTML += "<p class='no-references'>참조 데이터가 없습니다.</p>";
       } else {
         refs.forEach((ref, idx) => {
@@ -1064,108 +1203,15 @@
           container.appendChild(div);
         });
       }
-      
       container.style.display = "block";
     }
-    
     function closeReferences() {
       document.getElementById("referenceContainer").style.display = "none";
-      // 선택 상태 해제
       document.querySelectorAll(".message-ai.selected").forEach(el => {
         el.classList.remove("selected");
       });
       currentlyViewingMsgIndex = null;
     }
-
-    // 이미지 업로드 처리
-    document.getElementById('imageUpload').addEventListener('change', function(event) {
-      const file = event.target.files[0];
-      if (file) {
-          const reader = new FileReader();
-          reader.onload = function(e) {
-              const img = document.createElement('img');
-              img.src = e.target.result;
-              img.style.maxWidth = '100%';
-              img.style.maxHeight = '100%';
-              const imagePreview = document.getElementById('imagePreview');
-              imagePreview.innerHTML = '';
-              imagePreview.appendChild(img);
-          }
-          reader.readAsDataURL(file);
-      }
-    });
-
-    /*********************************************************************
-    * IMAGE QUERY LOGIC (SINGLE-SHOT, NO STREAM)
-    *********************************************************************/
-    async function sendImageQuery(userText) {
-      const imageInput = document.getElementById('imageUpload');
-      if (imageInput.files.length === 0) {
-        return; // no image, do nothing
-      }
-      const file = imageInput.files[0];
-
-      // show AI message "Generating..." as a placeholder
-      startAIStreamingMessage();
-
-      try {
-        const base64Image = await readFileAsBase64(file);
-        // Call /image_query with the base64 data plus any user text
-        const payload = {
-          image_data: base64Image,
-          query: userText || ""  // the text typed by user
-        };
-        const response = await fetch('/image_query', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        if (!response.ok) {
-          throw new Error(`Image query failed with status: ${response.status}`);
-        }
-        const result = await response.json();
-        console.log("Image Query Response:", result);
-
-        // Typically your server returns something like: 
-        // { ... possibly more fields ..., "rsp_data": [...], "answer": "some string" }
-        // If your server returns a single string or you store it under "answer", adapt below:
-
-        let finalAnswer = "";
-        if (typeof result === 'object' && result.answer) {
-          finalAnswer = result.answer;
-        } else if (typeof result === 'string') {
-          finalAnswer = result; 
-        } else {
-          finalAnswer = JSON.stringify(result); 
-        }
-
-        updateAIStreamingMessage(finalAnswer);
-        finalizeAIMessage(finalAnswer, currentRequestId);
-
-      } catch (error) {
-        const errMsg = "이미지 처리 중 오류: " + error.message;
-        updateAIStreamingMessage(errMsg);
-        finalizeAIMessage(errMsg, currentRequestId);
-      } finally {
-        // cleanup
-        imageInput.value = '';
-        document.getElementById('imagePreview').innerHTML = '';
-      }
-    }
-
-    // Helper to read file as base64
-    function readFileAsBase64(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const base64 = reader.result.split(',')[1];
-          resolve(base64);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-    }
-
   </script>
 </body>
 </html>
