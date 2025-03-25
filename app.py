@@ -12,7 +12,7 @@ os.environ["MKL_THREADING_LAYER"] = "GNU"
 # Increase download timeout (in seconds)
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
 # Use the vLLM as v1 version
-os.environ["VLLM_USE_V1"] = "1"
+os.environ["VLLM_USE_V1"] = "0"
 os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
@@ -36,11 +36,12 @@ from flask import (
 import json
 import yaml
 from box import Box
-from utils import random_seed, error_format, send_data_to_server, process_format_to_response
 from datetime import datetime
 
 # Import the Ray modules
-from ray_deploy import init_ray, InferenceActor, InferenceService, SSEQueueManager
+from ray_deploy import init_ray, InferenceService, SSEQueueManager
+# Import utils
+from utils import random_seed, error_format, send_data_to_server, process_format_to_response
 
 # ------ checking process of the thread level
 import logging
@@ -300,6 +301,7 @@ def query_stream_to_clt():
     # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
 
+
 # --------------------- History & Reference part ----------------------------
 
 # 새로 추가1: request_id로 대화 기록을 조회하는 API 엔드포인트
@@ -360,25 +362,97 @@ def get_reference():
         print(f"[ERROR /reference] {e}")
         error_resp = error_format(f"참조 조회 오류: {str(e)}", 500)
         return Response(error_resp, content_type="application/json; charset=utf-8")
-    
+
+# Image query & Image streaming query
 @app.route("/image_query", methods=["POST"])
-async def image_query():
+async def image_query_route():
     """
-    JSON 예시:
-    {
-        "image_data": "base64....",
-        "qry_contents": "이미지 관련 질문",
-        "request_id": "some_id"
-    }
+    이미지 쿼리(비스트리밍): /image_query
+    body: { "image_data": base64 or URL, "qry_contents": "...", "request_id": "..." }
     """
     try:
-        http_query = request.json
-        # Ray Actor(inference_handle)로 전달
-        result_ref = inference_handle.image_query.remote(http_query)
-        result = await result_ref
-        return jsonify(result)
+        http_query = request.json or {}
+        result = await inference_handle.image_query.remote(http_query)
+        if isinstance(result, dict):
+            return jsonify(result)
+        else:
+            return Response(result, content_type=content_type)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return Response(error_format(str(e), 500), content_type=content_type)
+
+@app.route("/image_query_stream", methods=["POST"])
+def image_query_stream_route():
+    """
+    이미지 쿼리(스트리밍): /image_query_stream
+    SSE 방식으로 partial token을 전송
+    """
+    body = request.json or {}
+    
+    qry_id = body.get("qry_id")
+    user_id = body.get("user_id")
+    page_id = body.get("page_id")
+    auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
+    qry_contents = body.get("qry_contents", "")
+    qry_time = body.get("qry_time")  # 클라이언트 측 타임스탬프
+    
+    print(f"[DEBUG] /query_stream called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{qry_contents}', qry_time='{qry_time}'")
+    
+    http_query = {
+        "qry_id": qry_id,
+        "user_id": user_id,
+        "page_id": page_id if page_id else str(uuid.uuid4()),
+        "auth_class": auth_class,
+        "qry_contents": qry_contents,
+        "qry_time": qry_time
+    }
+    
+    # 기존 request_id 대신 page_id를 SSE queue key로 사용
+    print(f"[DEBUG] Built http_query: {http_query}")
+    
+    response = inference_handle.image_query_stream.remote(http_query)
+    obj_ref = response._to_object_ref_sync()
+    chat_id = ray.get(obj_ref)  # chat_id는 page_id
+    print(f"[DEBUG] streaming chat_id={chat_id}")
+
+    def sse_generator():
+        try:
+            while True:
+                # SSEQueueManager에서 토큰을 가져옴 (chat_id 사용)
+                token = ray.get(sse_manager.get_token.remote(chat_id, 120))
+                if token is None or token == "[[STREAM_DONE]]":
+                    break
+                yield f"data: {token}\n\n"
+        except Exception as e:
+            error_token = json.dumps({"type": "error", "message": str(e)})
+            yield f"data: {error_token}\n\n"
+        finally:
+            try:
+                obj_ref = inference_handle.close_sse_queue.remote(chat_id)._to_object_ref_sync()
+                ray.get(obj_ref)
+            except Exception as ex:
+                print(f"[DEBUG] Error closing SSE queue for {chat_id}: {str(ex)}")
+            print("[DEBUG] SSE closed.")
+
+    return Response(sse_generator(), mimetype="text/event-stream")
+
+# @app.route("/image_query", methods=["POST"])
+# async def image_query():
+#     """
+#     JSON 예시:
+#     {
+#         "image_data": "base64....",
+#         "qry_contents": "이미지 관련 질문",
+#         "request_id": "some_id"
+#     }
+#     """
+#     try:
+#         http_query = request.json
+#         # Ray Actor(inference_handle)로 전달
+#         result_ref = inference_handle.image_query.remote(http_query)
+#         result = await result_ref
+#         return jsonify(result)
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
 
 # Flask app 실행
 if __name__ == "__main__":

@@ -8,7 +8,6 @@ import uuid
 import logging
 from datetime import datetime, timedelta
 # from sql import generate_sql  # (구) 제거된 import
-from core.SQL_NS import run_sql_unno, run_sql_bl, get_metadata  # SQL만 담당하는 함수들만 import
 
 # Tracking
 from utils.tracking import time_tracker
@@ -18,8 +17,10 @@ from vllm.engine.async_llm_engine import AsyncLLMEngine
 # 이미지 임베딩을 별도로 계산하여 프롬프트에 포함하기
 from vllm.model_executor.models.interfaces import SupportsMultiModal
 
-# In RAG.py (at the top, add an import for prompts)
+# Prompt 템플릿 불러오기
 from prompt import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE, SQL_EXTRACTION_PROMPT_TEMPLATE
+# SQL만 담당하는 함수들만 import
+from core.SQL_NS import run_sql_unno, run_sql_bl, get_metadata  
 
 global beep
 beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
@@ -595,8 +596,243 @@ async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_para
 # -------------------------------------------------------------------------
 # PROCESS IMAGE QUERY (IMAGE TO TEXT)
 # -------------------------------------------------------------------------
+@time_tracker
+async def image_query(http_query, model, tokenizer, config):
+    """
+    기존 ray_utils.py의 process_image_query 로직을 옮겨온 함수.
+    이미지 입력을 받아 최종 한 번에 답변을 생성(스트리밍 없음).
+    """
+    import uuid
+    import base64
+    import io
+    from PIL import Image
+    from transformers import AutoProcessor
+    from vllm import SamplingParams
+    from vllm.multimodal.utils import fetch_image
+    
+    print("[IMAGE-NONSTREAMING-QUERY] Image_query 진입")
+    
+    # 1) 파라미터 파싱
+    request_id = http_query.get("request_id", str(uuid.uuid4()))
+    image_input = http_query.get("image_data")
+    user_query = http_query.get("qry_contents", "이 이미지를 한국어로 잘 설명해주세요.")
+    print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
+    
+    # 2) Image -> PIL
+    pil_image = None
+    try:
+        print("[DEBUG] Step2 - Converting image data to PIL...")
+        if isinstance(image_input, str) and (
+            image_input.startswith("http://") or image_input.startswith("https://")
+        ):
+            print("[DEBUG]   => image_input is a URL; using fetch_image()")
+            pil_image = fetch_image(image_input)
+        else:
+            print("[DEBUG]   => image_input is presumably base64")
+            if isinstance(image_input, str) and image_input.startswith("data:image/"):
+                print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
+                image_input = image_input.split(",", 1)[-1]
+            decoded = base64.b64decode(image_input)
+            print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
+            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+        print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
+    except Exception as e:
+        err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
+        print(err_msg)
+        return {"type": "error", "message": err_msg}
+    
+    # 3) HF Processor 로드
+    try:
+        print(f"[DEBUG] Step3 - Loading processor from '{config.model_id}' ... (use_fast=False)")
+        processor = AutoProcessor.from_pretrained(
+            config.model_id,
+            use_fast=False  # 모델이 fast processor를 지원한다면 True로 시도 가능
+        )
+        print("[DEBUG]   => processor loaded:", type(processor).__name__)
+    except Exception as e:
+        err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
+        print(err_msg)
+        return {"type": "error", "message": err_msg}
+    
+    # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
+    print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "url": pil_image},   # PIL object
+                {"type": "text",  "text": user_query}, # 사용자 질의
+            ],
+        }
+    ]
+    
+    try:
+        # tokenize=False => prompt를 'raw string' 형태로 얻음
+        prompt_string = processor.apply_chat_template(
+            messages,
+            tokenize=False,           # 핵심!
+            add_generation_prompt=True,
+        )
+        print("[DEBUG]   => prompt_string (first ~200 chars):", prompt_string[:200])
+    except Exception as e:
+        err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
+        print(err_msg)
+        return {"type": "error", "message": err_msg}
+    
+    # 5) Sampling Params
+    print("[DEBUG] Step5 - Setting sampling params...")
+    sampling_params = SamplingParams(
+        max_tokens=config.model.max_new_tokens,
+        temperature=config.model.temperature,
+        top_k=config.model.top_k,
+        top_p=config.model.top_p,
+        repetition_penalty=config.model.repetition_penalty,
+    )
+    print("[DEBUG]   => sampling_params =", sampling_params)
+    
+    # 6) Generate 호출
+    print("[DEBUG] Step6 - Starting vLLM generate(...) using multi_modal_data")
+    result_chunks = []
+    try:
+        # vLLM에 prompt와 함께 multi_modal_data를 넘김
+        # => vLLM 내부에서 Gemma3MultiModalProcessor가 image 임베딩 및 token placement 처리
+        generate_request = {
+            "prompt": prompt_string,
+            "multi_modal_data": {
+                "image": [pil_image]  # 여러 장이라면 list에 더 추가
+            }
+        }
 
+        async for out in model.generate(
+            prompt=generate_request,
+            sampling_params=sampling_params,
+            request_id=request_id,
+        ):
+            result_chunks.append(out)
+        print("[DEBUG] Step6 - All chunks retrieved: total:", len(result_chunks))
 
+    except Exception as e:
+        err_msg = f"[ERROR-step6] Error in model.generate: {str(e)}"
+        print(err_msg)
+        return {"type": "error", "message": err_msg}
+
+    if not result_chunks:
+        print("[DEBUG] Step6 - No output from model => returning error")
+        return {"type": "error", "message": "No output from model."}
+
+    final_output = next((c for c in result_chunks if getattr(c, "finished", False)), result_chunks[-1])
+    answer_text = "".join(piece.text for piece in final_output.outputs)
+    print(f"[DEBUG] Final answer: {answer_text}")
+
+    # 완료
+    print(f"[DEBUG] [process_image_query] DONE => request_id={request_id}")
+    return {
+        "result": answer_text,
+        "request_id": request_id,
+        "status_code": 200
+    }
+
+@time_tracker
+async def image_streaming_query(http_query, model, tokenizer, config):
+    """
+    새로 추가된 이미지 스트리밍 함수:
+    - 이미지 입력 + 사용자 텍스트를 받아서, 부분 토큰을 SSE로 전달할 수 있도록 yield 함.
+    - use_vllm=True일 때는 collect_vllm_text_stream와 동일한 방식으로 partial chunk를 yield
+    - HF standard는 TextIteratorStreamer를 이용한 방식으로 partial chunk를 yield
+    """
+    import uuid
+    import base64
+    import io
+    from PIL import Image
+    from transformers import AutoProcessor
+    from vllm import SamplingParams
+    from vllm.multimodal.utils import fetch_image
+
+    print("[IMAGE-STREAMING-QUERY] Image_streaming_query 진입")
+
+    # 1) 파라미터 파싱
+    request_id = http_query.get("request_id", str(uuid.uuid4()))
+    image_input = http_query.get("image_data")
+    user_query = http_query.get("qry_contents", "이 이미지를 설명해주세요.")
+    print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
+    
+    # 2) Image -> PIL
+    try:
+        print("[DEBUG] Step2 - Converting image data to PIL...")
+        if isinstance(image_input, str) and (image_input.startswith("http://") or image_input.startswith("https://")):
+            print("[DEBUG]   => image_input is a URL; using fetch_image()")
+            pil_image = fetch_image(image_input)
+        else:
+            print("[DEBUG]   => image_input is presumably base64")
+            if isinstance(image_input, str) and image_input.startswith("data:image/"):
+                print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
+                image_input = image_input.split(",", 1)[-1]
+            decoded = base64.b64decode(image_input)
+            print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
+            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+        print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
+    except Exception as e:
+        err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
+        print(err_msg)
+        yield {"type": "error", "message": err_msg}
+        return  # No value, simply return
+
+    # 3) HF Processor 로드
+    try:
+        print(f"[DEBUG] Step3 - Loading processor from '{config.model_id}' ... (use_fast=False)")
+        processor = AutoProcessor.from_pretrained(config.model_id, use_fast=False)
+        print("[DEBUG]   => processor loaded:", type(processor).__name__)
+    except Exception as e:
+        err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
+        print(err_msg)
+        yield {"type": "error", "message": err_msg}
+        return
+
+    # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
+    print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "url": pil_image},
+                {"type": "text",  "text": user_query},
+            ],
+        }
+    ]
+    try:
+        prompt_string = processor.apply_chat_template(
+            messages,
+            tokenize=False,           # 핵심!
+            add_generation_prompt=True,
+        )
+        print("[DEBUG]   => prompt_string (first ~200 chars):", prompt_string[:200])
+    except Exception as e:
+        err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
+        print(err_msg)
+        yield {"type": "error", "message": err_msg}
+        return
+
+    # 5) Sampling Params
+    print("[DEBUG] Step5 - Setting sampling params...")
+    sampling_params = SamplingParams(
+        max_tokens=config.model.max_new_tokens,
+        temperature=config.model.temperature,
+        top_k=config.model.top_k,
+        top_p=config.model.top_p,
+        repetition_penalty=config.model.repetition_penalty,
+    )
+    print("[DEBUG]   => sampling_params =", sampling_params)
+    
+    # 6) Generate 호출
+    print("[DEBUG] Step6 - Starting vLLM generate(...) using multi_modal_data")
+    generate_request = {
+        "prompt": prompt_string,
+        "multi_modal_data": {
+            "image": [pil_image]
+        }
+    }
+    async for partial_chunk in collect_vllm_text_stream(generate_request, model, sampling_params, request_id):
+        yield partial_chunk
 
 # ---------------------------
 # *** 새로 추가된 generate_sql 함수 ***

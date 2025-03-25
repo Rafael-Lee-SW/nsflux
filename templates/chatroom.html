@@ -710,7 +710,7 @@
       // Welcome -> 일반 채팅 입력창 보이도록
       document.getElementById('inputContainer').classList.remove('hidden');
 
-      // 이미지가 있다면 single-shot /image_query 로 전송
+      // 이미지가 있다면 single-shot /image_query_stream 로 전송
       if (file) {
         // 이미지 SSE 아닌 단일 전송
         startAIStreamingMessage();

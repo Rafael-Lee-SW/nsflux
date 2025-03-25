@@ -35,6 +35,8 @@ from .RAG import (
     generate_answer_stream,
     collect_vllm_text_stream,
     generate_sql,
+    image_query,
+    image_streaming_query,
 )
 
 from .sql import (
@@ -75,6 +77,8 @@ __all__ = [
     "generate_answer_stream",
     "collect_vllm_text_stream",
     "generate_sql",
+    "image_query",
+    "image_streaming_query",
 
     # sql 모듈 관련 함수들 (sql.py)
     "first_llm",
