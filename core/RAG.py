@@ -18,7 +18,7 @@ from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.model_executor.models.interfaces import SupportsMultiModal
 
 # Prompt 템플릿 불러오기
-from prompt import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE, SQL_EXTRACTION_PROMPT_TEMPLATE
+from prompt import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE, SQL_EXTRACTION_PROMPT_TEMPLATE, IMAGE_DESCRIPTION_PROMPT
 # SQL만 담당하는 함수들만 import
 from core.SQL_NS import run_sql_unno, run_sql_bl, get_metadata  
 
@@ -673,12 +673,11 @@ async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_para
         for completion in request_output.outputs:
             yield completion.text
 
-
 # -------------------------------------------------------------------------
-# PROCESS IMAGE QUERY (IMAGE TO TEXT)
+# PROCESS IMAGE QUERY (IMAGE TO TEXT) - Legacy
 # -------------------------------------------------------------------------
 @time_tracker
-async def image_query(http_query, model, tokenizer, config):
+async def image_query(http_query, model, config):
     """
     기존 ray_utils.py의 process_image_query 로직을 옮겨온 함수.
     이미지 입력을 받아 최종 한 번에 답변을 생성(스트리밍 없음).
@@ -735,14 +734,24 @@ async def image_query(http_query, model, tokenizer, config):
         print(err_msg)
         return {"type": "error", "message": err_msg}
     
+    print("[DEBUG] step 3.5 이미지에 대한 간단한 정보 및 프롬프트화 ")
+    # 이미지에 대한 간단한 정보(실제 서비스에서는 이미지 메타데이터 추출 등을 수행할 수 있음)
+    image_info = "Image data provided"  # 현재는 간단한 문자열 사용
+    
+    prompt_image_sorting = IMAGE_DESCRIPTION_PROMPT.format(image_info=image_info, user_query=user_query)
+    
     # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
     print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
     messages = [
         {
+            "role": "system",
+            "content": [{"type": "text", "text": prompt_image_sorting}]
+        },
+        {
             "role": "user",
             "content": [
-                {"type": "image", "url": pil_image},   # PIL object
-                {"type": "text",  "text": user_query}, # 사용자 질의
+                {"type": "image", "url": pil_image},
+                {"type": "text",  "text": user_query},
             ],
         }
     ]
@@ -807,11 +816,23 @@ async def image_query(http_query, model, tokenizer, config):
 
     # 완료
     print(f"[DEBUG] [process_image_query] DONE => request_id={request_id}")
-    return {
-        "result": answer_text,
-        "request_id": request_id,
-        "status_code": 200
-    }
+    
+    import json
+    try:
+        # 강제적으로 JSON 파싱 – 추가 문장이 있을 경우 추출
+        # 예를 들어, JSON 블록만 추출
+        match = re.search(r'\{.*\}', answer_text, re.DOTALL)
+        if match:
+            result = json.loads(match.group(0))
+        else:
+            raise ValueError("JSON 응답 형식 미확인")
+        if "is_structured" not in result or "description" not in result:
+            raise ValueError("응답에 필요한 키가 누락됨")
+    except Exception as e:
+        # 파싱 실패 시 기본 처리: 추가 RAG가 필요하도록 설정
+        result = {"is_structured": False, "description": http_query.get("qry_contents", "")}
+    return result
+
 
 @time_tracker
 async def image_streaming_query(http_query, model, tokenizer, config):

@@ -18,7 +18,6 @@ from core.RAG import (
     generate_answer,
     generate_answer_stream,
     image_query,
-    image_streaming_query,
 )  # hypothetically
 from utils import (
     load_model,
@@ -32,6 +31,13 @@ from utils.summarizer import summarize_conversation
 from utils.debug_tracking import log_batch_info, log_system_info
 # Langchain Memory system
 from ray_deploy.langchain import CustomConversationBufferMemory, serialize_message
+
+# Configuration
+import yaml
+from box import Box
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
 
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
@@ -148,36 +154,40 @@ class InferenceActor:
         Process a single query from the micro-batch. If 'sse_queue' is given,
         we do partial-token streaming. Otherwise, normal final result.
         """
-        # 스트리밍 요청인 경우 request_id를 미리 초기화
-        request_id = None
         body = http_query_or_stream_dict["http_query"]
         request_check = body.get("qry_contents", "")
         print(
             f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {request_check}, 현재 스레드: {threading.current_thread().name}"
         )
         try:
-            # 1) 스트리밍 구분
-            if (isinstance(http_query_or_stream_dict, dict)
-                and "request_id" in http_query_or_stream_dict):
-                # 스트리밍
+            # Determine) === Is streaming or not ===
+            request_id = None
+            # For streaming, the dict contains a "request_id"
+            if isinstance(http_query_or_stream_dict, dict) and "request_id" in http_query_or_stream_dict:
                 request_id = http_query_or_stream_dict["request_id"]
                 http_query = http_query_or_stream_dict["http_query"]
                 is_streaming = True
                 print(f"[STREAM] _process_single_query: request_id={request_id}")
             else:
-                # Non-스트리밍
                 request_id = None
                 http_query = http_query_or_stream_dict
                 is_streaming = False
                 print("[NORMAL] _process_single_query started...")
                 
+            # 1) bring the user's input query
+            user_input = http_query.get("qry_contents", "")
+            print("[PROCESS_SINGLE_QUERY] user input : ", user_input)
+            
+            # Determine) === Make a description of image ===
+            image_data = http_query.get("image_data")
+            image_description = {"is_structured": False, "description": "이미지는 입력되지 않았습니다."}
+            if image_data is not None:
+                print("[DEBUG] _process_single_query: image_data detected, initiating image_sorting process.")
+                image_description = await image_query(http_query, self.model, config) 
+                
             # 2) Memory 객체 정보 가져오기 (없으면 새로 생성)
             page_id = http_query.get("page_id", request_id)
             memory = self.get_memory_for_session(page_id)
-
-            # 3) 유저가 현재 입력한 쿼리 가져오기
-            user_input = http_query.get("qry_contents", "")
-            print("[PROCESS_SINGLE_QUERY] user input : ", user_input)
             
             # 4) LangChain Memory에서 이전 대화 이력(history) 추출
             past_context = memory.load_memory_variables({}).get("history", [])
@@ -198,16 +208,11 @@ class InferenceActor:
             print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, 사용자 입력 질문: {len(query_tokens)}, 총합: {total_tokens}")
             
             # 5) 필요하다면 RAG 데이터를 다시 로드(1.16version 유지)
-            self.data = load_data(
-                self.config.data_path
-            )  # if you want always-latest, else skip
-
-            # 6) 현재 사용중인 Thread 확인
-            print("[PROCESS_SINGLE_QUERY]... calling query_sort() ...")
-
-            # 7) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
+            self.data = load_data(self.config.data_path)  # if you want always-latest, else skip
+            
+            # 6) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
             params = {
-                "user_input": f"사용자 질문: {user_input}",
+                "user_input": f"사용자 질문: {user_input} [이미지 설명: {image_description.get('description')}]",
                 "model": self.model,
                 "tokenizer": self.tokenizer,
                 "embed_model": self.embed_model,
@@ -215,6 +220,7 @@ class InferenceActor:
                 "data": self.data,
                 "config": self.config,
             }
+            print("[PROCESS_SINGLE_QUERY]... calling query_sort() ...")
             QU, KE, TA, TI = await query_sort(params)
             print(f"   ... query_sort => QU={QU}, KE={KE}, TA={TA}, TI={TI}")
 
@@ -250,7 +256,7 @@ class InferenceActor:
                             f"[STREAM] Starting partial generation for request_id={request_id}"
                         )
                         await self._stream_partial_answer(
-                            QU, docs, retrieval, chart, request_id, future, user_input
+                            QU, docs, retrieval, chart, request_id, future, user_input, http_query
                         )
                     else:
                         # normal final result
@@ -410,68 +416,68 @@ class InferenceActor:
     # ---------------------------------------------------------
     # PROCESS IMAGE QUERY (IMAGE TO TEXT)
     # ---------------------------------------------------------
-    async def process_image_query(self, http_query):
-        """
-        Non-streaming 이미지를 통한 질의 처리.
-        -> RAG.py 의 image_query 함수 호출
-        """
-        try:
-            result = await image_query(http_query, self.model, self.tokenizer, self.config)
-            return result
-        except Exception as e:
-            return {"type": "error", "message": str(e)}
+    # async def process_image_query(self, http_query):
+    #     """
+    #     Non-streaming 이미지를 통한 질의 처리.
+    #     -> RAG.py 의 image_query 함수 호출
+    #     """
+    #     try:
+    #         result = await image_query(http_query, self.model, self.tokenizer, self.config)
+    #         return result
+    #     except Exception as e:
+    #         return {"type": "error", "message": str(e)}
 
-    async def process_image_stream(self, http_query, sse_queue, future):
-        """
-        Streaming 이미지를 통한 질의 처리.
-        -> RAG.py 의 image_streaming_query 함수 호출
-        부분토큰을 SSEQueue에 넣어주고, 최종 완료 시 future.set_result(...) 호출
-        """
-        request_id = http_query.get("request_id", str(uuid.uuid4()))
-        try:
-            partial_accumulator = ""
-            async for partial_chunk in image_streaming_query(http_query, self.model, self.tokenizer, self.config):
-                # partial_chunk이 JSON 혹은 단순 str일 수 있음
-                # 여기서는 단순히 SSEQueue에 넣는다고 가정
-                # 부분 누적 로직(필요시) 추가 가능
-                if partial_chunk.startswith('{"type":"error"'):
-                    # 에러가 JSON 형태로 들어온 경우
-                    await self.queue_manager.put_token.remote(request_id, partial_chunk)
-                    await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-                    future.set_result(partial_chunk)
-                    return
-                else:
-                    await self.queue_manager.put_token.remote(request_id, partial_chunk)
-                    partial_accumulator += partial_chunk
+    # async def process_image_stream(self, http_query, sse_queue, future):
+    #     """
+    #     Streaming 이미지를 통한 질의 처리.
+    #     -> RAG.py 의 image_streaming_query 함수 호출
+    #     부분토큰을 SSEQueue에 넣어주고, 최종 완료 시 future.set_result(...) 호출
+    #     """
+    #     request_id = http_query.get("request_id", str(uuid.uuid4()))
+    #     try:
+    #         partial_accumulator = ""
+    #         async for partial_chunk in image_streaming_query(http_query, self.model, self.tokenizer, self.config):
+    #             # partial_chunk이 JSON 혹은 단순 str일 수 있음
+    #             # 여기서는 단순히 SSEQueue에 넣는다고 가정
+    #             # 부분 누적 로직(필요시) 추가 가능
+    #             if partial_chunk.startswith('{"type":"error"'):
+    #                 # 에러가 JSON 형태로 들어온 경우
+    #                 await self.queue_manager.put_token.remote(request_id, partial_chunk)
+    #                 await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+    #                 future.set_result(partial_chunk)
+    #                 return
+    #             else:
+    #                 await self.queue_manager.put_token.remote(request_id, partial_chunk)
+    #                 partial_accumulator += partial_chunk
 
-            # 최종 완료
-            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-            future.set_result(partial_accumulator)
-        except Exception as e:
-            err_msg = f'[IMAGE_STREAM_ERROR] {str(e)}'
-            error_json = json.dumps({"type": "error", "message": err_msg})
-            await self.queue_manager.put_token.remote(request_id, error_json)
-            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-            future.set_result(error_json)
+    #         # 최종 완료
+    #         await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+    #         future.set_result(partial_accumulator)
+    #     except Exception as e:
+    #         err_msg = f'[IMAGE_STREAM_ERROR] {str(e)}'
+    #         error_json = json.dumps({"type": "error", "message": err_msg})
+    #         await self.queue_manager.put_token.remote(request_id, error_json)
+    #         await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+    #         future.set_result(error_json)
 
-    async def process_image_query_stream(self, http_query):
-        """
-        Actor 내부에서 호출되는 entrypoint:
-        1) SSE Queue 생성
-        2) process_image_stream(...) 비동기 태스크 시작
-        3) request_id 반환
-        """
-        request_id = http_query.get("request_id", str(uuid.uuid4()))
-        await self.queue_manager.create_queue.remote(request_id)
+    # async def process_image_query_stream(self, http_query):
+    #     """
+    #     Actor 내부에서 호출되는 entrypoint:
+    #     1) SSE Queue 생성
+    #     2) process_image_stream(...) 비동기 태스크 시작
+    #     3) request_id 반환
+    #     """
+    #     request_id = http_query.get("request_id", str(uuid.uuid4()))
+    #     await self.queue_manager.create_queue.remote(request_id)
 
-        loop = asyncio.get_event_loop()
-        final_future = loop.create_future()
-        sse_queue = asyncio.Queue()
-        self.active_sse_queues[request_id] = sse_queue
+    #     loop = asyncio.get_event_loop()
+    #     final_future = loop.create_future()
+    #     sse_queue = asyncio.Queue()
+    #     self.active_sse_queues[request_id] = sse_queue
 
-        # 비동기 태스크
-        asyncio.create_task(self.process_image_stream(http_query, sse_queue, final_future))
-        return request_id
+    #     # 비동기 태스크
+    #     asyncio.create_task(self.process_image_stream(http_query, sse_queue, final_future))
+    #     return request_id
 
     # ------------------------------------------------------------
     # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
@@ -789,15 +795,6 @@ class InferenceService:
     async def process_query_stream(self, http_query: dict) -> str:
         req_id = await self.actor.process_query_stream.remote(http_query)
         return req_id
-    
-    # Image
-    async def image_query(self, http_query: dict):
-        return await self.actor.process_image_query.remote(http_query)
-    # Image Stream
-    async def image_query_stream(self, http_query: dict):
-        req_id = await self.actor.process_image_query_stream.remote(http_query)
-        return req_id
-
     
     async def pop_sse_token(self, req_id: str) -> str:
         token = await self.actor.pop_sse_token.remote(req_id)

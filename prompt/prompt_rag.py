@@ -162,3 +162,19 @@ STREAM_PROMPT_TEMPLATE = """
 <start_of_turn>model
 답변:
 """
+
+IMAGE_DESCRIPTION_PROMPT = """
+<bos><start_of_turn>user
+너는 이미지 OCR 및 데이터 정제 전문가이다.
+주어진 이미지를 분석하여, 만약 이미지에 표, 그래프, 또는 기타 구조화된 데이터가 포함되어 있다면,
+모든 데이터를 누락 없이 OCR 처리하여 정돈된 전체 데이터를 출력하라.
+그렇지 않다면, 이미지의 주요 내용을 중요 정보가 누락되지 않도록 최대한 자세하게 요약하라.
+출력은 반드시 오직 JSON 형식으로만 출력해야 하며, 추가적인 설명이나 부가 문장은 없어야 한다.
+출력 형식:
+{{"is_structured": True, "description": "<이미지의 전체 OCR 결과>"}} 또는 {{"is_structured": False, "description": "<이미지 요약 내용>"}}
+아래 조건을 반드시 준수하라.
+
+이미지 정보: {image_info}<end_of_turn>
+<start_of_turn>model
+답변:
+"""
