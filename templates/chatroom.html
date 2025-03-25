@@ -710,7 +710,7 @@
       // Welcome -> 일반 채팅 입력창 보이도록
       document.getElementById('inputContainer').classList.remove('hidden');
 
-      // 이미지가 있다면 single-shot /image_query_stream 로 전송
+      // 이미지가 있다면 single-shot /query_stream 로 전송
       if (file) {
         // 이미지 SSE 아닌 단일 전송
         startAIStreamingMessage();
@@ -720,7 +720,7 @@
             image_data: base64,
             query: textValue
           };
-          const resp = await fetch('/image_query', {
+          const resp = await fetch('/query_stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -950,7 +950,7 @@
           image_data: base64Image,
           query: userText || ""
         };
-        const response = await fetch('/image_query', {
+        const response = await fetch('/query_stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),

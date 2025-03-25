@@ -142,6 +142,7 @@ def query_stream():
     auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
     qry_contents = body.get("qry_contents", "")
     qry_time = body.get("qry_time")  # 클라이언트 측 타임스탬프
+    image_data = body.get("image_data")
 
     print(f"[DEBUG] /query_stream called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{qry_contents}', qry_time='{qry_time}'")
     
@@ -152,7 +153,8 @@ def query_stream():
         "page_id": page_id if page_id else str(uuid.uuid4()),
         "auth_class": auth_class,
         "qry_contents": qry_contents,
-        "qry_time": qry_time
+        "qry_time": qry_time,
+        "image_data": image_data
     }
     
     # 기존 request_id 대신 page_id를 SSE queue key로 사용

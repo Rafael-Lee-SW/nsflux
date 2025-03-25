@@ -548,8 +548,86 @@ async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
 
 @time_tracker
 async def generate_answer_stream(query, docs, model, tokenizer, config):
+    
     prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
     print("최종 LLM 추론용 prompt 생성 : ", prompt)
+    
+    import uuid
+    import base64
+    import io
+    from PIL import Image
+    from transformers import AutoProcessor
+    from vllm import SamplingParams
+    from vllm.multimodal.utils import fetch_image
+    
+    print("[IMAGE-STREAMING-QUERY] Image_query 진입")
+    
+    image_input = "http://images.cocodataset.org/val2017/000000039769.jpg"
+    # 2) Image -> PIL
+    pil_image = None
+    try:
+        print("[DEBUG] Step2 - Converting image data to PIL...")
+        if isinstance(image_input, str) and (
+            image_input.startswith("http://") or image_input.startswith("https://")
+        ):
+            print("[DEBUG]   => image_input is a URL; using fetch_image()")
+            pil_image = fetch_image(image_input)
+        else:
+            print("[DEBUG]   => image_input is presumably base64")
+            if isinstance(image_input, str) and image_input.startswith("data:image/"):
+                print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
+                image_input = image_input.split(",", 1)[-1]
+            decoded = base64.b64decode(image_input)
+            print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
+            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+        print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
+    except Exception as e:
+        err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
+        print(err_msg)
+    
+    # 3) HF Processor 로드
+    try:
+        print(f"[DEBUG] Step3 - Loading processor from '{config.model_id}' ... (use_fast=False)")
+        processor = AutoProcessor.from_pretrained(
+            config.model_id,
+            use_fast=False  # 모델이 fast processor를 지원한다면 True로 시도 가능
+        )
+        print("[DEBUG]   => processor loaded:", type(processor).__name__)
+    except Exception as e:
+        err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
+        print(err_msg)
+    
+    # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
+    print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "url": pil_image},   # PIL object
+                {"type": "text",  "text": prompt}, # 사용자 질의
+            ],
+        }
+    ]
+    
+    try:
+        # tokenize=False => prompt를 'raw string' 형태로 얻음
+        prompt_string = processor.apply_chat_template(
+            messages,
+            tokenize=False,           # 핵심!
+            add_generation_prompt=True,
+        )
+        print("[DEBUG]   => prompt_string (first ~200 chars):", prompt_string[:200])
+    except Exception as e:
+        err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
+        print(err_msg)
+    
+    generate_request = {
+        "prompt": prompt_string,
+        "multi_modal_data": {
+            "image": [pil_image]  # 여러 장이라면 list에 더 추가
+        }
+    }
+    
     if config.use_vllm:
         from vllm import SamplingParams
         sampling_params = SamplingParams(
@@ -560,7 +638,7 @@ async def generate_answer_stream(query, docs, model, tokenizer, config):
             repetition_penalty=config.model.repetition_penalty,
         )
         request_id = str(uuid.uuid4())
-        async for partial_chunk in collect_vllm_text_stream(prompt, model, sampling_params, request_id):
+        async for partial_chunk in collect_vllm_text_stream(generate_request, model, sampling_params, request_id):
             yield partial_chunk
     else:
         import torch
