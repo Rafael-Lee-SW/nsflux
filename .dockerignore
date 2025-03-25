@@ -23,6 +23,9 @@ dist/
 *.log
 *.tmp
 
+# Ignore the auto.py and its result
+source/
+
 # If you have any large data or model files that are not needed in build context, ignore them
 # data/
 models/

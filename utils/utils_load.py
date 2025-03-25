@@ -221,55 +221,28 @@ def load_model(config):
         
         vllm_conf = config.get("vllm", {})
         
+        # --- 기존 엔진 설정들
         engine_args.enable_prefix_caching = True
         # engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
-        engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
+        engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # How many use the parllel Multi-GPU
         engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
         engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
         # engine_args.block_size = vllm_conf.get("block_size", 128)
         engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization")
         
+        # --- 다중 GPU 사용 관련 설정 ---
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
-            
+        
+        # --- 모델의 Context Length ---
         engine_args.max_model_len = vllm_conf.get("max_model_len")
         
-        # Image 기능 추가
-        engine_args.mm_processor_kwargs={"do_pan_and_scan":True}
-        engine_args.disable_mm_preprocessor_cache = False
-        engine_args.limit_mm_per_prompt = {"image": 2}
+        # --- 멀티모달 (Image) 관련 설정 ---
+        engine_args.mm_processor_kwargs = vllm_conf.get("mm_processor_kwargs", {"do_pan_and_scan": True})
+        engine_args.disable_mm_preprocessor_cache = vllm_conf.get("disable_mm_preprocessor_cache", False)
+        engine_args.limit_mm_per_prompt = vllm_conf.get("limit_mm_per_prompt", {"image": 2})
         
-        # # 새로 추가: disable_sliding_window 옵션 확인
-        # if vllm_conf.get("disable_sliding_window", False):
-        #     engine_args.sliding_window = (-1, -1)
-        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
-        
-        # engine_args.enable_memory_defrag = True # v1 새로운 기능
-        # engine_args.max_model_len = vllm_conf.get("max_model_len") # Context Length
-        
-        # # ★★ 추가: 슬라이딩 윈도우 비활성화 옵션 적용 ★★
-        # if vllm_conf.get("disable_sliding_window", False):
-        #     # cascade attention에서는 슬라이딩 윈도우가 (-1, -1)이어야 함
-        #     engine_args.sliding_window = (-1, -1)
-        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
-        
-        # print("Final EngineArgs:", engine_args)
-        
-        #         # ── 여기서 unified_attention 호출 추적을 위한 monkey-patch ──
-        # try:
-        #     if hasattr(torch.ops.vllm, "unified_attention_with_output"):
-        #         orig_unified_attention = torch.ops.vllm.unified_attention_with_output
-        #         def tracking_unified_attention(*args, **kwargs):
-        #             logging.info("Called unified_attention_with_output with args: %s, kwargs: %s", args, kwargs)
-        #             return orig_unified_attention(*args, **kwargs)
-        #         torch.ops.vllm.unified_attention_with_output = tracking_unified_attention
-        #         logging.info("Monkey-patched unified_attention_with_output for tracking.")
-        # except Exception as e:
-        #     logging.warning("Failed to monkey-patch unified_attention_with_output: %s", e)
-        
-        # # ── 끝 ──
-
         print("EngineArgs setting be finished")
         
         try:
