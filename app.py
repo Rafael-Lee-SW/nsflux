@@ -154,11 +154,22 @@ def query_stream():
         "auth_class": auth_class,
         "qry_contents": qry_contents,
         "qry_time": qry_time,
-        "image_data": image_data
     }
     
-    # 기존 request_id 대신 page_id를 SSE queue key로 사용
-    print(f"[DEBUG] Built http_query: {http_query}")
+    # image_data가 존재하면 http_query에 추가하고, 길이(또는 타입)만 간략하게 출력
+    if image_data is not None:
+        http_query["image_data"] = image_data
+        # image_data가 문자열이나 시퀀스 타입이면 길이를, 아니면 타입을 출력합니다.
+        if hasattr(image_data, "__len__"):
+            print(f"[DEBUG] image_data received: length={len(image_data)}")
+        else:
+            print(f"[DEBUG] image_data received: type={type(image_data)}")
+
+    # http_query 전체를 출력할 때 image_data 내용은 생략(요약 정보만 출력)
+    http_query_print = http_query.copy()
+    if "image_data" in http_query_print:
+        http_query_print["image_data"] = "<omitted>"
+    print(f"[DEBUG] Built http_query: {http_query_print}")
     
     # Ray Serve를 통한 streaming 호출 (변경 없음, 내부 인자는 수정된 http_query)
     response = inference_handle.process_query_stream.remote(http_query)

@@ -630,7 +630,7 @@
                        + (firstUserMsg.content.length > 20 ? "..." : "");
           }
         }
-        btn.innerHTML = `
+        btn.innerHTML = ` 
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
                viewBox="0 0 24 24" fill="none" stroke="currentColor" 
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -699,114 +699,82 @@
       // 유저가 아무것도 입력하지 않았다면 무시
       if (!textValue && !file) return;
 
-      // 채팅방 설정 (이미 존재)
       const originalRequestId = currentRequestId;
-      // 먼저 사용자 메시지 추가
+      // 사용자 메시지 추가
       if (textValue) {
         appendMessageToChatBox("사용자", textValue);
         storeMessageInRoom(originalRequestId, "사용자", textValue);
       }
 
-      // Welcome -> 일반 채팅 입력창 보이도록
+      // 일반 채팅 입력창 보이도록
       document.getElementById('inputContainer').classList.remove('hidden');
 
-      // 이미지가 있다면 single-shot /query_stream 로 전송
+      // 공통 payload 구성 (이미지가 있을 경우 image_data 필드 추가)
+      const payload = {
+        qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
+        user_id: "user123",
+        page_id: originalRequestId,
+        auth_class: "admin",
+        qry_contents: textValue,
+        qry_time: new Date().toISOString()
+      };
       if (file) {
-        // 이미지 SSE 아닌 단일 전송
-        startAIStreamingMessage();
-        try {
-          const base64 = await readFileAsBase64(file);
-          const payload = {
-            image_data: base64,
-            query: textValue
-          };
-          const resp = await fetch('/query_stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          if (!resp.ok) {
-            throw new Error(`이미지 쿼리 실패: ${resp.status}`);
-          }
-          const result = await resp.json();
-          let finalAnswer = "";
-          if (typeof result === 'object' && result.answer) {
-            finalAnswer = result.answer;
-          } else if (typeof result === 'string') {
-            finalAnswer = result;
-          } else {
-            finalAnswer = JSON.stringify(result);
-          }
-          updateAIStreamingMessage(finalAnswer);
-          finalizeAIMessage(finalAnswer, originalRequestId);
-        } catch (error) {
-          const errMsg = "이미지 처리 중 오류: " + error.message;
-          updateAIStreamingMessage(errMsg);
-          finalizeAIMessage(errMsg, originalRequestId);
-        } finally {
-          welcomeImgInput.value = '';
-          document.getElementById('welcomeImagePreview').innerHTML = '';
+        const base64 = await readFileAsBase64(file);
+        payload.image_data = base64;
+      }
+
+      try {
+        const response = await fetch('/query_stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          throw new Error("Response error: " + response.status);
         }
-      } else {
-        // 파일 없으면 일반 SSE 로직
-        // 기존 SSE 코드와 유사
-        const payload = {
-          qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
-          user_id: "user123",
-          page_id: originalRequestId,
-          auth_class: "admin",
-          qry_contents: textValue,
-          qry_time: new Date().toISOString()
-        };
-        try {
-          const response = await fetch('/query_stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-          if (!response.ok) {
-            throw new Error("Response error: " + response.status);
-          }
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder("utf-8");
-          let sseBuffer = "";
-          let partialAnswer = "";
-          startAIStreamingMessage();
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            sseBuffer += chunk;
-            const lines = sseBuffer.split("\n");
-            sseBuffer = lines.pop();
-            for (let line of lines) {
-              if (!line) continue;
-              if (line.startsWith("data:")) {
-                const jsonStr = line.slice(5);
-                if (jsonStr === "[[STREAM_DONE]]") {
-                  finalizeAIMessage(partialAnswer, originalRequestId);
-                  return;
-                }
-                try {
-                  const sseData = JSON.parse(jsonStr);
-                  if (sseData.type === "answer") {
-                    partialAnswer += sseData.answer;
-                    updateAIStreamingMessage(partialAnswer);
-                  } else if (sseData.type === "reference") {
-                    addReferenceData(sseData);
-                  }
-                } catch {
-                  partialAnswer += jsonStr;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let sseBuffer = "";
+        let partialAnswer = "";
+        startAIStreamingMessage();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          sseBuffer += chunk;
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop();
+          for (let line of lines) {
+            if (!line) continue;
+            if (line.startsWith("data:")) {
+              const jsonStr = line.slice(5);
+              if (jsonStr === "[[STREAM_DONE]]") {
+                finalizeAIMessage(partialAnswer, originalRequestId);
+                return;
+              }
+              try {
+                const sseData = JSON.parse(jsonStr);
+                if (sseData.type === "answer") {
+                  partialAnswer += sseData.answer;
                   updateAIStreamingMessage(partialAnswer);
+                } else if (sseData.type === "reference") {
+                  addReferenceData(sseData);
                 }
+              } catch {
+                partialAnswer += jsonStr;
+                updateAIStreamingMessage(partialAnswer);
               }
             }
           }
-          finalizeAIMessage(partialAnswer, originalRequestId);
-        } catch (err) {
-          appendMessageToChatBox("시스템", "Error occurred: " + err.message);
-          storeMessageInRoom(currentRequestId, "시스템", "Error: " + err.message);
         }
+        finalizeAIMessage(partialAnswer, originalRequestId);
+      } catch (error) {
+        const errMsg = "이미지 처리 중 오류: " + error.message;
+        updateAIStreamingMessage(errMsg);
+        finalizeAIMessage(errMsg, originalRequestId);
+      } finally {
+        welcomeImgInput.value = '';
+        document.getElementById('welcomeImagePreview').innerHTML = '';
       }
 
       // Welcome 화면 제거
@@ -820,12 +788,6 @@
     /************************************************************************
      * Normal Chat Input
      ************************************************************************/
-    function handleKeyDown(event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-      }
-    }
     async function sendMessage() {
       const messageInput = document.getElementById("userMessage");
       const imageInput = document.getElementById('imageUpload');
@@ -842,15 +804,8 @@
         messageInput.style.height = 'auto';
       }
       clearReferenceData();
-      if (imageInput.files.length > 0) {
-        // 이미지 전송
-        await sendImageQuery(message);
-        isProcessing = false;
-        document.getElementById("sendButton").disabled = false;
-        return;
-      }
-      // SSE로 전송
       const originalRequestId = currentRequestId;
+      // 공통 payload 구성 (이미지가 있을 경우 image_data 필드 추가)
       const payload = {
         qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
         user_id: "user123",
@@ -859,6 +814,10 @@
         qry_contents: message,
         qry_time: new Date().toISOString()
       };
+      if (imageInput.files.length > 0) {
+        const base64Image = await readFileAsBase64(imageInput.files[0]);
+        payload.image_data = base64Image;
+      }
       try {
         const response = await fetch('/query_stream', {
           method: 'POST',
@@ -913,6 +872,9 @@
         storeMessageInRoom(currentRequestId, "시스템", "Error: " + err.message);
         isProcessing = false;
         document.getElementById("sendButton").disabled = false;
+      } finally {
+        imageInput.value = '';
+        document.getElementById('imagePreview').innerHTML = '';
       }
     }
     function storeMessageInRoom(requestId, sender, text) {
@@ -922,62 +884,8 @@
     }
 
     /************************************************************************
-     * Image Upload Previews and Single-Shot Query
+     * Utility: File to Base64
      ************************************************************************/
-    document.getElementById('imageUpload').addEventListener('change', function(event) {
-      const file = event.target.files[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-          const img = document.createElement('img');
-          img.src = e.target.result;
-          img.style.maxWidth = '100%';
-          img.style.maxHeight = '100%';
-          const imagePreview = document.getElementById('imagePreview');
-          imagePreview.innerHTML = '';
-          imagePreview.appendChild(img);
-        }
-        reader.readAsDataURL(file);
-      }
-    });
-    async function sendImageQuery(userText) {
-      const imageInput = document.getElementById('imageUpload');
-      if (imageInput.files.length === 0) return;
-      startAIStreamingMessage();
-      try {
-        const base64Image = await readFileAsBase64(imageInput.files[0]);
-        const payload = {
-          image_data: base64Image,
-          query: userText || ""
-        };
-        const response = await fetch('/query_stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        if (!response.ok) {
-          throw new Error(`Image query failed with status: ${response.status}`);
-        }
-        const result = await response.json();
-        let finalAnswer = "";
-        if (typeof result === 'object' && result.answer) {
-          finalAnswer = result.answer;
-        } else if (typeof result === 'string') {
-          finalAnswer = result;
-        } else {
-          finalAnswer = JSON.stringify(result);
-        }
-        updateAIStreamingMessage(finalAnswer);
-        finalizeAIMessage(finalAnswer, currentRequestId);
-      } catch (error) {
-        const errMsg = "이미지 처리 중 오류: " + error.message;
-        updateAIStreamingMessage(errMsg);
-        finalizeAIMessage(errMsg, currentRequestId);
-      } finally {
-        imageInput.value = '';
-        document.getElementById('imagePreview').innerHTML = '';
-      }
-    }
     function readFileAsBase64(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -1056,13 +964,13 @@
       let senderIcon = "";
       if (sender === "사용자") {
         messageClass = "message-user";
-        senderIcon = `<svg ...>...</svg>`; // 생략
+        senderIcon = `<svg ...>...</svg>`;
       } else if (sender === "AI") {
         messageClass = "message-ai";
-        senderIcon = `<svg ...>...</svg>`; // 생략
+        senderIcon = `<svg ...>...</svg>`;
       } else {
         messageClass = "message-system";
-        senderIcon = `<svg ...>...</svg>`; // 생략
+        senderIcon = `<svg ...>...</svg>`;
       }
       const messageContent = sender === "AI" 
                              ? parseMarkdown(message) 

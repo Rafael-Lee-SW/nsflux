@@ -31,7 +31,7 @@ from utils import (
 from utils.summarizer import summarize_conversation
 from utils.debug_tracking import log_batch_info, log_system_info
 # Langchain Memory system
-from ray_deploy.langchain import CustomConversationBufferMemory
+from ray_deploy.langchain import CustomConversationBufferMemory, serialize_message
 
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
@@ -150,8 +150,10 @@ class InferenceActor:
         """
         # 스트리밍 요청인 경우 request_id를 미리 초기화
         request_id = None
+        body = http_query_or_stream_dict["http_query"]
+        request_check = body.get("qry_contents", "")
         print(
-            f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}"
+            f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {request_check}, 현재 스레드: {threading.current_thread().name}"
         )
         try:
             # 1) 스트리밍 구분
@@ -175,6 +177,7 @@ class InferenceActor:
 
             # 3) 유저가 현재 입력한 쿼리 가져오기
             user_input = http_query.get("qry_contents", "")
+            print("[PROCESS_SINGLE_QUERY] user input : ", user_input)
             
             # 4) LangChain Memory에서 이전 대화 이력(history) 추출
             past_context = memory.load_memory_variables({}).get("history", [])
@@ -200,7 +203,7 @@ class InferenceActor:
             )  # if you want always-latest, else skip
 
             # 6) 현재 사용중인 Thread 확인
-            print("   ... calling query_sort() ...")
+            print("[PROCESS_SINGLE_QUERY]... calling query_sort() ...")
 
             # 7) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
             params = {
@@ -318,7 +321,7 @@ class InferenceActor:
                             f"[STREAM] Starting partial generation for request_id={request_id}"
                         )
                         await self._stream_partial_answer(
-                            QU, docs, retrieval, None, request_id, future, user_input
+                            QU, docs, retrieval, None, request_id, future, user_input, http_query
                         )
                     else:
                         output = await generate_answer(
@@ -474,7 +477,7 @@ class InferenceActor:
     # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
     # ------------------------------------------------------------
     async def _stream_partial_answer(
-        self, QU, docs, retrieval, chart, request_id, future, user_input
+        self, QU, docs, retrieval, chart, request_id, future, user_input, http_query
     ):
         """
         Instead of returning a final string, we generate partial tokens
@@ -560,7 +563,7 @@ class InferenceActor:
                 f"[STREAM] SSE: calling generate_answer_stream for request_id={request_id}"
             )
             async for partial_text in generate_answer_stream(
-                final_query, docs, self.model, self.tokenizer, self.config
+                final_query, docs, self.model, self.tokenizer, self.config, http_query
             ):
                 # print(f"[STREAM] Received partial_text: {partial_text}")
                 new_text = partial_text[len(partial_accumulator) :]
@@ -652,7 +655,13 @@ class InferenceActor:
             chat_id = str(uuid.uuid4())
         http_query["page_id"] = chat_id  # 강제 할당
         await self.queue_manager.create_queue.remote(chat_id)
-        print(f"[STREAM] process_query_stream => chat_id={chat_id}, http_query={http_query}")
+        print(f"[STREAM] process_query_stream => chat_id={chat_id}")
+        
+        # http_query 전체를 출력할 때 image_data 내용은 생략(요약 정보만 출력)
+        http_query_print = http_query.copy()
+        if "image_data" in http_query_print:
+            http_query_print["image_data"] = "<omitted>"
+        print(f"[DEBUG] Built http_query: {http_query_print}")
 
         loop = asyncio.get_event_loop()
         final_future = loop.create_future()

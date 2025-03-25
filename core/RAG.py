@@ -547,7 +547,7 @@ async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
 
 
 @time_tracker
-async def generate_answer_stream(query, docs, model, tokenizer, config):
+async def generate_answer_stream(query, docs, model, tokenizer, config, http_query):
     
     prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
     print("최종 LLM 추론용 prompt 생성 : ", prompt)
@@ -562,28 +562,30 @@ async def generate_answer_stream(query, docs, model, tokenizer, config):
     
     print("[IMAGE-STREAMING-QUERY] Image_query 진입")
     
-    image_input = "http://images.cocodataset.org/val2017/000000039769.jpg"
-    # 2) Image -> PIL
+    image_data = http_query.get("image_data")
+    
+    # 2) Image -> PIL (image_data가 있을 경우에만 처리)
     pil_image = None
-    try:
-        print("[DEBUG] Step2 - Converting image data to PIL...")
-        if isinstance(image_input, str) and (
-            image_input.startswith("http://") or image_input.startswith("https://")
-        ):
-            print("[DEBUG]   => image_input is a URL; using fetch_image()")
-            pil_image = fetch_image(image_input)
-        else:
-            print("[DEBUG]   => image_input is presumably base64")
-            if isinstance(image_input, str) and image_input.startswith("data:image/"):
-                print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
-                image_input = image_input.split(",", 1)[-1]
-            decoded = base64.b64decode(image_input)
-            print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
-            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
-        print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
-    except Exception as e:
-        err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
-        print(err_msg)
+    if image_data:
+        try:
+            print("[DEBUG] Step2 - Converting image data to PIL...")
+            if isinstance(image_data, str) and (image_data.startswith("http://") or image_data.startswith("https://")):
+                print("[DEBUG]   => image_data is a URL; using fetch_image()")
+                pil_image = fetch_image(image_data)
+            else:
+                print("[DEBUG]   => image_data is presumably base64")
+                if isinstance(image_data, str) and image_data.startswith("data:image/"):
+                    print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
+                    image_data = image_data.split(",", 1)[-1]
+                decoded = base64.b64decode(image_data)
+                print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
+                pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+            print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
+        except Exception as e:
+            err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
+            print(err_msg)
+    else:
+        print("[DEBUG] No image_data provided; proceeding with text-only query.")
     
     # 3) HF Processor 로드
     try:
@@ -602,12 +604,12 @@ async def generate_answer_stream(query, docs, model, tokenizer, config):
     messages = [
         {
             "role": "user",
-            "content": [
-                {"type": "image", "url": pil_image},   # PIL object
-                {"type": "text",  "text": prompt}, # 사용자 질의
-            ],
+            "content": []
         }
     ]
+    if pil_image is not None:
+        messages[0]["content"].append({"type": "image", "url": pil_image})
+    messages[0]["content"].append({"type": "text",  "text": prompt})
     
     try:
         # tokenize=False => prompt를 'raw string' 형태로 얻음
@@ -616,20 +618,19 @@ async def generate_answer_stream(query, docs, model, tokenizer, config):
             tokenize=False,           # 핵심!
             add_generation_prompt=True,
         )
-        print("[DEBUG]   => prompt_string (first ~200 chars):", prompt_string[:200])
+        print("[DEBUG]   => prompt_string : ", prompt_string)
     except Exception as e:
         err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
         print(err_msg)
     
     generate_request = {
         "prompt": prompt_string,
-        "multi_modal_data": {
-            "image": [pil_image]  # 여러 장이라면 list에 더 추가
-        }
+        "multi_modal_data": {}
     }
+    if pil_image is not None:
+        generate_request["multi_modal_data"]["image"] = [pil_image]
     
     if config.use_vllm:
-        from vllm import SamplingParams
         sampling_params = SamplingParams(
             max_tokens=config.model.max_new_tokens,
             temperature=config.model.temperature,
@@ -663,6 +664,7 @@ async def generate_answer_stream(query, docs, model, tokenizer, config):
         for new_token in streamer:
             yield new_token
 
+
 @time_tracker
 async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_params, request_id) -> str:
     async for request_output in engine.generate(prompt, request_id=request_id, sampling_params=sampling_params):
@@ -670,6 +672,7 @@ async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_para
             continue
         for completion in request_output.outputs:
             yield completion.text
+
 
 # -------------------------------------------------------------------------
 # PROCESS IMAGE QUERY (IMAGE TO TEXT)
@@ -751,7 +754,7 @@ async def image_query(http_query, model, tokenizer, config):
             tokenize=False,           # 핵심!
             add_generation_prompt=True,
         )
-        print("[DEBUG]   => prompt_string (first ~200 chars):", prompt_string[:200])
+        print("[DEBUG]   => prompt_string full version:", prompt_string)
     except Exception as e:
         err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
         print(err_msg)
@@ -883,7 +886,8 @@ async def image_streaming_query(http_query, model, tokenizer, config):
             tokenize=False,           # 핵심!
             add_generation_prompt=True,
         )
-        print("[DEBUG]   => prompt_string (first ~200 chars):", prompt_string[:200])
+        print("[DEBUG]   => prompt_string :", prompt_string
+              )
     except Exception as e:
         err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
         print(err_msg)
