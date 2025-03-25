@@ -1,4 +1,3 @@
-
 # core/RAG.py
 import torch
 import re
@@ -93,96 +92,6 @@ async def execute_rag(QU, KE, TA, TI, **kwargs):
 
         docs, docs_list = retrieve(KE, filtered_data, config.N, embed_model, embed_tokenizer)
         return docs, docs_list
-
-
-@time_tracker
-async def execute_sql(QU, KE, TA, TI, **kwargs):
-    """
-    별도의 SQL 실행(UNNO, CLASS, POL, POD 자동 추출) 로직이 필요한 경우 사용되는 함수
-    """
-    from core.SQL_NS import get_metadata, run_sql_unno
-
-    print("[SANGJE]: execute_sql : 진입")
-    model = kwargs.get("model")
-    tokenizer = kwargs.get("tokenizer")
-    embed_model = kwargs.get("embed_model")
-    embed_tokenizer = kwargs.get("embed_tokenizer")
-    data = kwargs.get("data")
-    config = kwargs.get("config")
-
-    metadata_location, metadata_unno = get_metadata(config)
-    print(f"✅ Metadata loaded:{metadata_location[:100]}")
-    PROMPT = SQL_EXTRACTION_PROMPT_TEMPLATE.format(metadata_location=metadata_location, query=QU)
-    try:
-        from vllm import SamplingParams
-        sampling_params = SamplingParams(
-            max_tokens=config.model.max_new_tokens,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
-            repetition_penalty=config.model.repetition_penalty,
-        )
-        accepted_request_id = str(uuid.uuid4())
-        outputs_result = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
-        print(f"✅ SQL Model Outputs:{outputs_result}")
-
-        # Regular expression to extract content between <query/> and <query>
-        unno_pattern = r'<unno.*?>(.*?)<unno.*?>'
-        class_pattern = r'<class.*?>(.*?)<class.*?>'
-        pol_port_pattern = r'<pol_port.*?>(.*?)<pol_port.*?>'
-        pod_port_pattern = r'<pod_port.*?>(.*?)<pod_port.*?>'
-
-        UN_number = re.search(unno_pattern, outputs_result, re.DOTALL).group(1)
-        UN_class = re.search(class_pattern, outputs_result, re.DOTALL).group(1)
-        POL = re.search(pol_port_pattern, outputs_result, re.DOTALL).group(1)
-        POD = re.search(pod_port_pattern, outputs_result, re.DOTALL).group(1)
-
-        print(f"✅ UN_number:{UN_number}, UN_class:{UN_class}, POL:{POL}, POD:{POD}")
-        final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
-
-        ### Temporary ###
-        title, explain, table_json, chart_json = (None,) * 4
-
-        result = final_sql_query, title, explain, result, chart_json
-
-    except Exception as e:
-        # 1) generate_sql() 자체가 도중에 예외를 던지는 경우
-        print("[ERROR] generate_sql() 도중 예외 발생:", e)
-        # 멈추지 않고, 에러 형식으로 데이터를 만들어 반환
-        docs = (
-            "테이블 조회 시도 중 예외가 발생했습니다. "
-            "해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다."
-        )
-        docs_list = []
-        return docs, docs_list
-
-    # 2) 함수가 정상 실행됐지만 결과가 None인 경우(= SQL 쿼리 결과가 없거나 오류)
-    if result is None:
-        print(
-            "[WARNING] generate_sql()에서 None을 반환했습니다. "
-            "SQL 수행 결과가 없거나 에러가 발생한 것일 수 있습니다."
-        )
-        docs = (
-            "테이블 조회 결과가 비어 있습니다. "
-            "조회할 데이터가 없거나 SQL 오류가 발생했습니다."
-        )
-        docs_list = []
-        return docs, docs_list
-
-    # 정상적인 경우(튜플 언패킹)
-    final_sql_query, title, explain, table_json, chart_json = result
-
-    # docs : LLM 입력용 (string)
-    PROMPT = (
-        f"다음은 SQL 추출에 사용된 쿼리문: {final_sql_query}\n\n"
-        f"추가 설명: {explain}\n\n"
-        f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
-    )
-
-    docs_list = None
-    print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
-    return PROMPT, docs_list
-
 
 @time_tracker
 async def generate_answer(query, docs, **kwargs):
@@ -686,89 +595,8 @@ async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_para
 # -------------------------------------------------------------------------
 # PROCESS IMAGE QUERY (IMAGE TO TEXT)
 # -------------------------------------------------------------------------
-# async def process_image_query(image_data: str, query: str, **kwargs):
-#     """
-#     Process an image query by decoding the image, optionally obtaining its embeddings
-#     if the model supports multimodal inputs (e.g. gemma3 image processor), and then
-#     incorporating that image information into the text prompt for generation.
 
-#     Args:
-#         image_data (str): Base64-encoded image data.
-#         query (str): The user's text query.
-#         **kwargs: Must include:
-#             - model: The loaded model.
-#             - tokenizer: The tokenizer.
-#             - config: The configuration object with model parameters.
-#             - request_id (optional): The request id for tracking.
-    
-#     Returns:
-#         str: The generated answer text.
-#     """
-#     import base64, io
-#     from PIL import Image
-#     import uuid
-#     from vllm.model_executor.models.interfaces import SupportsMultiModal
 
-#     model = kwargs.get("model")
-#     tokenizer = kwargs.get("tokenizer")
-#     config = kwargs.get("config")
-    
-#     # Obtain or generate a request_id
-#     request_id = kwargs.get("request_id", str(uuid.uuid4()))
-    
-#     print("[MULTI-MODAL] image processing is starting")
-    
-#     # Decode the image from base64 and load it with PIL
-#     try:
-#         image_bytes = base64.b64decode(image_data)
-#         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-#     except Exception as e:
-#         raise ValueError(f"Failed to decode image data: {e}")
-    
-#     # If the model supports multimodal inputs, try to obtain image embeddings.
-#     if isinstance(model, SupportsMultiModal):
-#         try:
-#             # Get image embeddings using the model's method
-#             image_embeddings = model.get_multimodal_embeddings(image=image)
-#             # Convert embeddings to a string snippet for inclusion in the prompt.
-#             image_info = f"[IMAGE_EMBEDDING: {str(image_embeddings)[:200]}...]"
-#         except Exception as e:
-#             logging.error("Failed to obtain image embeddings: %s", e)
-#             image_info = "[IMAGE_EMBEDDING_ERROR]"
-#     else:
-#         image_info = "[IMAGE]"
-    
-#     # Construct the prompt that includes the image information and the query.
-#     prompt = f"{image_info}\n사용자: {query}\n시스템: "
-    
-#     print("[MULTI-MODAL] image_info is generated : ", image_info)
-    
-#     # Create sampling parameters from the configuration.
-#     from vllm import SamplingParams
-#     sampling_params = SamplingParams(
-#         max_tokens=config.model.max_new_tokens,
-#         temperature=config.model.temperature,
-#         top_k=config.model.top_k,
-#         top_p=config.model.top_p,
-#         repetition_penalty=config.model.repetition_penalty,
-#     )
-    
-#     # Since model.generate returns an async generator, we collect its outputs into a list.
-#     outputs = [output async for output in model.generate(
-#         prompt=prompt,
-#         sampling_params=sampling_params,
-#         request_id=request_id,
-#     )]
-    
-    
-#     # Extract the generated text from the first output if available.
-#     if outputs and hasattr(outputs[0], "outputs") and outputs[0].outputs:
-#         answer = outputs[0].outputs[0].text
-#         print("[MULTI-MODAL] Output is generated : ", answer)
-#     else:
-#         answer = ""
-#         print("[MULTI-MODAL] Output is generated is empty")
-#     return answer
 
 # ---------------------------
 # *** 새로 추가된 generate_sql 함수 ***
@@ -782,42 +610,9 @@ async def generate_sql(user_query, model, tokenizer, config):
     """
     # 먼저 메타데이터를 읽어옴
     metadata_location, metadata_unno = get_metadata(config)
-
+    print("")
     # 프롬프트 생성
-    PROMPT = f'''
-<bos>
-<system>
-"YourRole": "질문으로 부터 조건을 추출하는 역할",
-"YourJob": "아래 요구 사항에 맞추어 'unno', 'class', 'pol_port', 'pod_port' 정보를 추출하여, 예시처럼 답변을 구성해야 합니다.",
-"Requirements": [
-    unno: UNNO Number는 4개의 숫자로 이루어진 위험물 번호 코드야. 
-    class : UN Class는 2.1, 6.0,,, 의 숫자로 이루어진 코드야.
-    pol_port, pod_port: 항구 코드는 5개의 알파벳 또는 나라의 경우 2개의 알파벳과 %로 이루어져 있어. 다음은 항구 코드에 대한 메타데이터야 {metadata_location}. 여기에서 매칭되는 코드만을 사용해야 해. 항구는 항구코드, 나라는 2개의 나라코드와 %를 사용해.
-    unknown : 질문에서 찾을 수 없는 정보는 NULL을 출력해줘.
-]
-
-"Examples": [
-    "질문": "UN 번호 1689 화물의 부산에서 미즈시마로의 선적 가능 여부를 확인해 주세요.",
-    "답변": "<unno/>1689<unno>\\n<class/>NULL<class>\\n<pol_port/>KRPUS<pol_port>\\n<pod_port/>JPMIZ<pod_port>"
-
-    "질문": "UN 클래스 2.1 화물의 한국에서 일본으로의 선적 가능 여부를 확인해 주세요.",
-    "답변": "<unno/>NULL<unno>\\n<class/>2.1<class>\\n<pol_port/>KR%<pol_port>\\n<pod_port/>JP%<pod_port>"
-]
-- 최종 출력은 반드시 다음 4가지 항목을 포함해야 합니다:
-    <unno/>...<unno>
-    <class/>...<class>
-    <pol_port/>...<pol_port>
-    <pod_port/>...<pod_port>
-</system>
-
-<user>
-질문: "{user_query}"
-</user>
-
-<assistant>
-답변:
-</assistant>
-'''
+    PROMPT = SQL_EXTRACTION_PROMPT_TEMPLATE.format(metadata_location=metadata_location, query=user_query)
 
     from vllm import SamplingParams
     import uuid

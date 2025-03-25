@@ -20,7 +20,6 @@ Exports:
 
 from .RAG import (
     execute_rag,
-    execute_sql,
     generate_answer,
     query_sort,
     specific_question,
@@ -61,7 +60,6 @@ from .SQL_NS import (
 __all__ = [
     # RAG 모듈 관련 함수들
     "execute_rag",
-    "execute_sql",
     "generate_answer",
     "query_sort",
     "specific_question",

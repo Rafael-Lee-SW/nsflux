@@ -27,9 +27,11 @@ SQL_EXTRACTION_PROMPT_TEMPLATE = """
     <pol_port/>...<pol_port>
     <pod_port/>...<pod_port>
 </system>
+
 <user>
 질문: "{query}"
 </user>
+
 <assistant>
 답변:
 </assistant>

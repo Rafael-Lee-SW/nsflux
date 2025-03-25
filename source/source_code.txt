@@ -19,6 +19,7 @@ model_id : 'google/gemma-3-27b-it'
 response_url : "http://202.20.84.16:8083/responseToUI"
 # response_url : "https://eo5smhcazmp1bqe.m.pipedream.net"
 
+### ray
 ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)
   num_gpus: 1                     # 각 Actor(Node)가 점유하고 있는 GPU 갯수
@@ -27,7 +28,8 @@ ray:
   batch_wait_timeout: 0.05        
   max_ongoing_requests: 100       # ray.serve에서 deployment setting으로 동시 요청 처리 갯수를 의미함(Batch랑 다름)
 
-use_vllm: True # vLLM 사용 여부
+### vllm
+use_vllm: True                    # vLLM 사용 여부
 vllm:
   enable_prefix_caching: True
   scheduler_delay_factor: 0.1
@@ -37,23 +39,29 @@ vllm:
   max_num_batched_tokens: 34000   # v1에 따른 상향
   block_size: 128                 # 미적용
   gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
-  # v1에 따른 새로운 인자값
+  ### 모델 변경에 따른 추가된 설정
+  max_model_len: 20000            # For the new model (Gemma2 : 8192) / Gemma3는 1xH100(SXM5)일 경우 최대 22000~23000, so that 20000으로 세팅
+  ### v1에 따른 새로운 인자값
   disable_custom_all_reduce: true
-  enable_memory_defrag: True      
-  disable_sliding_window: True    # sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
-  # 모델 변경에 따른 추가된 설정
-  max_model_len: 24000            # For the new model (Gemma2 : 8192)
+  # enable_memory_defrag: True      # Gemma3 이식 작업에서 도입, 현재 미사용
+  # disable_sliding_window: True    # Gemma3 이식 작업에서 도입, 현재 미사용, sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
+  ### Gemma3 - Multi Modal 이미지 기능에 따른 새로운 인자값
+  mm_processor_kwargs:            # 이미지 처리 시 사용되는 추가 인자 정의
+    do_pan_and_scan: True         # 이미지 내 객체 감지 및 영역 스캔 기능을 활성화
+  disable_mm_preprocessor_cache: False # 이미지 전처리 캐시를 비활성화 할지 여부
+  limit_mm_per_prompt:            # 프롬프트 당 허용되는 멀티모달(예, 이미지) 입력의 최대 개수
+    image: 2                      # 최대 image 처리 개수
 
+### model huggingface setting and sampling params
 model:
-  quantization_4bit : False # Quantize 4-bit
-  quantization_8bit : False # Quantize 8-bit
-  max_new_tokens : 2048      # 생성할 최대 토큰 수
-
-  do_sample : False # True 일때만 아래가 적용
-  temperature : 1.0          # 텍스트 다양성 조정: 높을수록 창의력 향상 (1.0)
-  top_k : 30                 # top-k 샘플링: 상위 k개의 후보 토큰 중 하나를 선택 (50)
-  top_p : 1.0                # top-p 샘플링: 누적 확률을 기준으로 후보 토큰을 선택 (1.0 보다 낮을수록 창의력 증가)
-  repetition_penalty : 1.0   # 같은 단어를 반복해서 출력하지 않도록 패널티를 부여 (1.0 보다 클수록 페널티 증가)
+  quantization_4bit : False       # Quantize 4-bit
+  quantization_8bit : False       # Quantize 8-bit
+  max_new_tokens : 2048           # 생성할 최대 토큰 수
+  do_sample : False               # True 일때만 아래가 적용
+  temperature : 1.0               # 텍스트 다양성 조정: 높을수록 창의력 향상 (1.0)
+  top_k : 30                      # top-k 샘플링: 상위 k개의 후보 토큰 중 하나를 선택 (50)
+  top_p : 1.0                     # top-p 샘플링: 누적 확률을 기준으로 후보 토큰을 선택 (1.0 보다 낮을수록 창의력 증가)
+  repetition_penalty : 1.0        # 같은 단어를 반복해서 출력하지 않도록 패널티를 부여 (1.0 보다 클수록 페널티 증가)
 embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
 # cache_dir : "D:/huggingface" # Windows Local
 # cache_dir : "/media/user/7340afbb-e4ce-4a38-8210-c6362e85eae7/RAG/RAG_application/huggingface" # Local
@@ -72,7 +80,7 @@ N : 5 # Retrieve top N chunks
 ### Others
 beep : '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
 seed : 4734                     # Radom Seed
-k : 15                        # SQL Max Rows (None=MAX)
+k : 15                          # SQL Max Rows (None=MAX)
 
 ```
 
@@ -99,8 +107,8 @@ os.environ["VLLM_USE_V1"] = "1"
 os.environ["VLLM_STANDBY_MEM"] = "0"
 os.environ["VLLM_METRICS_LEVEL"] = "1"
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
-# GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU)
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # GPU1 사용
+# GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU - 기본 안정화 세팅은 0번 GPU)
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -934,131 +942,217 @@ class InferenceActor:
     # PROCESS IMAGE QUERY (IMAGE TO TEXT)
     # ---------------------------------------------------------
     async def process_image_query(self, http_query):
-        """
-        http_query 예시:
-        {
-            "image_data": "Base64 인코딩 문자열",
-            "qry_contents": "이미지 질문",
-            ...
-        }
-        """
+        import uuid
+        import base64
+        import io
+        from PIL import Image
+        from transformers import AutoProcessor
+        from vllm import SamplingParams
+        from vllm.multimodal.utils import fetch_image
+
+        request_id = http_query.get("request_id", str(uuid.uuid4()))
+        print(f"[DEBUG] [process_image_query] START => request_id={request_id}")
+
+        # 1) 파라미터 파싱
+        image_input = http_query.get("image_data")  # base64 or URL
+        user_query = http_query.get("qry_contents", "이 이미지에 대해 설명해줘.")
+        print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
+
+        # 2) 이미지 -> PIL
+        pil_image = None
         try:
-            print("[DEBUG] Starting process_image_query")
-            # 1) HTTP 요청에서 파라미터 추출
-            image_data = http_query.get("image_data")
-            user_query = http_query.get("qry_contents")
-            request_id = http_query.get("request_id", str(uuid.uuid4()))
-            print(f"[DEBUG] Retrieved parameters: request_id={request_id}")
-        except Exception as e:
-            print(f"[ERROR] Error retrieving query parameters: {e}")
-            return {"type": "error", "message": f"Error retrieving query parameters: {e}"}
-        
-        try:
-            # 2) Base64 디코딩
-            import base64, io
-            decoded = base64.b64decode(image_data)
-            print("[DEBUG] Base64 decoding successful")
-        except Exception as e:
-            print(f"[ERROR] Error during Base64 decoding: {e}")
-            return {"type": "error", "message": f"Base64 decoding failed: {e}"}
-        
-        try:
-            # 3) PIL 이미지 객체 생성 및 RGB 변환
-            from PIL import Image
-            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
-            print("[DEBUG] PIL image created successfully")
-        except Exception as e:
-            print(f"[ERROR] Error converting decoded data to PIL image: {e}")
-            return {"type": "error", "message": f"PIL image creation failed: {e}"}
-        
-        try:
-            # 4) 프롬프트 준비 (사용자 쿼리)
-            prompt = user_query if user_query else "질문이 없습니다."
-            print(f"[DEBUG] Prompt set to: {prompt}")
-        except Exception as e:
-            print(f"[ERROR] Error setting prompt: {e}")
-            prompt = "질문이 없습니다."
-        
-        try:
-            # 5) SamplingParams 생성
-            from vllm import SamplingParams
-            sampling_params = SamplingParams(
-                max_tokens=self.config.model.max_new_tokens,
-                temperature=self.config.model.temperature,
-                top_k=self.config.model.top_k,
-                top_p=self.config.model.top_p,
-                repetition_penalty=self.config.model.repetition_penalty,
-            )
-            print("[DEBUG] SamplingParams created successfully")
-        except Exception as e:
-            print(f"[ERROR] Error creating SamplingParams: {e}")
-            return {"type": "error", "message": f"SamplingParams creation failed: {e}"}
-        
-        try:
-            # 6) PIL 이미지를 텐서로 변환 (torchvision 사용)
-            from torchvision import transforms
-            transform = transforms.Compose([
-                transforms.ToTensor(),
-                # 필요 시 추가 Resize, Normalize 등을 적용
-            ])
-            image_tensor = transform(pil_image)
-            print("[DEBUG] Image converted to tensor successfully")
-        except Exception as e:
-            print(f"[ERROR] Error converting PIL image to tensor: {e}")
-            return {"type": "error", "message": f"Image tensor conversion failed: {e}"}
-        
-        try:
-            # 7) 이미지 임베딩 계산
-            # 먼저, 모델(self.model)이 멀티모달 메서드를 직접 제공하는지 확인
-            if hasattr(self.model, "get_multimodal_embeddings"):
-                image_embeddings = self.model.get_multimodal_embeddings(pixel_values=image_tensor)
-                print("[DEBUG] Obtained image embeddings via self.model.get_multimodal_embeddings")
-            # 만약 없다면, underlying model (예: self.model.model)에서 호출
-            elif hasattr(self.model, "model") and hasattr(self.model.model, "get_multimodal_embeddings"):
-                image_embeddings = self.model.model.get_multimodal_embeddings(pixel_values=image_tensor)
-                print("[DEBUG] Obtained image embeddings via self.model.model.get_multimodal_embeddings")
+            print("[DEBUG] Step2 - Converting image data to PIL...")
+            if isinstance(image_input, str) and (
+                image_input.startswith("http://") or image_input.startswith("https://")
+            ):
+                print("[DEBUG]   => image_input is a URL; using fetch_image()")
+                pil_image = fetch_image(image_input)
             else:
-                raise AttributeError("Underlying model does not support get_multimodal_embeddings")
+                print("[DEBUG]   => image_input is presumably base64")
+                if isinstance(image_input, str) and image_input.startswith("data:image/"):
+                    print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
+                    image_input = image_input.split(",", 1)[-1]
+                decoded = base64.b64decode(image_input)
+                print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
+                pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+            print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
         except Exception as e:
-            print(f"[ERROR] Error obtaining image embeddings: {e}")
-            return {"type": "error", "message": f"Image embeddings retrieval failed: {e}"}
-        
-        # 8) 모델의 generate 호출: 이미지 인자는 inputs_embeds로 전달 (images 인자는 사용하지 않음)
+            err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
+            print(err_msg)
+            return {"type": "error", "message": err_msg}
+
+        # 3) HF Processor 로드
+        try:
+            print(f"[DEBUG] Step3 - Loading processor from '{self.config.model_id}' ... (use_fast=False)")
+            processor = AutoProcessor.from_pretrained(
+                self.config.model_id,
+                use_fast=False  # 모델이 fast processor를 지원한다면 True로 시도 가능
+            )
+            print("[DEBUG]   => processor loaded:", type(processor).__name__)
+        except Exception as e:
+            err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
+            print(err_msg)
+            return {"type": "error", "message": err_msg}
+
+        # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
+        print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "url": pil_image},   # PIL object
+                    {"type": "text",  "text": user_query}, # 사용자 질의
+                ],
+            }
+        ]
+        try:
+            # tokenize=False => prompt를 'raw string' 형태로 얻음
+            prompt_string = processor.apply_chat_template(
+                messages,
+                tokenize=False,           # 핵심!
+                add_generation_prompt=True,
+            )
+            print("[DEBUG]   => prompt_string (first ~200 chars):", prompt_string[:200])
+        except Exception as e:
+            err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
+            print(err_msg)
+            return {"type": "error", "message": err_msg}
+
+        # 5) Sampling Params
+        print("[DEBUG] Step5 - Setting sampling params...")
+        sampling_params = SamplingParams(
+            max_tokens=self.config.model.max_new_tokens,
+            temperature=self.config.model.temperature,
+            top_k=self.config.model.top_k,
+            top_p=self.config.model.top_p,
+            repetition_penalty=self.config.model.repetition_penalty,
+        )
+        print("[DEBUG]   => sampling_params =", sampling_params)
+
+        # 6) Generate 호출
+        print("[DEBUG] Step6 - Starting vLLM generate(...) using multi_modal_data")
         result_chunks = []
         try:
-            print("[DEBUG] Starting model.generate call")
+            # vLLM에 prompt와 함께 multi_modal_data를 넘김
+            # => vLLM 내부에서 Gemma3MultiModalProcessor가 image 임베딩 및 token placement 처리
+            generate_request = {
+                "prompt": prompt_string,
+                "multi_modal_data": {
+                    "image": [pil_image]  # 여러 장이라면 list에 더 추가
+                }
+            }
+
             async for out in self.model.generate(
-                prompt=prompt,
+                prompt=generate_request,
                 sampling_params=sampling_params,
                 request_id=request_id,
-                inputs_embeds=image_embeddings  # 이미지 임베딩 전달
             ):
                 result_chunks.append(out)
-            print("[DEBUG] model.generate call completed")
+
+            print("[DEBUG] Step6 - All chunks retrieved: total:", len(result_chunks))
+
         except Exception as e:
-            print(f"[ERROR] Error during model.generate: {e}")
-            return {"type": "error", "message": f"Model generation failed: {e}"}
+            err_msg = f"[ERROR-step6] Error in model.generate: {str(e)}"
+            print(err_msg)
+            return {"type": "error", "message": err_msg}
+
+        if not result_chunks:
+            print("[DEBUG] Step6 - No output from model => returning error")
+            return {"type": "error", "message": "No output from model."}
+
+        final_output = next((c for c in result_chunks if getattr(c, "finished", False)), result_chunks[-1])
+        answer_text = "".join(piece.text for piece in final_output.outputs)
+        print(f"[DEBUG] Final answer: {answer_text}")
+
+        # 완료
+        print(f"[DEBUG] [process_image_query] DONE => request_id={request_id}")
+        return {
+            "result": answer_text,
+            "request_id": request_id,
+            "status_code": 200
+        }
+
+    # async def process_image_query(self, http_query):
+    #     import uuid
+    #     import base64
+    #     import io
+    #     from PIL import Image
+    #     from transformers import AutoProcessor
+    #     from vllm import SamplingParams
+    #     from vllm.multimodal.utils import fetch_image
+
+    #     request_id = http_query.get("request_id", str(uuid.uuid4()))
+    #     print(f"[DEBUG] [process_image_query] START => request_id={request_id}")
+
+    #     # 1) 파라미터 파싱
+    #     image_input = http_query.get("image_data")  # base64 or URL
+    #     user_query = http_query.get("qry_contents", "이 이미지에 대해 설명해줘.")
+    #     print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
+
+    #     # 2) 이미지 -> PIL
+    #     pil_image = None
+    #     try:
+    #         print("[DEBUG] Step2 - Converting image data to PIL...")
+    #         if isinstance(image_input, str) and (image_input.startswith("http://") or image_input.startswith("https://")):
+    #             print("[DEBUG]   => image_input is a URL; using fetch_image()")
+    #             pil_image = fetch_image(image_input)
+    #         else:
+    #             print("[DEBUG]   => image_input is presumably base64")
+    #             if isinstance(image_input, str) and image_input.startswith("data:image/"):
+    #                 # 'data:image/png;base64,' 같은 prefix 제거
+    #                 print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
+    #                 image_input = image_input.split(",", 1)[-1]
+    #             decoded = base64.b64decode(image_input)
+    #             print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
+    #             pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+    #         print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
+    #     except Exception as e:
+    #         err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
+    #         print(err_msg)
+    #         return {"type": "error", "message": err_msg}
         
-        try:
-            # 9) 결과 처리 및 최종 응답 생성
-            if not result_chunks:
-                print("[ERROR] No output chunks received from model.generate")
-                return {"type": "error", "message": "No output from model."}
-            final_output = None
-            for c in result_chunks:
-                if hasattr(c, "finished") and c.finished:
-                    final_output = c
-                    print("[DEBUG] Found finished output chunk")
-                    break
-            if final_output is None:
-                final_output = result_chunks[-1]
-                print("[DEBUG] No finished chunk found; using last chunk")
-            answer_text = "".join(x.text for x in final_output.outputs)
-            print(f"[DEBUG] Final answer text: {answer_text}")
-            return {"result": answer_text, "request_id": request_id}
-        except Exception as e:
-            print(f"[ERROR] Error processing output chunks: {e}")
-            return {"type": "error", "message": f"Processing output failed: {e}"}
+    #     # 2) generate 호출
+    #     print("[DEBUG] Step3 - Starting vLLM generate(...)")
+    #     result_chunks = []
+    #     try:
+    #         async for out in self.model.generate(
+    #             {
+    #                 "prompt": user_query,  # The text from apply_chat_template
+    #                 "multi_modal_data": {
+    #                 "image": [pil_image]    # or list of images
+    #                 }
+    #             },
+    #                 sampling_params=SamplingParams(
+    #                 temperature=0.7,
+    #                 max_tokens=256,
+    #             ),
+    #             request_id=request_id,
+    #         ):
+    #             # 디버그: 스트리밍 중간 결과 로그 (너무 잦은 로그는 성능에 영향을 줄 수 있음)
+    #             # print(f"[DEBUG]   => partial chunk: {out}")
+    #             result_chunks.append(out)
+    #         print("[DEBUG] Step3 - All chunks retrieved: total:", len(result_chunks))
+    #     except Exception as e:
+    #         err_msg = f"[ERROR-step3] Error in model.generate: {str(e)}"
+    #         print(err_msg)
+    #         return {"type": "error", "message": err_msg}
+
+    #     if not result_chunks:
+    #         print("[DEBUG] Step7 - No output from model => returning error")
+    #         return {"type": "error", "message": "No output from model."}
+
+    #     final_output = next((c for c in result_chunks if getattr(c, "finished", False)), result_chunks[-1])
+    #     answer_text = "".join(piece.text for piece in final_output.outputs)
+    #     print(f"[DEBUG] Final answer: {answer_text}")
+
+    #     # 완료
+    #     print(f"[DEBUG] [process_image_query] DONE => request_id={request_id}")
+    #     return {
+    #         "result": answer_text,
+    #         "request_id": request_id,
+    #         "status_code": 200
+    #     }
+
 
 
     # ------------------------------------------------------------
@@ -1654,54 +1748,28 @@ def load_model(config):
         
         vllm_conf = config.get("vllm", {})
         
+        # --- 기존 엔진 설정들
         engine_args.enable_prefix_caching = True
         # engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
-        engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
+        engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # How many use the parllel Multi-GPU
         engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
         engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
         # engine_args.block_size = vllm_conf.get("block_size", 128)
         engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization")
         
+        # --- 다중 GPU 사용 관련 설정 ---
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
-            
+        
+        # --- 모델의 Context Length ---
         engine_args.max_model_len = vllm_conf.get("max_model_len")
         
-        # Image 기능 추가
-        engine_args.mm_processor_kwargs={"do_pan_and_scan":True}
-        engine_args.disable_mm_preprocessor_cache = False
+        # --- 멀티모달 (Image) 관련 설정 ---
+        engine_args.mm_processor_kwargs = vllm_conf.get("mm_processor_kwargs", {"do_pan_and_scan": True})
+        engine_args.disable_mm_preprocessor_cache = vllm_conf.get("disable_mm_preprocessor_cache", False)
+        engine_args.limit_mm_per_prompt = vllm_conf.get("limit_mm_per_prompt", {"image": 2})
         
-        # # 새로 추가: disable_sliding_window 옵션 확인
-        # if vllm_conf.get("disable_sliding_window", False):
-        #     engine_args.sliding_window = (-1, -1)
-        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
-        
-        # engine_args.enable_memory_defrag = True # v1 새로운 기능
-        # engine_args.max_model_len = vllm_conf.get("max_model_len") # Context Length
-        
-        # # ★★ 추가: 슬라이딩 윈도우 비활성화 옵션 적용 ★★
-        # if vllm_conf.get("disable_sliding_window", False):
-        #     # cascade attention에서는 슬라이딩 윈도우가 (-1, -1)이어야 함
-        #     engine_args.sliding_window = (-1, -1)
-        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
-        
-        # print("Final EngineArgs:", engine_args)
-        
-        #         # ── 여기서 unified_attention 호출 추적을 위한 monkey-patch ──
-        # try:
-        #     if hasattr(torch.ops.vllm, "unified_attention_with_output"):
-        #         orig_unified_attention = torch.ops.vllm.unified_attention_with_output
-        #         def tracking_unified_attention(*args, **kwargs):
-        #             logging.info("Called unified_attention_with_output with args: %s, kwargs: %s", args, kwargs)
-        #             return orig_unified_attention(*args, **kwargs)
-        #         torch.ops.vllm.unified_attention_with_output = tracking_unified_attention
-        #         logging.info("Monkey-patched unified_attention_with_output for tracking.")
-        # except Exception as e:
-        #     logging.warning("Failed to monkey-patch unified_attention_with_output: %s", e)
-        
-        # # ── 끝 ──
-
         print("EngineArgs setting be finished")
         
         try:
@@ -2625,89 +2693,8 @@ async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_para
 # -------------------------------------------------------------------------
 # PROCESS IMAGE QUERY (IMAGE TO TEXT)
 # -------------------------------------------------------------------------
-# async def process_image_query(image_data: str, query: str, **kwargs):
-#     """
-#     Process an image query by decoding the image, optionally obtaining its embeddings
-#     if the model supports multimodal inputs (e.g. gemma3 image processor), and then
-#     incorporating that image information into the text prompt for generation.
 
-#     Args:
-#         image_data (str): Base64-encoded image data.
-#         query (str): The user's text query.
-#         **kwargs: Must include:
-#             - model: The loaded model.
-#             - tokenizer: The tokenizer.
-#             - config: The configuration object with model parameters.
-#             - request_id (optional): The request id for tracking.
-    
-#     Returns:
-#         str: The generated answer text.
-#     """
-#     import base64, io
-#     from PIL import Image
-#     import uuid
-#     from vllm.model_executor.models.interfaces import SupportsMultiModal
 
-#     model = kwargs.get("model")
-#     tokenizer = kwargs.get("tokenizer")
-#     config = kwargs.get("config")
-    
-#     # Obtain or generate a request_id
-#     request_id = kwargs.get("request_id", str(uuid.uuid4()))
-    
-#     print("[MULTI-MODAL] image processing is starting")
-    
-#     # Decode the image from base64 and load it with PIL
-#     try:
-#         image_bytes = base64.b64decode(image_data)
-#         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-#     except Exception as e:
-#         raise ValueError(f"Failed to decode image data: {e}")
-    
-#     # If the model supports multimodal inputs, try to obtain image embeddings.
-#     if isinstance(model, SupportsMultiModal):
-#         try:
-#             # Get image embeddings using the model's method
-#             image_embeddings = model.get_multimodal_embeddings(image=image)
-#             # Convert embeddings to a string snippet for inclusion in the prompt.
-#             image_info = f"[IMAGE_EMBEDDING: {str(image_embeddings)[:200]}...]"
-#         except Exception as e:
-#             logging.error("Failed to obtain image embeddings: %s", e)
-#             image_info = "[IMAGE_EMBEDDING_ERROR]"
-#     else:
-#         image_info = "[IMAGE]"
-    
-#     # Construct the prompt that includes the image information and the query.
-#     prompt = f"{image_info}\n사용자: {query}\n시스템: "
-    
-#     print("[MULTI-MODAL] image_info is generated : ", image_info)
-    
-#     # Create sampling parameters from the configuration.
-#     from vllm import SamplingParams
-#     sampling_params = SamplingParams(
-#         max_tokens=config.model.max_new_tokens,
-#         temperature=config.model.temperature,
-#         top_k=config.model.top_k,
-#         top_p=config.model.top_p,
-#         repetition_penalty=config.model.repetition_penalty,
-#     )
-    
-#     # Since model.generate returns an async generator, we collect its outputs into a list.
-#     outputs = [output async for output in model.generate(
-#         prompt=prompt,
-#         sampling_params=sampling_params,
-#         request_id=request_id,
-#     )]
-    
-    
-#     # Extract the generated text from the first output if available.
-#     if outputs and hasattr(outputs[0], "outputs") and outputs[0].outputs:
-#         answer = outputs[0].outputs[0].text
-#         print("[MULTI-MODAL] Output is generated : ", answer)
-#     else:
-#         answer = ""
-#         print("[MULTI-MODAL] Output is generated is empty")
-#     return answer
 
 # ---------------------------
 # *** 새로 추가된 generate_sql 함수 ***
@@ -2721,42 +2708,9 @@ async def generate_sql(user_query, model, tokenizer, config):
     """
     # 먼저 메타데이터를 읽어옴
     metadata_location, metadata_unno = get_metadata(config)
-
+    
     # 프롬프트 생성
-    PROMPT = f'''
-<bos>
-<system>
-"YourRole": "질문으로 부터 조건을 추출하는 역할",
-"YourJob": "아래 요구 사항에 맞추어 'unno', 'class', 'pol_port', 'pod_port' 정보를 추출하여, 예시처럼 답변을 구성해야 합니다.",
-"Requirements": [
-    unno: UNNO Number는 4개의 숫자로 이루어진 위험물 번호 코드야. 
-    class : UN Class는 2.1, 6.0,,, 의 숫자로 이루어진 코드야.
-    pol_port, pod_port: 항구 코드는 5개의 알파벳 또는 나라의 경우 2개의 알파벳과 %로 이루어져 있어. 다음은 항구 코드에 대한 메타데이터야 {metadata_location}. 여기에서 매칭되는 코드만을 사용해야 해. 항구는 항구코드, 나라는 2개의 나라코드와 %를 사용해.
-    unknown : 질문에서 찾을 수 없는 정보는 NULL을 출력해줘.
-]
-
-"Examples": [
-    "질문": "UN 번호 1689 화물의 부산에서 미즈시마로의 선적 가능 여부를 확인해 주세요.",
-    "답변": "<unno/>1689<unno>\\n<class/>NULL<class>\\n<pol_port/>KRPUS<pol_port>\\n<pod_port/>JPMIZ<pod_port>"
-
-    "질문": "UN 클래스 2.1 화물의 한국에서 일본으로의 선적 가능 여부를 확인해 주세요.",
-    "답변": "<unno/>NULL<unno>\\n<class/>2.1<class>\\n<pol_port/>KR%<pol_port>\\n<pod_port/>JP%<pod_port>"
-]
-- 최종 출력은 반드시 다음 4가지 항목을 포함해야 합니다:
-    <unno/>...<unno>
-    <class/>...<class>
-    <pol_port/>...<pol_port>
-    <pod_port/>...<pod_port>
-</system>
-
-<user>
-질문: "{user_query}"
-</user>
-
-<assistant>
-답변:
-</assistant>
-'''
+    PROMPT = SQL_EXTRACTION_PROMPT_TEMPLATE.format(metadata_location=metadata_location, query=user_query)
 
     from vllm import SamplingParams
     import uuid
@@ -2816,26 +2770,6 @@ async def generate_sql(user_query, model, tokenizer, config):
 
 ```
 
-# logs that indicate the which architecture is running
-```log
-(InferenceActor pid=493) [DEBUG] => Saving HF Config with architectures=['Gemma3ForConditionalGeneration']
-```
-
-# error logs
-```log
-
-(InferenceActor pid=493) [DEBUG] Starting process_image_query
-(InferenceActor pid=493) [DEBUG] Retrieved parameters: request_id=bb60fe54-1102-4b11-b0bc-852e8c0d63f5
-(InferenceActor pid=493) [DEBUG] Base64 decoding successful
-(InferenceActor pid=493) [DEBUG] PIL image created successfully
-(InferenceActor pid=493) [DEBUG] Prompt set to: 질문이 없습니다.
-(InferenceActor pid=493) [DEBUG] SamplingParams created successfully
-(InferenceActor pid=493) [DEBUG] Image converted to tensor successfully
-(InferenceActor pid=493) [ERROR] Error obtaining image embeddings: Underlying model does not support get_multimodal_embeddings
-
-
-
-```
 
 -----------------
 
@@ -2856,5 +2790,5 @@ async def generate_sql(user_query, model, tokenizer, config):
 
 # My-Requirements
 
- 1. User requirements.
- 2. My requirements.
+ 1. 현재 RAG.py에서 execute_sql은 안 사용되고 있지 않아? 왜 존재하는지 모르겠어.
+ 2. 현재 ray_utils.py에 있는 코드를
