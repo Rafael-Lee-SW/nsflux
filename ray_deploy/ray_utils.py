@@ -188,24 +188,12 @@ class InferenceActor:
                 recent_messages = messages[-5:]
                 past_context = "\n\n".join(recent_messages)
             
-            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
-            # past_tokens = self.tokenizer.tokenize(str(past_context))
-            # if len(past_tokens) > 4000:
-            #     past_tokens = past_tokens[-4000:]
-            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
-            
             # ★ 토큰 수 계산 코드 추가 ★
-            # retrieval 자료는 dict나 리스트일 수 있으므로 문자열로 변환하여 토큰화합니다.
-            # 각 입력값을 명시적으로 str()로 변환합니다.
             past_tokens = self.tokenizer.tokenize(str(past_context))
             query_tokens = self.tokenizer.tokenize(str(user_input))
             total_tokens = len(past_tokens) + len(query_tokens)
             print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, 사용자 입력 질문: {len(query_tokens)}, 총합: {total_tokens}")
             
-            # # To Calculate the token
-            # tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
-            # print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
-
             # 5) 필요하다면 RAG 데이터를 다시 로드(1.16version 유지)
             self.data = load_data(
                 self.config.data_path
@@ -213,14 +201,8 @@ class InferenceActor:
 
             # 6) 현재 사용중인 Thread 확인
             print("   ... calling query_sort() ...")
-            # print(
-            #     f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}"
-            # )
+
             # 7) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
-            #    방법 1) query_sort() 전에 past_context를 참조해 query를 확장
-            #    방법 2) generate_answer()에서 Prompt 앞부분에 붙임
-            # 여기서는 예시로 “query_sort”에 past_context를 넘겨
-            # 호출부 수정 "user_input": f"{past_context}\n사용자 질문: {user_input}",
             params = {
                 "user_input": f"사용자 질문: {user_input}",
                 "model": self.model,
@@ -288,26 +270,7 @@ class InferenceActor:
                             if "chunk_id" in doc:
                                 chunk_ids_used.append(doc["chunk_id"])
                                                         
-                        # >>> CHANGED: summarize the conversation
-                        # loop = asyncio.get_event_loop()
-                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
-                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
-                        # updated_conversation = prev_summary + "\n" + new_entry
-                        # # Summarized CPU 사용
-                        # # import concurrent.futures
-
-                        # # Create a dedicated pool with more workers (e.g., 4)
-                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-
-                        # # Later, when calling the summarization function:
-                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
-                        # # # After obtaining 'summarized' in _process_single_query:
-                        # # if not summarized:
-                        # #     print("[ERROR] Summarization returned an empty string.")
-                        # # else:
-                        # #     print(f"[CHECK] Summarized conversation: {summarized}")
-                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
-                                            # 메모리에 저장
+                        # 메모리에 저장
                         try:
                             memory.save_context(
                                 {
@@ -378,22 +341,7 @@ class InferenceActor:
                             if "chunk_id" in doc:
                                 chunk_ids_used.append(doc["chunk_id"])
                                 
-                        
-                        # loop = asyncio.get_event_loop()
-                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
-                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
-                        # updated_conversation = prev_summary + "\n" + new_entry
-                        # # # Summarized CPU 사용
-                        # # import concurrent.futures
-                        
-                        # # # Create a dedicated pool with more workers (e.g., 4)
-                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-                        
-                        # # Later, when calling the summarization function:
-                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
-                        
-                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
-                                            # 메모리 저장
+                        # 메모리 저장
                         try:
                             memory.save_context(
                                 {
@@ -536,15 +484,6 @@ class InferenceActor:
         print(
             f"[STREAM] _stream_partial_answer => request_id={request_id}, chart={chart}"
         )
-
-        # 단일
-        # queue = self.active_sse_queues.get(request_id)
-        # if not queue:
-        #     print(f"[STREAM] SSE queue not found => fallback to normal final (request_id={request_id})")
-        #     # fallback...
-        #     return
-
-        # This will hold the entire text so far. We'll yield only new pieces.
         
         # 먼저, 참조 데이터 전송: type을 "reference"로 명시
         reference_json = json.dumps({
@@ -587,11 +526,6 @@ class InferenceActor:
                 recent_messages = messages[-5:]
                 past_context = "\n\n".join(recent_messages)
             
-            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
-            # past_tokens = self.tokenizer.tokenize(str(past_context))
-            # if len(past_tokens) > 4000:
-            #     past_tokens = past_tokens[-4000:]
-            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
         except KeyError:
             # 만약 "history" 키가 없으면 빈 문자열로 처리
             print(f"[STREAM] No 'history' in memory for {request_id}, using empty.")
@@ -631,11 +565,8 @@ class InferenceActor:
                 # print(f"[STREAM] Received partial_text: {partial_text}")
                 new_text = partial_text[len(partial_accumulator) :]
                 partial_accumulator = partial_text
-                # # 원래 코드
-                # if not new_text.strip():
-                #     continue
-
-                # 수정 예시: new_text가 완전히 빈 문자열("")인 경우에만 건너뛰기
+                
+                # 수정: new_text가 완전히 빈 문자열("")인 경우에만 건너뛰기
                 if new_text == "":
                     continue
                 
@@ -648,13 +579,6 @@ class InferenceActor:
                 # print(f"[STREAM] Sending token: {answer_json}")
                 await self.queue_manager.put_token.remote(request_id, answer_json)
             final_text = partial_accumulator
-            # # 이제 memory에 저장 (이미 request_id를 알고 있다고 가정) # 랭체인
-            # try:
-            #     memory.save_context({"input": user_input}, {"output": final_text})
-            # except Exception as e:
-            #     msg = f"[STREAM] memory.save_context failed: {str(e)}"
-            #     print(msg)
-                
                 
             # >>> CHANGED: Update conversation summary in streaming branch as well
             chunk_ids_used = []
@@ -663,8 +587,6 @@ class InferenceActor:
                 if "chunk_id" in doc:
                     chunk_ids_used.append(doc["chunk_id"])
                     
-            # memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used})
-            
             # 메모리 저장
             try:
                 memory.save_context(
@@ -681,8 +603,7 @@ class InferenceActor:
                 print(f"[ERROR memory.save_context in stream] {e}")
             
             print("메시지 저장 직후 chunk_id 확인 : ", memory)
-            # >>> CHANGED: -------------------------------------------------------
-            
+
             # 최종 응답 구조
             if chart is not None:
                 ans = process_to_format([final_text, chart], type="Answer")
