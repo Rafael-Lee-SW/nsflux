@@ -483,28 +483,37 @@ body {
     margin-bottom: 0.5rem;
 }
 
+/* ChatGPT 스타일의 welcome 입력 영역 */
 .welcome-input-box {
-    position: relative;
-    width: 100%;
     display: flex;
     align-items: center;
+    background-color: white;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 0.75rem 1rem;
+    box-shadow: var(--shadow-md);
+    width: 100%;
+    max-width: 768px;
+    margin: 0 auto;
+}
+
+.welcome-tools {
     width: 100%;
 }
 
 .welcome-message-input {
     width: 100%;
-    padding: 0.75rem 3rem 0.75rem 1rem;
-    font-size: 0.9375rem;
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-lg);
+    flex: 1;
+    border: none;
     resize: none;
-    min-height: 2.5rem;
-    max-height: 150px;
-    overflow-y: auto;
-    transition: var(--transition-normal);
-    font-family: inherit;
-    box-shadow: var(--shadow-md);
-    background-color: white;
+    font-size: 1rem;
+    padding: 0.5rem;
+    outline: none;
+    background-color: transparent;
+}
+
+.welcome-message-input::placeholder {
+    color: var(--text-secondary);
 }
 
 .welcome-message-input:focus {
@@ -514,25 +523,19 @@ body {
 }
 
 .welcome-send-btn {
-    position: absolute;
-    right: 0.5rem;
-    bottom: 0.5rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 2rem;
-    height: 2rem;
-    border: none;
-    border-radius: 50%;
     background-color: var(--primary);
+    border: none;
     color: white;
+    padding: 0.5rem 1rem;
+    border-radius: var(--radius-md);
     cursor: pointer;
     transition: var(--transition-normal);
+    font-size: 1rem;
+    margin-left: 0.75rem;
 }
 
 .welcome-send-btn:hover {
     background-color: var(--primary-hover);
-    transform: scale(1.05);
 }
 
 .empty-chat-prompt {
@@ -1041,44 +1044,109 @@ body {
 
 /* Image Upload Styles */
 .image-upload-container {
+    margin-right: 0.75rem;
     display: flex;
     align-items: center;
-    margin-left: 8px;
+    position: relative;
+    /* 추가 */
+}
+
+/* Dropdown 메뉴 스타일 */
+.image-dropdown-menu {
+    display: none;
+    position: absolute;
+    top: -300%;
+    /* 버튼 아래에 위치 */
+    left: 0%;
+    background-color: white;
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-md);
+    border-radius: var(--radius-md);
+    padding: 0.5rem;
+    z-index: 10;
+    max-width: 600px;
+}
+
+.image-dropdown-menu.active {
+    display: block;
+}
+
+.image-dropdown-menu .dropdown-header {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+}
+
+.dropdown-upload-btn {
+    width: 100%;
+    padding: 0.5rem;
+    background-color: var(--primary);
+    color: white;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    margin-bottom: 0.5rem;
+}
+
+.dropdown-upload-btn:hover {
+    background-color: var(--primary-hover);
+}
+
+.uploaded-images {
+    max-width: 600px; /* 원하는 최대 너비로 설정 */
+    flex-wrap: wrap;  /* 공간이 부족하면 다음 줄로 넘김 */
+    overflow-x: auto;
+    display: flex;
+    flex-direction: row;
+    border-top: 1px solid var(--border-color);
+    padding-top: 0.5rem;
+}
+
+.uploaded-images .no-images {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-align: center;
 }
 
 .image-upload-btn {
+    background-color: transparent;
+    border: none;
+    border-radius: 12%;
+    cursor: pointer;
+    margin-top: 8px;
+    padding: 0.25rem;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    background-color: var(--primary-light);
-    color: var(--primary);
-    border: 1px solid var(--primary);
-    border-radius: var(--radius-sm);
-    font-size: 0.75rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: var(--transition-normal);
+    justify-content: center;
 }
 
 .image-upload-btn:hover {
-    background-color: var(--primary);
-    color: white;
+    background-color: rgb(243, 243, 243);
+    /* color: white; */
 }
 
 .image-upload-btn svg {
-    color: currentColor;
+    width: 20px;
+    height: 20px;
+    color: var(--primary);
+}
+
+/* 이미지 버튼 active 상태 (이미지 업로드된 경우) */
+.image-upload-btn.active {
+    background-color: var(--primary-hover);
+    color: white;
 }
 
 /* Image Preview Styles */
 .image-preview-container {
-    max-width: 300px;
+    max-width: 600px;
     margin-top: 10px;
-    display: none;
-    flex-direction: column;
+    display: none; /* .has-image 클래스가 추가될 때 flex로 변경됨 */
+    flex-direction: row;
+    flex-wrap: wrap;  /* 아이템들이 한 줄에 다 들어가지 않으면 다음 줄로 넘겨줌 */
     gap: 0.5rem;
     border-radius: var(--radius-md);
-    overflow: hidden;
+    overflow: auto;  /* 필요에 따라 스크롤도 허용 */
     background-color: white;
     border: 1px solid var(--border-color);
     box-shadow: var(--shadow-sm);
@@ -1090,36 +1158,41 @@ body {
 
 .preview-image-wrapper {
     position: relative;
-    width: 100%;
+    width: 65px;
+    /* fixed width */
+    height: 65px;
+    /* fixed height */
+    margin: 0.5rem;
+    border: 1px solid #ddd;
+    overflow: hidden;
+    border-radius: 4px;
 }
 
 .preview-image {
     width: 100%;
-    max-height: 200px;
-}
-
-.preview-image {
-    width: 100%;
-    max-height: 200px;
-    object-fit: contain;
-    display: block;
+    height: 100%;
+    object-fit: cover;
+    /* crop or scale the image to fill the container */
 }
 
 .remove-image-btn {
     position: absolute;
-    top: 0.5rem;
-    right: 0.5rem;
-    width: 1.5rem;
-    height: 1.5rem;
-    border-radius: 50%;
-    background-color: rgba(0, 0, 0, 0.5);
-    color: white;
+    top: 5px;
+    right: 5px;
+    background: rgba(0, 0, 0, 0.5);
     border: none;
+    color: #fff;
+    border-radius: 50%;
+    cursor: pointer;
+    padding: 5px;
     display: flex;
     align-items: center;
     justify-content: center;
-    cursor: pointer;
-    transition: var(--transition-normal);
+}
+
+.remove-image-btn svg {
+    width: 16px;
+    height: 16px;
 }
 
 .remove-image-btn:hover {
@@ -1153,13 +1226,6 @@ body {
     max-height: 200px;
     object-fit: contain;
     display: block;
-}
-
-/* Welcome screen image upload adjustments */
-.welcome-input-box {
-    display: flex;
-    align-items: center;
-    width: 100%;
 }
 
 /* Dark mode support for image components */

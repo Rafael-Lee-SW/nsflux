@@ -1,12 +1,55 @@
 # Project Tree of RAG for company
 
 ```
+├─ .dockerignore
+├─ Dockerfile
 ├─ app.py
 ├─ config.yaml
 ├─ core/RAG.py
+├─ core/SQL_NS.py
+├─ ray_deploy/ray_setup.py
 ├─ ray_deploy/ray_utils.py
+├─ requirements.txt
+├─ templates/chatroom.html
 └─ utils/utils_load.py
 ```
+
+--- .dockerignore
+
+```
+
+huggingface
+YeoJun
+
+# Ignore git files and folders
+.git
+.gitignore
+
+# Ignore Python cache files
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore virtual environments or local build folders
+venv
+env
+*.env
+.env.*
+build/
+dist/
+
+# Ignore logs and temporary files
+*.log
+*.tmp
+
+# If you have any large data or model files that are not needed in build context, ignore them
+# data/
+models/
+logs/
+
+```
+
 
 --- config.yaml
 
@@ -85,6 +128,176 @@ k : 15                          # SQL Max Rows (None=MAX)
 ```
 
 
+--- Dockerfile
+
+```dockerfile
+
+# 베이스 이미지 선택
+FROM globeai/flux_ns:env
+# FROM globeai/flux_ns:2.2
+# FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
+
+# 2. 대화형 입력 없이 진행하도록 환경 변수 설정
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 작업 디렉토리 설정
+WORKDIR /workspace
+
+# # Solve the C compier
+RUN apt-get update && apt-get install build-essential -y
+
+# combining apt-get calls for efficiency
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    bzip2 \
+    ca-certificates \
+    curl \
+    git \
+    vim \
+    libaio1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# # Miniconda (Python 3.11 버전용) 설치
+# RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+#     bash /tmp/miniconda.sh -b -p /opt/conda && \
+#     rm /tmp/miniconda.sh
+
+# # conda 설치 경로를 PATH에 추가
+# ENV PATH=/opt/conda/bin:$PATH
+
+# # Python 버전을 3.11.9로 업데이트하고, pip를 pip 24.0으로 업그레이드
+# RUN conda install python=3.11.9 -y && \
+#     pip install --upgrade pip==24.0
+
+# # 버전 확인 (빌드 시 로그에 표시됨)
+# RUN python --version && pip --version
+
+# requirements.txt만 먼저 복사해서 종속성 설치 (캐시 활용)
+COPY requirements.txt .
+
+# pip 캐시 사용 안 함으로 설치 (임시 파일 최소화)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Additional pip installations: transformers & vllm
+# RUN pip install ninja \
+#     && pip install git+https://github.com/huggingface/transformers.git \
+#     && pip install git+https://github.com/vllm-project/vllm.git
+RUN pip install ninja \
+    && pip install git+https://github.com/huggingface/transformers.git
+
+# 현재 디렉토리의 모든 파일을 컨테이너의 /app 폴더로 복사
+COPY . /workspace
+
+# Flask 앱이 실행될 포트를 열어둠
+EXPOSE 5000
+# Ray Dashboard 포트 (8265)와 vLLM 관련 포트 필요 시 추가
+EXPOSE 8265
+# Expose port for the vLLM
+EXPOSE 8000
+
+# Flask 앱 실행 명령어
+CMD ["python", "app.py"]
+
+```
+
+
+--- requirements.txt
+
+```txt
+
+accelerate==1.3.0
+aiohappyeyeballs==2.4.4
+aiohttp==3.11.12
+aiohttp-cors==0.7.0
+aiosignal==1.3.2
+annotated-types==0.7.0
+attrs==25.1.0
+bitsandbytes==0.45.1
+blinker==1.9.0
+cachetools==5.5.1
+certifi==2025.1.31
+charset-normalizer==3.4.1
+click==8.1.8
+colorama==0.4.6
+colorful==0.5.6
+distlib==0.3.9
+filelock==3.17.0
+Flask==3.1.0
+Flask[async]==3.1.0
+Jinja2==3.1.5
+gunicorn==23.0.0
+frozenlist==1.5.0
+fsspec==2025.2.0
+google-api-core==2.24.1
+google-auth==2.38.0
+googleapis-common-protos==1.66.0
+grpcio==1.70.0
+huggingface-hub==0.28.1
+idna==3.10
+itsdangerous==2.2.0
+Jinja2==3.1.5
+jsonschema==4.23.0
+jsonschema-specifications==2024.10.1
+langchain==0.3.19
+MarkupSafe==3.0.2
+mpmath==1.3.0
+msgpack==1.1.0
+multidict==6.1.0
+networkx==3.4.2
+numpy==1.26.4
+opencensus==0.11.4
+opencensus-context==0.1.3
+optree==0.14.0
+packaging==24.2
+pillow==11.1.0
+platformdirs==4.3.6
+prometheus_client==0.21.1
+propcache==0.2.1
+proto-plus==1.26.0
+protobuf==5.29.3
+psutil==6.1.1
+py-spy==0.4.0
+pyasn1==0.6.1
+pyasn1_modules==0.4.1
+pydantic==2.10.6
+pydantic_core==2.27.2
+python-box==7.3.2
+python-dotenv==1.0.1
+PyYAML==6.0.2
+rank-bm25==0.2.2
+ray[serve]==2.43.0
+referencing==0.36.2
+regex==2024.11.6
+requests==2.32.3
+rpds-py==0.22.3
+rsa==4.9
+safetensors==0.5.2
+setuptools==75.8.0
+six==1.17.0
+smart-open==7.1.0
+sympy==1.13.1
+the==0.1.5
+tokenizers==0.21.0
+torch==2.6.0
+torchvision==0.21.0
+tqdm==4.67.1
+transformers==4.49.0
+typing_extensions==4.12.2
+urllib3==2.3.0
+virtualenv==20.29.1
+vllm==0.8.1
+Werkzeug==3.1.3
+wrapt==1.17.2
+yarl==1.18.3
+python-pptx==1.0.2
+pandas==2.2.3
+plotly==6.0.0
+pypdf2==3.0.1
+umap-learn==0.5.3
+
+```
+
+
 --- app.py
 
 ```python
@@ -125,13 +338,12 @@ from flask import (
     stream_with_context,
 )
 import json
-import yaml
-from box import Box
-from utils import random_seed, error_format, send_data_to_server, process_format_to_response
 from datetime import datetime
 
 # Import the Ray modules
-from ray_deploy import init_ray, InferenceActor, InferenceService, SSEQueueManager
+from ray_deploy import init_ray, InferenceService, SSEQueueManager
+# Import utils
+from utils import random_seed, error_format, send_data_to_server, process_format_to_response
 
 # ------ checking process of the thread level
 import logging
@@ -150,6 +362,8 @@ import asyncio
 import time
 
 # Configuration
+import yaml
+from box import Box
 with open("./config.yaml", "r") as f:
     config_yaml = yaml.load(f, Loader=yaml.FullLoader)
     config = Box(config_yaml)
@@ -232,6 +446,7 @@ def query_stream():
     auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
     qry_contents = body.get("qry_contents", "")
     qry_time = body.get("qry_time")  # 클라이언트 측 타임스탬프
+    image_data = body.get("image_data")
 
     print(f"[DEBUG] /query_stream called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{qry_contents}', qry_time='{qry_time}'")
     
@@ -242,11 +457,23 @@ def query_stream():
         "page_id": page_id if page_id else str(uuid.uuid4()),
         "auth_class": auth_class,
         "qry_contents": qry_contents,
-        "qry_time": qry_time
+        "qry_time": qry_time,
     }
     
-    # 기존 request_id 대신 page_id를 SSE queue key로 사용
-    print(f"[DEBUG] Built http_query: {http_query}")
+    # image_data가 존재하면 http_query에 추가하고, 길이(또는 타입)만 간략하게 출력
+    if image_data is not None:
+        http_query["image_data"] = image_data
+        # image_data가 문자열이나 시퀀스 타입이면 길이를, 아니면 타입을 출력합니다.
+        if hasattr(image_data, "__len__"):
+            print(f"[DEBUG] image_data received: length={len(image_data)}")
+        else:
+            print(f"[DEBUG] image_data received: type={type(image_data)}")
+
+    # http_query 전체를 출력할 때 image_data 내용은 생략(요약 정보만 출력)
+    http_query_print = http_query.copy()
+    if "image_data" in http_query_print:
+        http_query_print["image_data"] = "<omitted>"
+    print(f"[DEBUG] Built http_query: {http_query_print}")
     
     # Ray Serve를 통한 streaming 호출 (변경 없음, 내부 인자는 수정된 http_query)
     response = inference_handle.process_query_stream.remote(http_query)
@@ -391,6 +618,7 @@ def query_stream_to_clt():
     # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
 
+
 # --------------------- History & Reference part ----------------------------
 
 # 새로 추가1: request_id로 대화 기록을 조회하는 API 엔드포인트
@@ -451,29 +679,46 @@ def get_reference():
         print(f"[ERROR /reference] {e}")
         error_resp = error_format(f"참조 조회 오류: {str(e)}", 500)
         return Response(error_resp, content_type="application/json; charset=utf-8")
-    
-@app.route("/image_query", methods=["POST"])
-async def image_query():
-    """
-    JSON 예시:
-    {
-        "image_data": "base64....",
-        "qry_contents": "이미지 관련 질문",
-        "request_id": "some_id"
-    }
-    """
-    try:
-        http_query = request.json
-        # Ray Actor(inference_handle)로 전달
-        result_ref = inference_handle.image_query.remote(http_query)
-        result = await result_ref
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 # Flask app 실행
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
+
+```
+
+
+--- ray_deploy/ray_setup.py
+
+```python
+
+# ray_deploy/ray_setup.py
+import ray
+from ray import serve
+
+########## Starting Banner ############
+from colorama import init, Fore, Style
+init(autoreset=True)
+
+BANNER = Fore.GREEN + r"""
+'########:'##:::::::'##::::'##:'##::::'##::::::::::'##::: ##::'######::
+ ##.....:: ##::::::: ##:::: ##:. ##::'##::::::::::: ###:: ##:'##... ##:
+ ##::::::: ##::::::: ##:::: ##::. ##'##:::::::::::: ####: ##: ##:::..::
+ ######::: ##::::::: ##:::: ##:::. ###::::::::::::: ## ## ##:. ######::
+ ##...:::: ##::::::: ##:::: ##::: ## ##:::::::::::: ##. ####::..... ##:
+ ##::::::: ##::::::: ##:::: ##:: ##:. ##::::::::::: ##:. ###:'##::: ##:
+ ##::::::: ########:. #######:: ##:::. ##:'#######: ##::. ##:. ######::
+..::::::::........:::.......:::..:::::..::.......::..::::..:::......:::
+"""
+
+def init_ray():
+    print(BANNER)
+    # Ray-Dashboard - GPU 상태, 사용 통계 등을 제공하는 모니터링 툴, host 0.0.0.0로 외부 접속을 허용하고, Default 포트인 8265으로 설정
+    ray.init(
+        include_dashboard=True,
+        dashboard_host="0.0.0.0" # External IP accessable
+        # dashboard_port=8265
+    )
+    print("Ray initialized. DashBoard running at http://192.222.54.254:8265") # New Server(2xH100)
 
 ```
 
@@ -501,6 +746,7 @@ from core.RAG import (
     execute_rag,
     generate_answer,
     generate_answer_stream,
+    image_query,
 )  # hypothetically
 from utils import (
     load_model,
@@ -513,7 +759,14 @@ from utils import (
 from utils.summarizer import summarize_conversation
 from utils.debug_tracking import log_batch_info, log_system_info
 # Langchain Memory system
-from ray_deploy.langchain import CustomConversationBufferMemory
+from ray_deploy.langchain import CustomConversationBufferMemory, serialize_message
+
+# Configuration
+import yaml
+from box import Box
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
 
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
@@ -630,33 +883,40 @@ class InferenceActor:
         Process a single query from the micro-batch. If 'sse_queue' is given,
         we do partial-token streaming. Otherwise, normal final result.
         """
-        # 스트리밍 요청인 경우 request_id를 미리 초기화
-        request_id = None
+        body = http_query_or_stream_dict["http_query"]
+        request_check = body.get("qry_contents", "")
         print(
-            f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}"
+            f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {request_check}, 현재 스레드: {threading.current_thread().name}"
         )
         try:
-            # 1) 스트리밍 구분
-            if (isinstance(http_query_or_stream_dict, dict)
-                and "request_id" in http_query_or_stream_dict):
-                # 스트리밍
+            # Determine) === Is streaming or not ===
+            request_id = None
+            # For streaming, the dict contains a "request_id"
+            if isinstance(http_query_or_stream_dict, dict) and "request_id" in http_query_or_stream_dict:
                 request_id = http_query_or_stream_dict["request_id"]
                 http_query = http_query_or_stream_dict["http_query"]
                 is_streaming = True
                 print(f"[STREAM] _process_single_query: request_id={request_id}")
             else:
-                # Non-스트리밍
                 request_id = None
                 http_query = http_query_or_stream_dict
                 is_streaming = False
                 print("[NORMAL] _process_single_query started...")
                 
+            # 1) bring the user's input query
+            user_input = http_query.get("qry_contents", "")
+            print("[PROCESS_SINGLE_QUERY] user input : ", user_input)
+            
+            # Determine) === Make a description of image ===
+            image_data = http_query.get("image_data")
+            image_description = {"is_structured": False, "description": "이미지는 입력되지 않았습니다."}
+            if image_data is not None:
+                print("[DEBUG] _process_single_query: image_data detected, initiating image_sorting process.")
+                image_description = await image_query(http_query, self.model, config) 
+                
             # 2) Memory 객체 정보 가져오기 (없으면 새로 생성)
             page_id = http_query.get("page_id", request_id)
             memory = self.get_memory_for_session(page_id)
-
-            # 3) 유저가 현재 입력한 쿼리 가져오기
-            user_input = http_query.get("qry_contents", "")
             
             # 4) LangChain Memory에서 이전 대화 이력(history) 추출
             past_context = memory.load_memory_variables({}).get("history", [])
@@ -670,41 +930,18 @@ class InferenceActor:
                 recent_messages = messages[-5:]
                 past_context = "\n\n".join(recent_messages)
             
-            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
-            # past_tokens = self.tokenizer.tokenize(str(past_context))
-            # if len(past_tokens) > 4000:
-            #     past_tokens = past_tokens[-4000:]
-            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
-            
             # ★ 토큰 수 계산 코드 추가 ★
-            # retrieval 자료는 dict나 리스트일 수 있으므로 문자열로 변환하여 토큰화합니다.
-            # 각 입력값을 명시적으로 str()로 변환합니다.
             past_tokens = self.tokenizer.tokenize(str(past_context))
             query_tokens = self.tokenizer.tokenize(str(user_input))
             total_tokens = len(past_tokens) + len(query_tokens)
             print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, 사용자 입력 질문: {len(query_tokens)}, 총합: {total_tokens}")
             
-            # # To Calculate the token
-            # tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
-            # print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
-
             # 5) 필요하다면 RAG 데이터를 다시 로드(1.16version 유지)
-            self.data = load_data(
-                self.config.data_path
-            )  # if you want always-latest, else skip
-
-            # 6) 현재 사용중인 Thread 확인
-            print("   ... calling query_sort() ...")
-            # print(
-            #     f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}"
-            # )
-            # 7) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
-            #    방법 1) query_sort() 전에 past_context를 참조해 query를 확장
-            #    방법 2) generate_answer()에서 Prompt 앞부분에 붙임
-            # 여기서는 예시로 “query_sort”에 past_context를 넘겨
-            # 호출부 수정 "user_input": f"{past_context}\n사용자 질문: {user_input}",
+            self.data = load_data(self.config.data_path)  # if you want always-latest, else skip
+            
+            # 6) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
             params = {
-                "user_input": f"사용자 질문: {user_input}",
+                "user_input": f"사용자 질문: {user_input} [이미지 설명: {image_description.get('description')}]",
                 "model": self.model,
                 "tokenizer": self.tokenizer,
                 "embed_model": self.embed_model,
@@ -712,6 +949,7 @@ class InferenceActor:
                 "data": self.data,
                 "config": self.config,
             }
+            print("[PROCESS_SINGLE_QUERY]... calling query_sort() ...")
             QU, KE, TA, TI = await query_sort(params)
             print(f"   ... query_sort => QU={QU}, KE={KE}, TA={TA}, TI={TI}")
 
@@ -747,7 +985,7 @@ class InferenceActor:
                             f"[STREAM] Starting partial generation for request_id={request_id}"
                         )
                         await self._stream_partial_answer(
-                            QU, docs, retrieval, chart, request_id, future, user_input
+                            QU, docs, retrieval, chart, request_id, future, user_input, http_query
                         )
                     else:
                         # normal final result
@@ -770,26 +1008,7 @@ class InferenceActor:
                             if "chunk_id" in doc:
                                 chunk_ids_used.append(doc["chunk_id"])
                                                         
-                        # >>> CHANGED: summarize the conversation
-                        # loop = asyncio.get_event_loop()
-                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
-                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
-                        # updated_conversation = prev_summary + "\n" + new_entry
-                        # # Summarized CPU 사용
-                        # # import concurrent.futures
-
-                        # # Create a dedicated pool with more workers (e.g., 4)
-                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-
-                        # # Later, when calling the summarization function:
-                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
-                        # # # After obtaining 'summarized' in _process_single_query:
-                        # # if not summarized:
-                        # #     print("[ERROR] Summarization returned an empty string.")
-                        # # else:
-                        # #     print(f"[CHECK] Summarized conversation: {summarized}")
-                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
-                                            # 메모리에 저장
+                        # 메모리에 저장
                         try:
                             memory.save_context(
                                 {
@@ -837,7 +1056,7 @@ class InferenceActor:
                             f"[STREAM] Starting partial generation for request_id={request_id}"
                         )
                         await self._stream_partial_answer(
-                            QU, docs, retrieval, None, request_id, future, user_input
+                            QU, docs, retrieval, None, request_id, future, user_input, http_query
                         )
                     else:
                         output = await generate_answer(
@@ -860,22 +1079,7 @@ class InferenceActor:
                             if "chunk_id" in doc:
                                 chunk_ids_used.append(doc["chunk_id"])
                                 
-                        
-                        # loop = asyncio.get_event_loop()
-                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
-                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
-                        # updated_conversation = prev_summary + "\n" + new_entry
-                        # # # Summarized CPU 사용
-                        # # import concurrent.futures
-                        
-                        # # # Create a dedicated pool with more workers (e.g., 4)
-                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-                        
-                        # # Later, when calling the summarization function:
-                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
-                        
-                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
-                                            # 메모리 저장
+                        # 메모리 저장
                         try:
                             memory.save_context(
                                 {
@@ -941,225 +1145,74 @@ class InferenceActor:
     # ---------------------------------------------------------
     # PROCESS IMAGE QUERY (IMAGE TO TEXT)
     # ---------------------------------------------------------
-    async def process_image_query(self, http_query):
-        import uuid
-        import base64
-        import io
-        from PIL import Image
-        from transformers import AutoProcessor
-        from vllm import SamplingParams
-        from vllm.multimodal.utils import fetch_image
-
-        request_id = http_query.get("request_id", str(uuid.uuid4()))
-        print(f"[DEBUG] [process_image_query] START => request_id={request_id}")
-
-        # 1) 파라미터 파싱
-        image_input = http_query.get("image_data")  # base64 or URL
-        user_query = http_query.get("qry_contents", "이 이미지에 대해 설명해줘.")
-        print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
-
-        # 2) 이미지 -> PIL
-        pil_image = None
-        try:
-            print("[DEBUG] Step2 - Converting image data to PIL...")
-            if isinstance(image_input, str) and (
-                image_input.startswith("http://") or image_input.startswith("https://")
-            ):
-                print("[DEBUG]   => image_input is a URL; using fetch_image()")
-                pil_image = fetch_image(image_input)
-            else:
-                print("[DEBUG]   => image_input is presumably base64")
-                if isinstance(image_input, str) and image_input.startswith("data:image/"):
-                    print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
-                    image_input = image_input.split(",", 1)[-1]
-                decoded = base64.b64decode(image_input)
-                print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
-                pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
-            print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
-        except Exception as e:
-            err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
-            print(err_msg)
-            return {"type": "error", "message": err_msg}
-
-        # 3) HF Processor 로드
-        try:
-            print(f"[DEBUG] Step3 - Loading processor from '{self.config.model_id}' ... (use_fast=False)")
-            processor = AutoProcessor.from_pretrained(
-                self.config.model_id,
-                use_fast=False  # 모델이 fast processor를 지원한다면 True로 시도 가능
-            )
-            print("[DEBUG]   => processor loaded:", type(processor).__name__)
-        except Exception as e:
-            err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
-            print(err_msg)
-            return {"type": "error", "message": err_msg}
-
-        # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
-        print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "url": pil_image},   # PIL object
-                    {"type": "text",  "text": user_query}, # 사용자 질의
-                ],
-            }
-        ]
-        try:
-            # tokenize=False => prompt를 'raw string' 형태로 얻음
-            prompt_string = processor.apply_chat_template(
-                messages,
-                tokenize=False,           # 핵심!
-                add_generation_prompt=True,
-            )
-            print("[DEBUG]   => prompt_string (first ~200 chars):", prompt_string[:200])
-        except Exception as e:
-            err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
-            print(err_msg)
-            return {"type": "error", "message": err_msg}
-
-        # 5) Sampling Params
-        print("[DEBUG] Step5 - Setting sampling params...")
-        sampling_params = SamplingParams(
-            max_tokens=self.config.model.max_new_tokens,
-            temperature=self.config.model.temperature,
-            top_k=self.config.model.top_k,
-            top_p=self.config.model.top_p,
-            repetition_penalty=self.config.model.repetition_penalty,
-        )
-        print("[DEBUG]   => sampling_params =", sampling_params)
-
-        # 6) Generate 호출
-        print("[DEBUG] Step6 - Starting vLLM generate(...) using multi_modal_data")
-        result_chunks = []
-        try:
-            # vLLM에 prompt와 함께 multi_modal_data를 넘김
-            # => vLLM 내부에서 Gemma3MultiModalProcessor가 image 임베딩 및 token placement 처리
-            generate_request = {
-                "prompt": prompt_string,
-                "multi_modal_data": {
-                    "image": [pil_image]  # 여러 장이라면 list에 더 추가
-                }
-            }
-
-            async for out in self.model.generate(
-                prompt=generate_request,
-                sampling_params=sampling_params,
-                request_id=request_id,
-            ):
-                result_chunks.append(out)
-
-            print("[DEBUG] Step6 - All chunks retrieved: total:", len(result_chunks))
-
-        except Exception as e:
-            err_msg = f"[ERROR-step6] Error in model.generate: {str(e)}"
-            print(err_msg)
-            return {"type": "error", "message": err_msg}
-
-        if not result_chunks:
-            print("[DEBUG] Step6 - No output from model => returning error")
-            return {"type": "error", "message": "No output from model."}
-
-        final_output = next((c for c in result_chunks if getattr(c, "finished", False)), result_chunks[-1])
-        answer_text = "".join(piece.text for piece in final_output.outputs)
-        print(f"[DEBUG] Final answer: {answer_text}")
-
-        # 완료
-        print(f"[DEBUG] [process_image_query] DONE => request_id={request_id}")
-        return {
-            "result": answer_text,
-            "request_id": request_id,
-            "status_code": 200
-        }
-
     # async def process_image_query(self, http_query):
-    #     import uuid
-    #     import base64
-    #     import io
-    #     from PIL import Image
-    #     from transformers import AutoProcessor
-    #     from vllm import SamplingParams
-    #     from vllm.multimodal.utils import fetch_image
+    #     """
+    #     Non-streaming 이미지를 통한 질의 처리.
+    #     -> RAG.py 의 image_query 함수 호출
+    #     """
+    #     try:
+    #         result = await image_query(http_query, self.model, self.tokenizer, self.config)
+    #         return result
+    #     except Exception as e:
+    #         return {"type": "error", "message": str(e)}
 
+    # async def process_image_stream(self, http_query, sse_queue, future):
+    #     """
+    #     Streaming 이미지를 통한 질의 처리.
+    #     -> RAG.py 의 image_streaming_query 함수 호출
+    #     부분토큰을 SSEQueue에 넣어주고, 최종 완료 시 future.set_result(...) 호출
+    #     """
     #     request_id = http_query.get("request_id", str(uuid.uuid4()))
-    #     print(f"[DEBUG] [process_image_query] START => request_id={request_id}")
-
-    #     # 1) 파라미터 파싱
-    #     image_input = http_query.get("image_data")  # base64 or URL
-    #     user_query = http_query.get("qry_contents", "이 이미지에 대해 설명해줘.")
-    #     print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
-
-    #     # 2) 이미지 -> PIL
-    #     pil_image = None
     #     try:
-    #         print("[DEBUG] Step2 - Converting image data to PIL...")
-    #         if isinstance(image_input, str) and (image_input.startswith("http://") or image_input.startswith("https://")):
-    #             print("[DEBUG]   => image_input is a URL; using fetch_image()")
-    #             pil_image = fetch_image(image_input)
-    #         else:
-    #             print("[DEBUG]   => image_input is presumably base64")
-    #             if isinstance(image_input, str) and image_input.startswith("data:image/"):
-    #                 # 'data:image/png;base64,' 같은 prefix 제거
-    #                 print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
-    #                 image_input = image_input.split(",", 1)[-1]
-    #             decoded = base64.b64decode(image_input)
-    #             print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
-    #             pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
-    #         print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
+    #         partial_accumulator = ""
+    #         async for partial_chunk in image_streaming_query(http_query, self.model, self.tokenizer, self.config):
+    #             # partial_chunk이 JSON 혹은 단순 str일 수 있음
+    #             # 여기서는 단순히 SSEQueue에 넣는다고 가정
+    #             # 부분 누적 로직(필요시) 추가 가능
+    #             if partial_chunk.startswith('{"type":"error"'):
+    #                 # 에러가 JSON 형태로 들어온 경우
+    #                 await self.queue_manager.put_token.remote(request_id, partial_chunk)
+    #                 await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+    #                 future.set_result(partial_chunk)
+    #                 return
+    #             else:
+    #                 await self.queue_manager.put_token.remote(request_id, partial_chunk)
+    #                 partial_accumulator += partial_chunk
+
+    #         # 최종 완료
+    #         await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+    #         future.set_result(partial_accumulator)
     #     except Exception as e:
-    #         err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
-    #         print(err_msg)
-    #         return {"type": "error", "message": err_msg}
-        
-    #     # 2) generate 호출
-    #     print("[DEBUG] Step3 - Starting vLLM generate(...)")
-    #     result_chunks = []
-    #     try:
-    #         async for out in self.model.generate(
-    #             {
-    #                 "prompt": user_query,  # The text from apply_chat_template
-    #                 "multi_modal_data": {
-    #                 "image": [pil_image]    # or list of images
-    #                 }
-    #             },
-    #                 sampling_params=SamplingParams(
-    #                 temperature=0.7,
-    #                 max_tokens=256,
-    #             ),
-    #             request_id=request_id,
-    #         ):
-    #             # 디버그: 스트리밍 중간 결과 로그 (너무 잦은 로그는 성능에 영향을 줄 수 있음)
-    #             # print(f"[DEBUG]   => partial chunk: {out}")
-    #             result_chunks.append(out)
-    #         print("[DEBUG] Step3 - All chunks retrieved: total:", len(result_chunks))
-    #     except Exception as e:
-    #         err_msg = f"[ERROR-step3] Error in model.generate: {str(e)}"
-    #         print(err_msg)
-    #         return {"type": "error", "message": err_msg}
+    #         err_msg = f'[IMAGE_STREAM_ERROR] {str(e)}'
+    #         error_json = json.dumps({"type": "error", "message": err_msg})
+    #         await self.queue_manager.put_token.remote(request_id, error_json)
+    #         await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+    #         future.set_result(error_json)
 
-    #     if not result_chunks:
-    #         print("[DEBUG] Step7 - No output from model => returning error")
-    #         return {"type": "error", "message": "No output from model."}
+    # async def process_image_query_stream(self, http_query):
+    #     """
+    #     Actor 내부에서 호출되는 entrypoint:
+    #     1) SSE Queue 생성
+    #     2) process_image_stream(...) 비동기 태스크 시작
+    #     3) request_id 반환
+    #     """
+    #     request_id = http_query.get("request_id", str(uuid.uuid4()))
+    #     await self.queue_manager.create_queue.remote(request_id)
 
-    #     final_output = next((c for c in result_chunks if getattr(c, "finished", False)), result_chunks[-1])
-    #     answer_text = "".join(piece.text for piece in final_output.outputs)
-    #     print(f"[DEBUG] Final answer: {answer_text}")
+    #     loop = asyncio.get_event_loop()
+    #     final_future = loop.create_future()
+    #     sse_queue = asyncio.Queue()
+    #     self.active_sse_queues[request_id] = sse_queue
 
-    #     # 완료
-    #     print(f"[DEBUG] [process_image_query] DONE => request_id={request_id}")
-    #     return {
-    #         "result": answer_text,
-    #         "request_id": request_id,
-    #         "status_code": 200
-    #     }
-
-
+    #     # 비동기 태스크
+    #     asyncio.create_task(self.process_image_stream(http_query, sse_queue, final_future))
+    #     return request_id
 
     # ------------------------------------------------------------
     # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
     # ------------------------------------------------------------
     async def _stream_partial_answer(
-        self, QU, docs, retrieval, chart, request_id, future, user_input
+        self, QU, docs, retrieval, chart, request_id, future, user_input, http_query
     ):
         """
         Instead of returning a final string, we generate partial tokens
@@ -1169,15 +1222,6 @@ class InferenceActor:
         print(
             f"[STREAM] _stream_partial_answer => request_id={request_id}, chart={chart}"
         )
-
-        # 단일
-        # queue = self.active_sse_queues.get(request_id)
-        # if not queue:
-        #     print(f"[STREAM] SSE queue not found => fallback to normal final (request_id={request_id})")
-        #     # fallback...
-        #     return
-
-        # This will hold the entire text so far. We'll yield only new pieces.
         
         # 먼저, 참조 데이터 전송: type을 "reference"로 명시
         reference_json = json.dumps({
@@ -1220,11 +1264,6 @@ class InferenceActor:
                 recent_messages = messages[-5:]
                 past_context = "\n\n".join(recent_messages)
             
-            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
-            # past_tokens = self.tokenizer.tokenize(str(past_context))
-            # if len(past_tokens) > 4000:
-            #     past_tokens = past_tokens[-4000:]
-            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
         except KeyError:
             # 만약 "history" 키가 없으면 빈 문자열로 처리
             print(f"[STREAM] No 'history' in memory for {request_id}, using empty.")
@@ -1259,16 +1298,13 @@ class InferenceActor:
                 f"[STREAM] SSE: calling generate_answer_stream for request_id={request_id}"
             )
             async for partial_text in generate_answer_stream(
-                final_query, docs, self.model, self.tokenizer, self.config
+                final_query, docs, self.model, self.tokenizer, self.config, http_query
             ):
                 # print(f"[STREAM] Received partial_text: {partial_text}")
                 new_text = partial_text[len(partial_accumulator) :]
                 partial_accumulator = partial_text
-                # # 원래 코드
-                # if not new_text.strip():
-                #     continue
-
-                # 수정 예시: new_text가 완전히 빈 문자열("")인 경우에만 건너뛰기
+                
+                # 수정: new_text가 완전히 빈 문자열("")인 경우에만 건너뛰기
                 if new_text == "":
                     continue
                 
@@ -1281,13 +1317,6 @@ class InferenceActor:
                 # print(f"[STREAM] Sending token: {answer_json}")
                 await self.queue_manager.put_token.remote(request_id, answer_json)
             final_text = partial_accumulator
-            # # 이제 memory에 저장 (이미 request_id를 알고 있다고 가정) # 랭체인
-            # try:
-            #     memory.save_context({"input": user_input}, {"output": final_text})
-            # except Exception as e:
-            #     msg = f"[STREAM] memory.save_context failed: {str(e)}"
-            #     print(msg)
-                
                 
             # >>> CHANGED: Update conversation summary in streaming branch as well
             chunk_ids_used = []
@@ -1296,8 +1325,6 @@ class InferenceActor:
                 if "chunk_id" in doc:
                     chunk_ids_used.append(doc["chunk_id"])
                     
-            # memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used})
-            
             # 메모리 저장
             try:
                 memory.save_context(
@@ -1314,8 +1341,7 @@ class InferenceActor:
                 print(f"[ERROR memory.save_context in stream] {e}")
             
             print("메시지 저장 직후 chunk_id 확인 : ", memory)
-            # >>> CHANGED: -------------------------------------------------------
-            
+
             # 최종 응답 구조
             if chart is not None:
                 ans = process_to_format([final_text, chart], type="Answer")
@@ -1364,7 +1390,13 @@ class InferenceActor:
             chat_id = str(uuid.uuid4())
         http_query["page_id"] = chat_id  # 강제 할당
         await self.queue_manager.create_queue.remote(chat_id)
-        print(f"[STREAM] process_query_stream => chat_id={chat_id}, http_query={http_query}")
+        print(f"[STREAM] process_query_stream => chat_id={chat_id}")
+        
+        # http_query 전체를 출력할 때 image_data 내용은 생략(요약 정보만 출력)
+        http_query_print = http_query.copy()
+        if "image_data" in http_query_print:
+            http_query_print["image_data"] = "<omitted>"
+        print(f"[DEBUG] Built http_query: {http_query_print}")
 
         loop = asyncio.get_event_loop()
         final_future = loop.create_future()
@@ -1384,7 +1416,6 @@ class InferenceActor:
         print(f"[STREAM] Done putting item in queue => chat_id={chat_id}")
 
         return chat_id
-
 
     # ----------------------
     # 2) SSE token popping
@@ -1485,14 +1516,15 @@ class InferenceService:
             num_cpus=config.ray.num_cpus
         ).remote(config)
 
+    # Text
     async def query(self, http_query: dict):
         result = await self.actor.process_query.remote(http_query)
         return result
-
+    # Text Stream
     async def process_query_stream(self, http_query: dict) -> str:
         req_id = await self.actor.process_query_stream.remote(http_query)
         return req_id
-
+    
     async def pop_sse_token(self, req_id: str) -> str:
         token = await self.actor.pop_sse_token.remote(req_id)
         return token
@@ -1511,11 +1543,6 @@ class InferenceService:
     # /reference
     async def get_reference_data(self, chunk_ids: list):
         result = await self.actor.get_reference_data.remote(chunk_ids)
-        return result
-    
-    # InferenceService 클래스에 메서드 추가
-    async def image_query(self, http_query: dict):
-        result = await self.actor.process_image_query.remote(http_query)
         return result
 
 ```
@@ -2015,7 +2042,6 @@ import uuid
 import logging
 from datetime import datetime, timedelta
 # from sql import generate_sql  # (구) 제거된 import
-from core.SQL_NS import run_sql_unno, run_sql_bl, get_metadata  # SQL만 담당하는 함수들만 import
 
 # Tracking
 from utils.tracking import time_tracker
@@ -2025,8 +2051,10 @@ from vllm.engine.async_llm_engine import AsyncLLMEngine
 # 이미지 임베딩을 별도로 계산하여 프롬프트에 포함하기
 from vllm.model_executor.models.interfaces import SupportsMultiModal
 
-# In RAG.py (at the top, add an import for prompts)
-from prompt import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE, SQL_EXTRACTION_PROMPT_TEMPLATE
+# Prompt 템플릿 불러오기
+from prompt import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE, SQL_EXTRACTION_PROMPT_TEMPLATE, IMAGE_DESCRIPTION_PROMPT
+# SQL만 담당하는 함수들만 import
+from core.SQL_NS import run_sql_unno, run_sql_bl, get_metadata  
 
 global beep
 beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
@@ -2553,11 +2581,90 @@ async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
 
 
 @time_tracker
-async def generate_answer_stream(query, docs, model, tokenizer, config):
+async def generate_answer_stream(query, docs, model, tokenizer, config, http_query):
+    
     prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
     print("최종 LLM 추론용 prompt 생성 : ", prompt)
+    
+    import uuid
+    import base64
+    import io
+    from PIL import Image
+    from transformers import AutoProcessor
+    from vllm import SamplingParams
+    from vllm.multimodal.utils import fetch_image
+    
+    print("[IMAGE-STREAMING-QUERY] Image_query 진입")
+    
+    image_data = http_query.get("image_data")
+    
+    # 2) Image -> PIL (image_data가 있을 경우에만 처리)
+    pil_image = None
+    if image_data:
+        try:
+            print("[DEBUG] Step2 - Converting image data to PIL...")
+            if isinstance(image_data, str) and (image_data.startswith("http://") or image_data.startswith("https://")):
+                print("[DEBUG]   => image_data is a URL; using fetch_image()")
+                pil_image = fetch_image(image_data)
+            else:
+                print("[DEBUG]   => image_data is presumably base64")
+                if isinstance(image_data, str) and image_data.startswith("data:image/"):
+                    print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
+                    image_data = image_data.split(",", 1)[-1]
+                decoded = base64.b64decode(image_data)
+                print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
+                pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+            print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
+        except Exception as e:
+            err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
+            print(err_msg)
+    else:
+        print("[DEBUG] No image_data provided; proceeding with text-only query.")
+    
+    # 3) HF Processor 로드
+    try:
+        print(f"[DEBUG] Step3 - Loading processor from '{config.model_id}' ... (use_fast=False)")
+        processor = AutoProcessor.from_pretrained(
+            config.model_id,
+            use_fast=False  # 모델이 fast processor를 지원한다면 True로 시도 가능
+        )
+        print("[DEBUG]   => processor loaded:", type(processor).__name__)
+    except Exception as e:
+        err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
+        print(err_msg)
+    
+    # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
+    print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
+    messages = [
+        {
+            "role": "user",
+            "content": []
+        }
+    ]
+    if pil_image is not None:
+        messages[0]["content"].append({"type": "image", "url": pil_image})
+    messages[0]["content"].append({"type": "text",  "text": prompt})
+    
+    try:
+        # tokenize=False => prompt를 'raw string' 형태로 얻음
+        prompt_string = processor.apply_chat_template(
+            messages,
+            tokenize=False,           # 핵심!
+            add_generation_prompt=True,
+        )
+        print("[DEBUG]   => prompt_string : ", prompt_string)
+    except Exception as e:
+        err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
+        print(err_msg)
+    
+    generate_request = {
+        "prompt": prompt_string,
+        "multi_modal_data": {}
+    }
+    if pil_image is not None:
+        generate_request["multi_modal_data"]["image"] = [pil_image]
+    
     if config.use_vllm:
-        from vllm import SamplingParams
         sampling_params = SamplingParams(
             max_tokens=config.model.max_new_tokens,
             temperature=config.model.temperature,
@@ -2566,7 +2673,7 @@ async def generate_answer_stream(query, docs, model, tokenizer, config):
             repetition_penalty=config.model.repetition_penalty,
         )
         request_id = str(uuid.uuid4())
-        async for partial_chunk in collect_vllm_text_stream(prompt, model, sampling_params, request_id):
+        async for partial_chunk in collect_vllm_text_stream(generate_request, model, sampling_params, request_id):
             yield partial_chunk
     else:
         import torch
@@ -2591,6 +2698,7 @@ async def generate_answer_stream(query, docs, model, tokenizer, config):
         for new_token in streamer:
             yield new_token
 
+
 @time_tracker
 async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_params, request_id) -> str:
     async for request_output in engine.generate(prompt, request_id=request_id, sampling_params=sampling_params):
@@ -2600,10 +2708,268 @@ async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_para
             yield completion.text
 
 # -------------------------------------------------------------------------
-# PROCESS IMAGE QUERY (IMAGE TO TEXT)
+# PROCESS IMAGE QUERY (IMAGE TO TEXT) - Legacy
 # -------------------------------------------------------------------------
+@time_tracker
+async def image_query(http_query, model, config):
+    """
+    기존 ray_utils.py의 process_image_query 로직을 옮겨온 함수.
+    이미지 입력을 받아 최종 한 번에 답변을 생성(스트리밍 없음).
+    """
+    import uuid
+    import base64
+    import io
+    from PIL import Image
+    from transformers import AutoProcessor
+    from vllm import SamplingParams
+    from vllm.multimodal.utils import fetch_image
+    
+    print("[IMAGE-NONSTREAMING-QUERY] Image_query 진입")
+    
+    # 1) 파라미터 파싱
+    request_id = http_query.get("request_id", str(uuid.uuid4()))
+    image_input = http_query.get("image_data")
+    user_query = http_query.get("qry_contents", "이 이미지를 한국어로 잘 설명해주세요.")
+    print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
+    
+    # 2) Image -> PIL
+    pil_image = None
+    try:
+        print("[DEBUG] Step2 - Converting image data to PIL...")
+        if isinstance(image_input, str) and (
+            image_input.startswith("http://") or image_input.startswith("https://")
+        ):
+            print("[DEBUG]   => image_input is a URL; using fetch_image()")
+            pil_image = fetch_image(image_input)
+        else:
+            print("[DEBUG]   => image_input is presumably base64")
+            if isinstance(image_input, str) and image_input.startswith("data:image/"):
+                print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
+                image_input = image_input.split(",", 1)[-1]
+            decoded = base64.b64decode(image_input)
+            print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
+            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+        print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
+    except Exception as e:
+        err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
+        print(err_msg)
+        return {"type": "error", "message": err_msg}
+    
+    # 3) HF Processor 로드
+    try:
+        print(f"[DEBUG] Step3 - Loading processor from '{config.model_id}' ... (use_fast=False)")
+        processor = AutoProcessor.from_pretrained(
+            config.model_id,
+            use_fast=False  # 모델이 fast processor를 지원한다면 True로 시도 가능
+        )
+        print("[DEBUG]   => processor loaded:", type(processor).__name__)
+    except Exception as e:
+        err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
+        print(err_msg)
+        return {"type": "error", "message": err_msg}
+    
+    print("[DEBUG] step 3.5 이미지에 대한 간단한 정보 및 프롬프트화 ")
+    # 이미지에 대한 간단한 정보(실제 서비스에서는 이미지 메타데이터 추출 등을 수행할 수 있음)
+    image_info = "Image data provided"  # 현재는 간단한 문자열 사용
+    
+    prompt_image_sorting = IMAGE_DESCRIPTION_PROMPT.format(image_info=image_info, user_query=user_query)
+    
+    # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
+    print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
+    messages = [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": prompt_image_sorting}]
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "url": pil_image},
+                {"type": "text",  "text": user_query},
+            ],
+        }
+    ]
+    
+    try:
+        # tokenize=False => prompt를 'raw string' 형태로 얻음
+        prompt_string = processor.apply_chat_template(
+            messages,
+            tokenize=False,           # 핵심!
+            add_generation_prompt=True,
+        )
+        print("[DEBUG]   => prompt_string full version:", prompt_string)
+    except Exception as e:
+        err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
+        print(err_msg)
+        return {"type": "error", "message": err_msg}
+    
+    # 5) Sampling Params
+    print("[DEBUG] Step5 - Setting sampling params...")
+    sampling_params = SamplingParams(
+        max_tokens=config.model.max_new_tokens,
+        temperature=config.model.temperature,
+        top_k=config.model.top_k,
+        top_p=config.model.top_p,
+        repetition_penalty=config.model.repetition_penalty,
+    )
+    print("[DEBUG]   => sampling_params =", sampling_params)
+    
+    # 6) Generate 호출
+    print("[DEBUG] Step6 - Starting vLLM generate(...) using multi_modal_data")
+    result_chunks = []
+    try:
+        # vLLM에 prompt와 함께 multi_modal_data를 넘김
+        # => vLLM 내부에서 Gemma3MultiModalProcessor가 image 임베딩 및 token placement 처리
+        generate_request = {
+            "prompt": prompt_string,
+            "multi_modal_data": {
+                "image": [pil_image]  # 여러 장이라면 list에 더 추가
+            }
+        }
+
+        async for out in model.generate(
+            prompt=generate_request,
+            sampling_params=sampling_params,
+            request_id=request_id,
+        ):
+            result_chunks.append(out)
+        print("[DEBUG] Step6 - All chunks retrieved: total:", len(result_chunks))
+
+    except Exception as e:
+        err_msg = f"[ERROR-step6] Error in model.generate: {str(e)}"
+        print(err_msg)
+        return {"type": "error", "message": err_msg}
+
+    if not result_chunks:
+        print("[DEBUG] Step6 - No output from model => returning error")
+        return {"type": "error", "message": "No output from model."}
+
+    final_output = next((c for c in result_chunks if getattr(c, "finished", False)), result_chunks[-1])
+    answer_text = "".join(piece.text for piece in final_output.outputs)
+    print(f"[DEBUG] Final answer: {answer_text}")
+
+    # 완료
+    print(f"[DEBUG] [process_image_query] DONE => request_id={request_id}")
+    
+    import json
+    try:
+        # 강제적으로 JSON 파싱 – 추가 문장이 있을 경우 추출
+        # 예를 들어, JSON 블록만 추출
+        match = re.search(r'\{.*\}', answer_text, re.DOTALL)
+        if match:
+            result = json.loads(match.group(0))
+        else:
+            raise ValueError("JSON 응답 형식 미확인")
+        if "is_structured" not in result or "description" not in result:
+            raise ValueError("응답에 필요한 키가 누락됨")
+    except Exception as e:
+        # 파싱 실패 시 기본 처리: 추가 RAG가 필요하도록 설정
+        result = {"is_structured": False, "description": http_query.get("qry_contents", "")}
+    return result
 
 
+@time_tracker
+async def image_streaming_query(http_query, model, tokenizer, config):
+    """
+    새로 추가된 이미지 스트리밍 함수:
+    - 이미지 입력 + 사용자 텍스트를 받아서, 부분 토큰을 SSE로 전달할 수 있도록 yield 함.
+    - use_vllm=True일 때는 collect_vllm_text_stream와 동일한 방식으로 partial chunk를 yield
+    - HF standard는 TextIteratorStreamer를 이용한 방식으로 partial chunk를 yield
+    """
+    import uuid
+    import base64
+    import io
+    from PIL import Image
+    from transformers import AutoProcessor
+    from vllm import SamplingParams
+    from vllm.multimodal.utils import fetch_image
+
+    print("[IMAGE-STREAMING-QUERY] Image_streaming_query 진입")
+
+    # 1) 파라미터 파싱
+    request_id = http_query.get("request_id", str(uuid.uuid4()))
+    image_input = http_query.get("image_data")
+    user_query = http_query.get("qry_contents", "이 이미지를 설명해주세요.")
+    print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
+    
+    # 2) Image -> PIL
+    try:
+        print("[DEBUG] Step2 - Converting image data to PIL...")
+        if isinstance(image_input, str) and (image_input.startswith("http://") or image_input.startswith("https://")):
+            print("[DEBUG]   => image_input is a URL; using fetch_image()")
+            pil_image = fetch_image(image_input)
+        else:
+            print("[DEBUG]   => image_input is presumably base64")
+            if isinstance(image_input, str) and image_input.startswith("data:image/"):
+                print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
+                image_input = image_input.split(",", 1)[-1]
+            decoded = base64.b64decode(image_input)
+            print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
+            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+        print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
+    except Exception as e:
+        err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
+        print(err_msg)
+        yield {"type": "error", "message": err_msg}
+        return  # No value, simply return
+
+    # 3) HF Processor 로드
+    try:
+        print(f"[DEBUG] Step3 - Loading processor from '{config.model_id}' ... (use_fast=False)")
+        processor = AutoProcessor.from_pretrained(config.model_id, use_fast=False)
+        print("[DEBUG]   => processor loaded:", type(processor).__name__)
+    except Exception as e:
+        err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
+        print(err_msg)
+        yield {"type": "error", "message": err_msg}
+        return
+
+    # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
+    print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "url": pil_image},
+                {"type": "text",  "text": user_query},
+            ],
+        }
+    ]
+    try:
+        prompt_string = processor.apply_chat_template(
+            messages,
+            tokenize=False,           # 핵심!
+            add_generation_prompt=True,
+        )
+        print("[DEBUG]   => prompt_string :", prompt_string
+              )
+    except Exception as e:
+        err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
+        print(err_msg)
+        yield {"type": "error", "message": err_msg}
+        return
+
+    # 5) Sampling Params
+    print("[DEBUG] Step5 - Setting sampling params...")
+    sampling_params = SamplingParams(
+        max_tokens=config.model.max_new_tokens,
+        temperature=config.model.temperature,
+        top_k=config.model.top_k,
+        top_p=config.model.top_p,
+        repetition_penalty=config.model.repetition_penalty,
+    )
+    print("[DEBUG]   => sampling_params =", sampling_params)
+    
+    # 6) Generate 호출
+    print("[DEBUG] Step6 - Starting vLLM generate(...) using multi_modal_data")
+    generate_request = {
+        "prompt": prompt_string,
+        "multi_modal_data": {
+            "image": [pil_image]
+        }
+    }
+    async for partial_chunk in collect_vllm_text_stream(generate_request, model, sampling_params, request_id):
+        yield partial_chunk
 
 # ---------------------------
 # *** 새로 추가된 generate_sql 함수 ***
@@ -2680,6 +3046,1602 @@ async def generate_sql(user_query, model, tokenizer, config):
 ```
 
 
+--- core/SQL_NS.py
+
+```python
+
+# core/SQL_NS.py
+
+import os
+import subprocess
+from utils.tracking import time_tracker
+import json
+import yaml
+from box import Box
+import re
+
+# ÌôòÍ≤Ω Î≥ÄÏàò ÏÑ§Ï†ï
+os.environ['ORACLE_HOME'] = '/workspace/oracle/instantclient_23_7'
+os.environ['LD_LIBRARY_PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('LD_LIBRARY_PATH', '')
+os.environ['PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('PATH', '')
+
+# Config Î∂àÎü¨Ïò§Í∏∞ (DB Ï†ëÏÜç Îì± Í∏∞ÌÉÄ Ï†ïÎ≥¥Î•º config.yamlÏóêÏÑú Í∞ÄÏ†∏Ïò®Îã§Í≥† Í∞ÄÏ†ï)
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
+
+# Í∏∞Î≥∏ SQL Ï†ëÏÜçÏΩîÎìú (‚Äª Ïã§Ï†ú DB Ï†ëÏÜç Í≥ÑÏ†ï/Ï£ºÏÜåÎäî Î≥∏Ïù∏ ÌôòÍ≤ΩÏóê ÎßûÍ≤å ÏàòÏ†ï ÌïÑÏöî)
+sqlplus_command = [
+    "sqlplus", "-S", "LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR"
+]
+
+'''
+### ORACLE DB Ï†ïÎ≥¥ ###
+TABLE : ai_dg_check
+    COLUMNS : CLS (ÏúÑÌóòÎ¨º ÌÅ¥ÎûòÏä§)
+              UNNO (ÏúÑÌóòÎ¨º UN Î≤àÌò∏)
+              PORT (Ìè¨Ìä∏ Î≤àÌò∏)
+              ALLOW_YN (Ï∑®Í∏â Í∞ÄÎä• Ïó¨Î∂Ä)
+'''
+
+@time_tracker
+def check_sqlplus():
+    """
+    sqlplus Î≤ÑÏ†Ñ Ï†ïÎ≥¥ ÌôïÏù∏
+    """
+    try:
+        result = subprocess.run(['sqlplus', '-version'], capture_output=True, text=True, check=True)
+        print(" SQL*Plus is working!")
+        print("Version info:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e.stderr}")
+
+
+@time_tracker
+def check_db_connection():
+    """
+    DB Ïó∞Í≤∞Ïù¥ Ï†ïÏÉÅÏ†ÅÏù∏ÏßÄ ÌÖåÏä§Ìä∏
+    """
+    try:
+        sql_query = "SELECT 1 FROM dual;\nEXIT;\n"
+        result = subprocess.run(
+            sqlplus_command,
+            input=sql_query,
+            capture_output=True,
+            text=True
+        )
+
+        if "1" in result.stdout:
+            print("  Successfully connected to the Namsung database!")
+        else:
+            print(" Connection to the database failed!")
+
+    except subprocess.CalledProcessError as e:
+        print(f" Error: {e.stderr}")
+
+
+@time_tracker
+def get_all_schema_tables():
+    """
+    Î™®Îì† Ïä§ÌÇ§Îßà, ÌÖåÏù¥Î∏î Î™©Î°ù Ï°∞Ìöå
+    """
+    try:
+        sqlplus_cmd = [
+            'sqlplus', '-S', 'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR'
+        ]
+        sql_query = """SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF;
+        SELECT OWNER, TABLE_NAME FROM ALL_TABLES ORDER BY OWNER, TABLE_NAME;
+        EXIT;"""
+
+        result = subprocess.run(
+            sqlplus_cmd,
+            input=sql_query,
+            capture_output=True,
+            text=True
+        )
+
+        schema_tables = {}
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    schema, table = parts[0], parts[1]
+                    if schema not in schema_tables:
+                        schema_tables[schema] = []
+                    schema_tables[schema].append(table)
+
+        if schema_tables:
+            print("  Ïä§ÌÇ§ÎßàÎ≥Ñ ÌÖåÏù¥Î∏î Î™©Î°ù:")
+            for schema, tables in schema_tables.items():
+                print(f"\nüîπ Ïä§ÌÇ§Îßà: {schema}")
+                for t in tables:
+                    print(f"  - {t}")
+        else:
+            print(" ÌÖåÏù¥Î∏îÏù¥ Ï°¥Ïû¨ÌïòÏßÄ ÏïäÏäµÎãàÎã§.")
+
+        return schema_tables
+
+    except subprocess.CalledProcessError as e:
+        print(f" Error: {e.stderr}")
+        return {}
+
+
+def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
+    """
+    ÏòàÏãú Ìï®Ïàò: OPRAIMDG ÌÖåÏù¥Î∏îÎ°úÎ∂ÄÌÑ∞ UN, CLASS, DESCRIPTION Ï†ïÎ≥¥Î•º JSONÏúºÎ°ú ÎßåÎìúÎäî Ìï®Ïàò
+    """
+    sql_query = f"""
+    SET LINESIZE 2000;
+    SET PAGESIZE 0;
+    SET TRIMSPOOL ON;
+    COL IMDCOM FORMAT A200;
+    SELECT IMDUNM, IMDCLS, REPLACE(REPLACE(IMDCOM, CHR(10), ' '), CHR(13), ' ') AS IMDCOM 
+    FROM {schema_name}.{table_name};
+    EXIT;
+    """
+
+    try:
+        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
+        print(f"  RESULT: \n{str(result)[:1000]}")
+        output = result.stdout
+        print(f"  OUTPUT: \n{str(output)[:1000]}")
+
+        lines = output.strip().split("\n")
+        print(f"  LINE: \n{str(lines)[:1000]}")
+        metadata = []
+
+        for line in lines[:-1]:
+            values = line.split(None, 2)
+            if len(values) == 3:
+                imdunm = values[0].strip()
+                imdcls = values[1].strip()
+                imdcom = values[2].strip()
+                metadata.append({
+                    "UNNO": imdunm,
+                    "Class": imdcls,
+                    "Description": imdcom
+                })
+
+        json_filename = "/workspace/data/METADATA_OPRAIMDG.json"
+        with open(json_filename, "w", encoding="utf-8") as json_file:
+            json.dump(metadata, json_file, indent=4, ensure_ascii=False)
+
+        print(f"  Metadata saved to {json_filename}")
+
+    except subprocess.CalledProcessError as e:
+        print(f" SQL Execution Error: {e.stderr}")
+
+
+@time_tracker
+def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
+    """
+    ai_dg_check ÌÖåÏù¥Î∏îÏóêÏÑú CLS, UNNO, PORTÏóê ÎåÄÌïú DG ÏÑ†Ï†Å Í∞ÄÎä• Ïó¨Î∂Ä Ï°∞Ìöå
+    """
+    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
+    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
+
+    sql_query = f"""
+    SET LINESIZE 150;
+    SET PAGESIZE 1000;
+    SET TRIMSPOOL ON;
+
+    SELECT 
+        p.cls  AS CLS,
+        p.unno AS UNNO,
+        p.port AS POL_PORT,
+        d.port AS POD_PORT,
+        DECODE(p.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Landing_STATUS,
+        DECODE(d.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Departure_STATUS
+    FROM icon.ai_dg_check p
+    JOIN icon.ai_dg_check d 
+        ON p.unno = d.unno 
+        AND p.cls = d.cls
+    WHERE (p.cls={cls_val} OR {cls_val} IS NULL) AND (p.unno={unno_val} OR {unno_val} IS NULL) 
+      AND p.port LIKE '{pol_port}'
+      AND (p.cls={cls_val} OR {cls_val} IS NULL) AND (d.unno={unno_val} OR {unno_val} IS NULL) 
+      AND d.port LIKE '{pod_port}';
+    EXIT;
+    """
+
+    try:
+        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
+        print("  SQL Query Results:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f" Error: {e.stderr}")
+
+    return sql_query, result.stdout
+
+
+@time_tracker
+def run_sql_bl(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
+    """
+    B/L ÏÉÅÏÑ∏ Ï°∞Ìöå
+    """
+    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
+    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
+
+    sql_query = f"""
+    SELECT *
+    FROM (
+        SELECT
+            MST.FRTBNO AS "B/L No",
+            MST.FRTOBD AS onBoard_Date,
+            MST.FRTPOL AS POL,
+            MST.FRTPOD AS POD,
+            MST.FRTSBM AS ship_back,
+            CNT.KCTUNN AS UNNO,
+            CNT.KCTCLS AS CLASS,
+            COUNT(*) AS "DG_Container_Count"
+        FROM ICON.WSDAMST MST
+        JOIN ICON.WSDACNT CNT ON CNT.KCTBNO = MST.FRTBNO
+        WHERE MST.BUKRS = '1000'
+        AND CNT.BUKRS = '1000'
+        AND MST.FRTOBD BETWEEN TO_CHAR(SYSDATE-1095,'YYYYMMDD')+1 AND TO_CHAR(SYSDATE+1,'YYYYMMDD')
+        AND CNT.KCTUNN = {unno_val}
+        AND CNT.KCTCLS = {cls_val}
+        AND MST.FRTPOL = '{pol_port}'
+        AND MST.FRTPOD = '{pod_port}'
+        GROUP BY
+            MST.FRTBNO,
+            MST.FRTOBD,
+            MST.FRTPOL,
+            MST.FRTPOD,
+            MST.FRTSBM,
+            CNT.KCTUNN,
+            CNT.KCTCLS
+    )
+    WHERE ROWNUM <= 5;
+    EXIT;
+    """
+
+    try:
+        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
+        print("[SQL_NS] SQL Query run_sql_bl Results:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print(f"[SQL_NS] run_sql_bl Error: {e.stderr}")
+
+    return sql_query, result.stdout
+
+
+def get_metadata(config):
+    """
+    metadata_path (port Îç∞Ïù¥ÌÑ∞), metadata_unno (UN Î≤àÌò∏ Î¶¨Ïä§Ìä∏)Ïóê ÏûàÎäî ÎÇ¥Ïö©ÏùÑ Î∂àÎü¨ÏôÄ Î∞òÌôò
+    """
+    print("[SOOWAN] get_metadata ÏßÑÏûÖ")
+    if not config or not hasattr(config, "metadata_unno"):
+        raise ValueError("Config Í∞ùÏ≤¥Ïóê 'metadata_unno' ÏÜçÏÑ±Ïù¥ ÏóÜÏäµÎãàÎã§.")
+
+    unno_path = config.metadata_unno
+    port_path = config.metadata_path
+
+    with open(port_path, "r", encoding="utf-8") as f:
+        port_data = json.load(f)
+    location_codes = json.dumps(port_data.get("location_code"), ensure_ascii=False)
+
+    with open(unno_path, "r", encoding="utf-8") as f:
+        unno_data = json.load(f)
+    unno_list_as_string = json.dumps(unno_data, ensure_ascii=False)
+
+    return location_codes, unno_list_as_string
+
+
+if __name__ == "__main__":
+    # ÏïÑÎûòÎäî ÌÖåÏä§Ìä∏/ÎîîÎ≤ÑÍπÖÏö© ÏΩîÎìú
+    # ÌïÑÏöîÌïú Í≤ΩÏö∞ÏóêÎßå ÏÇ¨Ïö© Í∞ÄÎä•. Ïã§Ï†ú Ïö¥ÏòÅ ÏãúÏóî Ï†úÍ±∞Ìï† ÏàòÎèÑ ÏûàÏùå.
+
+    check_sqlplus()             # sqlplusÍ∞Ä Ïûò ÎèôÏûëÌïòÎäîÏßÄ ÌôïÏù∏
+    check_db_connection()       # Îç∞Ïù¥ÌÑ∞Î≤†Ïù¥Ïä§ Ï†ëÏÜç Ïó¨Î∂Ä ÌôïÏù∏
+    schema_info = get_all_schema_tables()
+    print("Schema info:", schema_info)
+    # make_metadata_from_table()  # ÌäπÏ†ï ÌÖåÏù¥Î∏îÎ°úÎ∂ÄÌÑ∞ Î©îÌÉÄÎç∞Ïù¥ÌÑ∞ ÏÉùÏÑ±ÌïòÎäî ÏòàÏãú
+    # ÏòàÏãú SQL Ïã§Ìñâ
+    sql_q, sql_res = run_sql_unno(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
+    print("[TEST] run_sql_unno result:", sql_q, sql_res)
+    sql_q2, sql_res2 = run_sql_bl(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
+    print("[TEST] run_sql_bl result:", sql_q2, sql_res2)
+
+```
+
+
+--- templates/chatroom.html
+
+```html
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FLUX_NS Chat</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+  <link rel="stylesheet" href="/static/chat_styles.css">
+</head>
+<body>
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <h2>FLUX_NS</h2>
+      </div>
+      <button class="sidebar-toggle" onclick="toggleSidebar()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+    <button class="new-chat-btn" onclick="createNewChatFromSidebar()">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </svg>
+      New Chat
+    </button>
+    <ul id="chatRoomList" class="chat-room-list"></ul>
+  </div>
+
+  <!-- Main Container -->
+  <div class="main-container">
+    <!-- Chat Header -->
+    <div class="chat-header">
+      <button id="sidebarOpener" class="sidebar-opener" onclick="toggleSidebar()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" 
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+      <h2 id="chatRoomId">Chat Room: -</h2>
+      <div class="header-actions">
+        <button id="toggleRefBtn" class="toggle-ref-btn" onclick="toggleReferences()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+               viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" 
+               class="ref-icon">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+          <span>Show All References</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Reference Container -->
+    <div id="referenceContainer" class="reference-container"></div>
+
+    <!-- Chat Box -->
+    <div class="chat-box" id="chatBox">
+      <!-- Welcome content or messages will appear here -->
+    </div>
+
+    <!-- 이미지 미리보기 (일반 채팅 입력용) -->
+    <div id="imagePreview" class="image-preview-container"></div>
+
+    <!-- Input Container -->
+    <div class="input-container" id="inputContainer">
+      <div class="input-box">
+        <textarea 
+          id="userMessage" 
+          class="message-input" 
+          placeholder="메시지를 입력하세요..."
+          rows="1"
+          onkeydown="handleKeyDown(event)"
+        ></textarea>
+        
+        <!-- 이미지 업로드 input (개선) -->
+        <div class="image-upload-container">
+          <input type="file" id="imageUpload" accept="image/*" style="display: none;">
+          <button class="image-upload-btn" onclick="document.getElementById('imageUpload').click();">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <circle cx="8.5" cy="8.5" r="1.5"></circle>
+              <polyline points="21 15 16 10 5 21"></polyline>
+            </svg>
+            이미지 업로드
+          </button>
+        </div>
+
+        <button id="sendButton" class="send-btn" onclick="sendMessage()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+               viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /************************************************************************
+     * Global Variables and Data Structures
+     ************************************************************************/
+    let currentRequestId = null; 
+    let chatRooms = []; // [{ requestId, messages: [{role, content}] }]
+    let referenceList = []; 
+    let isProcessing = false; 
+    let isMobileView = window.innerWidth <= 768;
+    let currentlyViewingMsgIndex = null; 
+
+    // welcome 화면 HTML 템플릿
+    const welcomeContentHTML = `
+      <div class="welcome-screen">
+        <div class="welcome-header">
+          <img src="/static/NS_LOGO_ONLY.svg?height=80&width=80" 
+               alt="FLUX_NS Logo" class="welcome-logo" />
+          <h1>Welcome to FLUX_NS</h1>
+          <p class="welcome-subtitle">Ask me anything about NS information</p>
+        </div>
+        <div class="welcome-content">
+          <div class="example-prompts">
+            <h2>Examples</h2>
+            <div class="example-cards">
+              <button class="example-card" onclick="fillExamplePrompt('디지털 기획팀의 우선과제가 어떻게 돼?')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 
+                           8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 
+                           8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5
+                           a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span>디지털 기획팀의 우선과제가 어떻게 돼?</span>
+              </button>
+              <button class="example-card" 
+                      onclick="fillExamplePrompt('UN 클래스 2.1, UNNO 1033인 DG 화물이 부산항에서 고베항에 선적 가능한 지 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 
+                           8.5 8.5 0 0 1-7.6 4.7 
+                           8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7
+                           a8.38 8.38 0 0 1-.9-3.8 
+                           8.5 8.5 0 0 1 4.7-7.6 
+                           8.38 8.38 0 0 1 3.8-.9h.5
+                           a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span>UN 클래스 2.1, UNNO 1033인 DG 화물이<br>부산항에서 고베항에 선적 가능한지?</span>
+              </button>
+              <button class="example-card" 
+                      onclick="fillExamplePrompt('IOT 컨테이너 사업 근황에 대해서 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 
+                           8.5 8.5 0 0 1-7.6 4.7 
+                           8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7
+                           a8.38 8.38 0 0 1-.9-3.8 
+                           8.5 8.5 0 0 1 4.7-7.6 
+                           8.38 8.38 0 0 1 3.8-.9h.5
+                           a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span>IOT 컨테이너 사업 근황에 대해서 알려줘</span>
+              </button>
+              <button class="example-card" 
+                      onclick="fillExamplePrompt('최근 남성해운의 운임 동향을 웹 정보와 함께 분석해서 알려줘.')">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 
+                           8.5 8.5 0 0 1-7.6 4.7 
+                           8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7
+                           a8.38 8.38 0 0 1-.9-3.8 
+                           8.5 8.5 0 0 1 4.7-7.6 
+                           8.38 8.38 0 0 1 3.8-.9h.5
+                           a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span>최근 남성해운의 운임 동향을<br>웹 정보와 함께 분석해서 알려줘</span>
+              </button>
+            </div>
+          </div>
+          
+          <div class="features-container">
+            <div class="capabilities">
+              <h2>Capabilities</h2>
+              <ul class="capability-list">
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                  <span>최신 정보와 데이터 기반 응답</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                  <span>남성해운의 주간회의, 계약서, 인사규범 등에 대한 답변</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                  <span>상세한 답변 및 해설</span>
+                </li>
+              </ul>
+            </div>
+            <div class="limitations">
+              <h2>Limitations</h2>
+              <ul class="limitation-list">
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                  <span>현재 모든 정보를 가지고 있지 아니함</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                  <span>가끔 정확하지 않은 정보를 제공할 수 있음</span>
+                </li>
+                <li>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                       viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                  <span>민감한 요청에 대한 응답이 제한될 수 있음</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        
+        <div class="welcome-input-container">
+          <div class="input-prompt">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" 
+                 viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+            <span>질문을 입력하거나 이미지도 업로드 가능</span>
+          </div>
+          <div class="welcome-input-box">
+            <textarea 
+              id="welcomeMessage" 
+              class="welcome-message-input" 
+              placeholder="메시지를 입력하세요..."
+              rows="1"
+              onkeydown="handleWelcomeKeyDown(event)"
+              oninput="autoResizeTextarea(this)"
+            ></textarea>
+
+            <!-- [WELCOME 이미지 업로드 추가] -->
+            <div class="image-upload-container">
+              <input type="file" id="welcomeImageUpload" accept="image/*" style="display: none;">
+              <button class="image-upload-btn" onclick="document.getElementById('welcomeImageUpload').click();">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                  <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                  <polyline points="21 15 16 10 5 21"></polyline>
+                </svg>
+                이미지 업로드
+              </button>
+            </div>
+
+            <button id="welcomeSendButton" class="welcome-send-btn" onclick="sendWelcomeMessage()">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+                   viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </div>
+
+          <!-- 미리보기 (WELCOME) -->
+          <div id="welcomeImagePreview" class="image-preview-container"></div>
+        </div>
+      </div>
+    `;
+
+    /************************************************************************
+     * Markdown Parser (동일)
+     ************************************************************************/
+    function parseMarkdown(text) {
+      if (!text) return '';
+      text = text.replace(/<<<TABLE>>>([\s\S]*?)<<<END_TABLE>>>/g, function(match, tableContent) {
+        return convertMarkdownTable(tableContent);
+      });
+      text = parsePlainTextTables(text);
+
+      // 각주 정리
+      const footnoteRegex = /^\[\^(\d+)\]:\s*(.+)$/gm;
+      const footnotesDict = {};
+      let match;
+      while ((match = footnoteRegex.exec(text)) !== null) {
+        const num = match[1];
+        const content = match[2];
+        footnotesDict[num] = content;
+      }
+      text = text.replace(footnoteRegex, '').trim();
+
+      if (text.trim().startsWith('<')) {
+        return text;
+      }
+      
+      // 인라인 변환
+      text = text.replace(/\`\`\`([a-z]*)\n([\s\S]*?)\`\`\`/g, function(m, lang, code) {
+        return `<pre><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`;
+      });
+      text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+      text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+      text = text.replace(/\[([^\]]+)\]$$([^)]+)$$/g, '<a href="$2" target="_blank">$1</a>');
+
+      // 제목
+      text = text.replace(/^###### (.*)$/gm, '<h6>$1</h6>');
+      text = text.replace(/^##### (.*)$/gm, '<h5>$1</h5>');
+      text = text.replace(/^#### (.*)$/gm, '<h4>$1</h4>');
+      text = text.replace(/^### (.*)$/gm, '<h3>$1</h3>');
+      text = text.replace(/^## (.*)$/gm, '<h2>$1</h2>');
+      text = text.replace(/^# (.*)$/gm, '<h1>$1</h1>');
+
+      // 목록 처리
+      text = text.replace(/^\s*\* (.*)$/gm, '<li>$1</li>');
+      text = text.replace(/^\s*\d+\. (.*)$/gm, '<li>$1</li>');
+      text = text.replace(/(<li>[\s\S]*?<\/li>)/gm, function(m) {
+        if (m.trim().startsWith('<ul>')) return m;
+        return '<ul>' + m + '</ul>';
+      });
+
+      // 인용문
+      text = text.replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>');
+
+      // 문단
+      const blocks = text.split(/\n\s*\n/);
+      const blockLevelTags = ['<h1>', '<h2>', '<h3>', '<ul>', '<ol>', '<blockquote>', '<pre>'];
+      const htmlBlocks = blocks.map(block => {
+        const trimmed = block.trim();
+        for (let tag of blockLevelTags) {
+          if (trimmed.startsWith(tag)) {
+            return trimmed;
+          }
+        }
+        const replaced = trimmed.replace(/\n/g, '<br>');
+        return `<p>${replaced}</p>`;
+      });
+      let html = htmlBlocks.join('');
+
+      // 표
+      html = parseMarkdownTables(html);
+
+      const footnotesKeys = Object.keys(footnotesDict);
+      if (footnotesKeys.length > 0) {
+        let footnotesHTML = '<div class="footnotes"><hr><ol>';
+        footnotesKeys.sort((a, b) => Number(a) - Number(b)).forEach(num => {
+          footnotesHTML += `<li id="fn${num}">${footnotesDict[num]} <a href="#ref${num}" title="Back to content">↩</a></li>`;
+        });
+        footnotesHTML += '</ol></div>';
+        html += footnotesHTML;
+      }
+      return html;
+    }
+
+    function escapeHtml(unsafe) {
+      return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+    function parseMarkdownTables(text) {
+      const tableRegex = /((?:^\|.*\|(?:\r?\n|$))+)/gm;
+      return text.replace(tableRegex, function(match) {
+        return convertMarkdownTable(match);
+      });
+    }
+    function convertMarkdownTable(tableContent) {
+      const lines = tableContent.trim().split(/\r?\n/);
+      if (lines.length < 2) return tableContent;
+      const headers = lines[0].split('|').map(s => s.trim()).filter(s => s);
+      const dataRows = lines.slice(2).map(line => line.split('|').map(s => s.trim()).filter(s => s));
+      let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
+      headers.forEach(h => { html += `<th>${h}</th>`; });
+      html += '</tr></thead><tbody>';
+      dataRows.forEach(row => {
+        html += '<tr>';
+        row.forEach(cell => { html += `<td>${cell}</td>`; });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      return html;
+    }
+    function parsePlainTextTables(text) {
+      text = text.replace(/\t/g, "    ");
+      const lines = text.split(/\r?\n/);
+      let outputLines = [];
+      let i = 0;
+      while (i < lines.length) {
+        if (lines[i].trim() && lines[i].match(/\S+(?:\s{2,}\S+)+/)) {
+          const headerLine = lines[i];
+          if (i + 1 < lines.length && lines[i+1].trim().match(/^[-\s]+$/)) {
+            let tableLines = [];
+            tableLines.push(headerLine);
+            tableLines.push(lines[i+1]);
+            i += 2;
+            while (i < lines.length && lines[i].trim() && lines[i].match(/\S+(?:\s{2,}\S+)+/)) {
+              tableLines.push(lines[i]);
+              i++;
+            }
+            outputLines.push(convertPlainTextTableToHTML(tableLines));
+            continue;
+          }
+        }
+        outputLines.push(lines[i]);
+        i++;
+      }
+      return outputLines.join("\n");
+    }
+    function convertPlainTextTableToHTML(lines) {
+      const headerLine = lines[0];
+      const headers = headerLine.trim().split(/\s{2,}/);
+      let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
+      headers.forEach(h => { html += `<th>${h}</th>`; });
+      html += '</tr></thead><tbody>';
+      for (let j = 2; j < lines.length; j++) {
+        const row = lines[j].trim().split(/\s{2,}/);
+        html += '<tr>';
+        row.forEach(cell => {
+          html += `<td>${cell}</td>`;
+        });
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      return html;
+    }
+
+    /************************************************************************
+     * Welcome Screen Rendering
+     ************************************************************************/
+    function renderWelcomeScreen() {
+      const chatBox = document.getElementById('chatBox');
+      chatBox.innerHTML = welcomeContentHTML;
+      document.getElementById('inputContainer').classList.add('hidden');
+      
+      // 자동 리사이즈
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      if (welcomeTextarea) {
+        welcomeTextarea.addEventListener('input', function() {
+          autoResizeTextarea(this);
+        });
+      }
+    }
+
+    /************************************************************************
+     * Misc Functions
+     ************************************************************************/
+    function fillExamplePrompt(text) {
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      if (welcomeTextarea) {
+        welcomeTextarea.value = text;
+        autoResizeTextarea(welcomeTextarea);
+        welcomeTextarea.focus();
+      } else {
+        const messageInput = document.getElementById('userMessage');
+        messageInput.value = text;
+        autoResizeTextarea(messageInput);
+        messageInput.focus();
+      }
+    }
+    function autoResizeTextarea(textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = textarea.scrollHeight + 'px';
+    }
+    function handleWelcomeKeyDown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const welcomeImgInput = document.getElementById('welcomeImageUpload');
+        const welcomeTextarea = document.getElementById('welcomeMessage');
+        
+        // Only send if there's text or an image
+        if (welcomeTextarea.value.trim() || welcomeImgInput.files.length > 0) {
+          sendWelcomeMessage();
+        }
+      }
+    }
+
+    /************************************************************************
+     * Page Load / Initialization
+     ************************************************************************/
+    window.addEventListener('load', () => {
+      createNewChatRoom();
+      setupTextareaAutoResize();
+      setupMobileMenu();
+      checkMobileView();
+      window.addEventListener('resize', checkMobileView);
+      if (isMobileView) {
+        document.getElementById('sidebar').classList.add('collapsed');
+        updateSidebarOpenerVisibility();
+      }
+    });
+
+    function setupTextareaAutoResize() {
+      const textarea = document.getElementById('userMessage');
+      textarea.addEventListener('input', function() {
+        autoResizeTextarea(this);
+      });
+    }
+    function setupMobileMenu() {
+      document.addEventListener('click', (e) => {
+        const sidebar = document.getElementById('sidebar');
+        const sidebarOpener = document.getElementById('sidebarOpener');
+        if (isMobileView && 
+            sidebar.classList.contains('open') &&
+            !sidebar.contains(e.target) &&
+            !sidebarOpener.contains(e.target)) {
+          sidebar.classList.remove('open');
+          sidebar.classList.add('collapsed');
+          updateSidebarOpenerVisibility();
+        }
+      });
+    }
+    function checkMobileView() {
+      isMobileView = window.innerWidth <= 768;
+      const sidebar = document.getElementById('sidebar');
+      if (isMobileView) {
+        sidebar.classList.add('collapsed');
+      } else {
+        sidebar.classList.remove('collapsed');
+      }
+      updateSidebarOpenerVisibility();
+    }
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      if (isMobileView) {
+        sidebar.classList.toggle('open');
+        sidebar.classList.toggle('collapsed');
+      } else {
+        sidebar.classList.toggle('collapsed');
+      }
+      updateSidebarOpenerVisibility();
+    }
+    function updateSidebarOpenerVisibility() {
+      const sidebar = document.getElementById('sidebar');
+      const opener = document.getElementById('sidebarOpener');
+      if (sidebar.classList.contains('collapsed')) {
+        opener.style.display = 'flex';
+      } else {
+        opener.style.display = 'none';
+      }
+    }
+
+    /************************************************************************
+     * Welcome 화면 이미지 미리보기 로직
+     ************************************************************************/
+    document.addEventListener('DOMContentLoaded', () => {
+      // Welcome 화면 이미지 미리보기
+      const welcomeImgInput = document.getElementById('welcomeImageUpload');
+      if (welcomeImgInput) {
+        welcomeImgInput.addEventListener('change', function() {
+          const file = this.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = function(e) {
+            const preview = document.getElementById('welcomeImagePreview');
+            preview.innerHTML = '';
+            preview.classList.add('has-image');
+            
+            const imgContainer = document.createElement('div');
+            imgContainer.className = 'preview-image-wrapper';
+            
+            const img = document.createElement('img');
+            img.src = e.target.result;
+            img.className = 'preview-image';
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-image-btn';
+            removeBtn.innerHTML = `
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            `;
+            removeBtn.onclick = function() {
+              preview.innerHTML = '';
+              preview.classList.remove('has-image');
+              welcomeImgInput.value = '';
+            };
+            
+            imgContainer.appendChild(img);
+            imgContainer.appendChild(removeBtn);
+            preview.appendChild(imgContainer);
+            
+            const fileInfo = document.createElement('div');
+            fileInfo.className = 'file-info';
+            fileInfo.textContent = file.name;
+            preview.appendChild(fileInfo);
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+      
+      // 일반 채팅 이미지 미리보기
+      const chatImgInput = document.getElementById('imageUpload');
+      if (chatImgInput) {
+        chatImgInput.addEventListener('change', function() {
+          const file = this.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = function(e) {
+            const preview = document.getElementById('imagePreview');
+            preview.innerHTML = '';
+            preview.classList.add('has-image');
+            
+            const imgContainer = document.createElement('div');
+            imgContainer.className = 'preview-image-wrapper';
+            
+            const img = document.createElement('img');
+            img.src = e.target.result;
+            img.className = 'preview-image';
+            
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'remove-image-btn';
+            removeBtn.innerHTML = `
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            `;
+            removeBtn.onclick = function() {
+              preview.innerHTML = '';
+              preview.classList.remove('has-image');
+              chatImgInput.value = '';
+            };
+            
+            imgContainer.appendChild(img);
+            imgContainer.appendChild(removeBtn);
+            preview.appendChild(imgContainer);
+            
+            const fileInfo = document.createElement('div');
+            fileInfo.className = 'file-info';
+            fileInfo.textContent = file.name;
+            preview.appendChild(fileInfo);
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+    });
+
+    /************************************************************************
+     * Chat Room & History
+     ************************************************************************/
+    async function createNewChatRoom() {
+      const newRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
+      chatRooms.push({ requestId: newRequestId, messages: [] });
+      setActiveChatRoom(newRequestId);
+      renderChatRoomList();
+    }
+    async function setActiveChatRoom(requestId) {
+      currentRequestId = requestId;
+      document.getElementById("chatRoomId").innerText = `Chat Room: ${requestId}`;
+      let room = chatRooms.find(r => r.requestId === requestId);
+      if (!room) {
+        room = { requestId, messages: [] };
+        chatRooms.push(room);
+        renderWelcomeScreen();
+      } else {
+        await loadHistory(requestId);
+        renderChatBox(requestId);
+      }
+      renderChatRoomList();
+      clearReferenceData();
+      if (isMobileView) {
+        const sidebar = document.getElementById('sidebar');
+        sidebar.classList.remove('open');
+        sidebar.classList.add('collapsed');
+        updateSidebarOpenerVisibility();
+      }
+    }
+    function renderChatRoomList() {
+      const ul = document.getElementById("chatRoomList");
+      ul.innerHTML = "";
+      chatRooms.forEach(room => {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        let chatName = "New Chat";
+        if (room.messages && room.messages.length > 0) {
+          const firstUserMsg = room.messages.find(msg => msg.role === "human");
+          if (firstUserMsg) {
+            chatName = firstUserMsg.content.substring(0, 20)
+                       + (firstUserMsg.content.length > 20 ? "..." : "");
+          }
+        }
+        btn.innerHTML = ` 
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+               viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14
+                     a2 2 0 0 1 2 2z"></path>
+          </svg> ${chatName}`;
+        if (room.requestId === currentRequestId) {
+          btn.classList.add("active");
+        }
+        btn.onclick = () => setActiveChatRoom(room.requestId);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+    }
+    async function loadHistory(requestId) {
+      try {
+        const response = await fetch(`/history?request_id=${requestId}`);
+        if (response.ok) {
+          const data = await response.json();
+          const room = chatRooms.find(r => r.requestId === requestId);
+          if (room) {
+            room.messages = data.history;
+          }
+        }
+      } catch (err) {
+        console.error("History load error:", err);
+      }
+    }
+    function renderChatBox(requestId) {
+      const chatBox = document.getElementById("chatBox");
+      chatBox.innerHTML = "";
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (room && room.messages && room.messages.length > 0) {
+        document.getElementById('inputContainer').classList.remove('hidden');
+        room.messages.forEach((msg, i) => {
+          let sender = (msg.role === "human") ? "사용자" : 
+                       (msg.role === "ai" ? "AI" : "시스템");
+          appendMessageToChatBox(sender, msg.content, i);
+        });
+      } else {
+        renderWelcomeScreen();
+      }
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function createNewChatFromSidebar() {
+      createNewChatRoom();
+      if (isMobileView) {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebar').classList.add('collapsed');
+        updateSidebarOpenerVisibility();
+      }
+    }
+
+    /************************************************************************
+     * Sending from Welcome Screen
+     ************************************************************************/
+    async function sendWelcomeMessage() {
+      const welcomeTextarea = document.getElementById('welcomeMessage');
+      const textValue = (welcomeTextarea && welcomeTextarea.value.trim()) 
+                         ? welcomeTextarea.value.trim()
+                         : "";
+      const welcomeImgInput = document.getElementById('welcomeImageUpload');
+      const file = welcomeImgInput.files[0];
+
+      // 유저가 아무것도 입력하지 않았다면 무시
+      if (!textValue && !file) return;
+
+      const originalRequestId = currentRequestId;
+      
+      // 이미지 데이터 처리
+      let imageBase64 = null;
+      if (file) {
+        imageBase64 = await readFileAsBase64(file);
+      }
+      
+      // 사용자 메시지 추가 (이미지 포함)
+      appendMessageToChatBox("사용자", textValue, null, imageBase64);
+      storeMessageInRoom(originalRequestId, "사용자", textValue + (imageBase64 ? " [이미지 첨부됨]" : ""));
+
+      // 일반 채팅 입력창 보이도록
+      document.getElementById('inputContainer').classList.remove('hidden');
+
+      // 공통 payload 구성 (이미지가 있을 경우 image_data 필드 추가)
+      const payload = {
+        qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
+        user_id: "user123",
+        page_id: originalRequestId,
+        auth_class: "admin",
+        qry_contents: textValue,
+        qry_time: new Date().toISOString()
+      };
+      if (imageBase64) {
+        payload.image_data = imageBase64;
+      }
+
+      try {
+        const response = await fetch('/query_stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          throw new Error("Response error: " + response.status);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let sseBuffer = "";
+        let partialAnswer = "";
+        startAIStreamingMessage();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          sseBuffer += chunk;
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop();
+          for (let line of lines) {
+            if (!line) continue;
+            if (line.startsWith("data:")) {
+              const jsonStr = line.slice(5);
+              if (jsonStr === "[[STREAM_DONE]]") {
+                finalizeAIMessage(partialAnswer, originalRequestId);
+                return;
+              }
+              try {
+                const sseData = JSON.parse(jsonStr);
+                if (sseData.type === "answer") {
+                  partialAnswer += sseData.answer;
+                  updateAIStreamingMessage(partialAnswer);
+                } else if (sseData.type === "reference") {
+                  addReferenceData(sseData);
+                }
+              } catch {
+                partialAnswer += jsonStr;
+                updateAIStreamingMessage(partialAnswer);
+              }
+            }
+          }
+        }
+        finalizeAIMessage(partialAnswer, originalRequestId);
+      } catch (error) {
+        const errMsg = "이미지 처리 중 오류: " + error.message;
+        updateAIStreamingMessage(errMsg);
+        finalizeAIMessage(errMsg, originalRequestId);
+      } finally {
+        welcomeImgInput.value = '';
+        document.getElementById('welcomeImagePreview').innerHTML = '';
+      }
+
+      // Welcome 화면 제거
+      const chatBox = document.getElementById('chatBox');
+      const welcomeElem = chatBox.querySelector('.welcome-screen');
+      if (welcomeElem) {
+        chatBox.removeChild(welcomeElem);
+      }
+    }
+
+    /************************************************************************
+     * Normal Chat Input
+     ************************************************************************/
+    async function sendMessage() {
+      const messageInput = document.getElementById("userMessage");
+      const imageInput = document.getElementById('imageUpload');
+      const message = messageInput.value.trim();
+      if (!message && imageInput.files.length === 0) return;
+      if (isProcessing) return;
+      isProcessing = true;
+      document.getElementById("sendButton").disabled = true;
+      
+      // 이미지 데이터 처리
+      let imageBase64 = null;
+      if (imageInput.files.length > 0) {
+        imageBase64 = await readFileAsBase64(imageInput.files[0]);
+      }
+      
+      // 사용자 메시지 표시 (이미지 포함)
+      appendMessageToChatBox("사용자", message, null, imageBase64);
+      storeMessageInRoom(currentRequestId, "사용자", message + (imageBase64 ? " [이미지 첨부됨]" : ""));
+      messageInput.value = "";
+      messageInput.style.height = 'auto';
+      
+      clearReferenceData();
+      const originalRequestId = currentRequestId;
+      // 공통 payload 구성 (이미지가 있을 경우 image_data 필드 추가)
+      const payload = {
+        qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
+        user_id: "user123",
+        page_id: originalRequestId,
+        auth_class: "admin",
+        qry_contents: message,
+        qry_time: new Date().toISOString()
+      };
+      if (imageBase64) {
+        payload.image_data = imageBase64;
+      }
+      try {
+        const response = await fetch('/query_stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+          throw new Error("Response error: " + response.status);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let sseBuffer = "";
+        let partialAnswer = "";
+        startAIStreamingMessage();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          sseBuffer += chunk;
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop();
+          for (let line of lines) {
+            if (!line) continue;
+            if (line.startsWith("data:")) {
+              const jsonStr = line.slice(5);
+              if (jsonStr === "[[STREAM_DONE]]") {
+                finalizeAIMessage(partialAnswer, originalRequestId);
+                isProcessing = false;
+                document.getElementById("sendButton").disabled = false;
+                return;
+              }
+              try {
+                const sseData = JSON.parse(jsonStr);
+                if (sseData.type === "answer") {
+                  partialAnswer += sseData.answer;
+                  updateAIStreamingMessage(partialAnswer);
+                } else if (sseData.type === "reference") {
+                  addReferenceData(sseData);
+                }
+              } catch (err) {
+                partialAnswer += jsonStr;
+                updateAIStreamingMessage(partialAnswer);
+              }
+            }
+          }
+        }
+        finalizeAIMessage(partialAnswer, originalRequestId);
+        isProcessing = false;
+        document.getElementById("sendButton").disabled = false;
+      } catch (err) {
+        appendMessageToChatBox("시스템", "Error: " + err.message);
+        storeMessageInRoom(currentRequestId, "시스템", "Error: " + err.message);
+        isProcessing = false;
+        document.getElementById("sendButton").disabled = false;
+      } finally {
+        imageInput.value = '';
+        document.getElementById('imagePreview').innerHTML = '';
+      }
+    }
+    function storeMessageInRoom(requestId, sender, text) {
+      const room = chatRooms.find(r => r.requestId === requestId);
+      if (!room) return;
+      room.messages.push({ role: (sender === "사용자" ? "human" : "ai"), content: text });
+    }
+
+    /************************************************************************
+     * Utility: File to Base64
+     ************************************************************************/
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64 = reader.result.split(',')[1];
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    /************************************************************************
+     * AI Streaming Display
+     ************************************************************************/
+    let tempAiMsgDiv = null;
+    function startAIStreamingMessage() {
+      const chatBox = document.getElementById("chatBox");
+      tempAiMsgDiv = document.createElement("div");
+      tempAiMsgDiv.classList.add("message-line", "message-ai");
+      tempAiMsgDiv.innerHTML = `
+        <div class="message-header">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+               viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="3" y1="9" x2="21" y2="9"></line>
+            <line x1="9" y1="21" x2="9" y2="9"></line>
+          </svg>
+          AI
+          <div class="typing-indicator">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+        <div class="message-content" id="aiTempText"></div>
+      `;
+      chatBox.appendChild(tempAiMsgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+    function updateAIStreamingMessage(text) {
+      if (!tempAiMsgDiv) return;
+      const contentDiv = tempAiMsgDiv.querySelector("#aiTempText");
+      if (contentDiv) {
+        contentDiv.innerHTML = parseMarkdown(unescapeNewlines(text));
+      }
+      const chatBox = document.getElementById("chatBox");
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+    function unescapeNewlines(text) {
+      return text.replace(/\\n/g, "\n");
+    }
+    function finalizeAIMessage(finalText, requestId) {
+      storeMessageInRoom(requestId, "AI", finalText);
+      if (currentRequestId === requestId) {
+        renderChatBox(requestId);
+        renderChatRoomList();
+      }
+      if (referenceList.length > 0) {
+        document.getElementById("toggleRefBtn").style.display = "flex";
+      }
+    }
+
+    /************************************************************************
+     * Chat Box Helpers
+     ************************************************************************/
+    function appendMessageToChatBox(sender, message, msgIndex = null, imageData = null) {
+      const chatBox = document.getElementById("chatBox");
+      const welcomeElem = chatBox.querySelector('.welcome-screen');
+      if (welcomeElem) {
+        chatBox.removeChild(welcomeElem);
+        document.getElementById('inputContainer').classList.remove('hidden');
+      }
+      const msgDiv = document.createElement("div");
+      msgDiv.classList.add("message-line");
+      let messageClass = "";
+      let senderIcon = "";
+      if (sender === "사용자") {
+        messageClass = "message-user";
+        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+      <circle cx="12" cy="7" r="4"></circle>
+    </svg>`;
+      } else if (sender === "AI") {
+        messageClass = "message-ai";
+        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+      <line x1="3" y1="9" x2="21" y2="9"></line>
+      <line x1="9" y1="21" x2="9" y2="9"></line>
+    </svg>`;
+      } else {
+        messageClass = "message-system";
+        senderIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"></circle>
+      <line x1="12" y1="8" x2="12" y2="12"></line>
+      <line x1="12" y1="16" x2="12.01" y2="16"></line>
+    </svg>`;
+      }
+      
+      // Check if the message contains image data
+      const hasImageData = message && message.includes("IMAGE_DATA:");
+      let cleanMessage = message;
+      let imageContent = '';
+      
+      if (hasImageData) {
+        // Extract image data and clean message
+        const parts = message.split("IMAGE_DATA:");
+        cleanMessage = parts[0].trim();
+        const imageBase64 = parts[1].trim();
+        
+        imageContent = `
+          <div class="message-image-container">
+            <img src="data:image/jpeg;base64,${imageBase64}" alt="Uploaded image" class="message-image">
+          </div>
+        `;
+      }
+      
+      // For regular image uploads (from input)
+      if (imageData) {
+        imageContent = `
+          <div class="message-image-container">
+            <img src="data:image/jpeg;base64,${imageData}" alt="Uploaded image" class="message-image">
+          </div>
+        `;
+      }
+      
+      const messageContent = sender === "AI" 
+                             ? parseMarkdown(cleanMessage) 
+                             : escapeHtml(cleanMessage);
+      
+      msgDiv.classList.add(messageClass);
+      let referenceButton = '';
+      if (sender === "AI" && msgIndex !== null) {
+        referenceButton = `
+          <button class="message-ref-btn" onclick="loadReferenceForMessage(${msgIndex})">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ref-icon">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            <span>References</span>
+          </button>
+        `;
+      }
+      
+      msgDiv.innerHTML = `
+        <div class="message-header">
+          ${senderIcon}
+          ${sender}
+          ${referenceButton}
+        </div>
+        <div class="message-content">
+          ${messageContent}
+          ${imageContent}
+        </div>
+      `;
+      
+      chatBox.appendChild(msgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    /************************************************************************
+     * Reference
+     ************************************************************************/
+    function clearReferenceData() {
+      referenceList = [];
+      currentlyViewingMsgIndex = null;
+      document.getElementById("toggleRefBtn").style.display = "none";
+      document.getElementById("referenceContainer").style.display = "none";
+      document.getElementById("referenceContainer").innerHTML = "";
+      document.querySelectorAll(".message-ai.selected").forEach(el => {
+        el.classList.remove("selected");
+      });
+    }
+    function toggleReferences() {
+      const container = document.getElementById("referenceContainer");
+      const toggleBtn = document.getElementById("toggleRefBtn");
+      if (container.style.display === "none" || container.style.display === "") {
+        container.style.display = "block";
+        if (!container.innerHTML.trim()) {
+          renderReferenceData();
+        }
+        toggleBtn.querySelector('span').textContent = "Hide All References";
+      } else {
+        container.style.display = "none";
+        toggleBtn.querySelector('span').textContent = "Show All References";
+      }
+    }
+    function renderReferenceData() {
+      const container = document.getElementById("referenceContainer");
+      container.innerHTML = "";
+      if (referenceList.length === 0) {
+        container.innerHTML = "<p class='no-references'>참조 데이터가 없습니다.</p>";
+        return;
+      }
+      referenceList.forEach((refObj, i) => {
+        const div = document.createElement("div");
+        div.className = "reference-item";
+        div.innerHTML = `
+          <div class="reference-header">
+            <h4>Reference #${i + 1}</h4>
+          </div>
+          <pre>${JSON.stringify(refObj, null, 2)}</pre>
+        `;
+        container.appendChild(div);
+      });
+    }
+    function addReferenceData(refData) {
+      referenceList.push(refData);
+    }
+    function loadReferenceForMessage(msgIndex) {
+      if (currentlyViewingMsgIndex === msgIndex) {
+        const container = document.getElementById("referenceContainer");
+        if (container.style.display === "none" || container.style.display === "") {
+          container.style.display = "block";
+        } else {
+          container.style.display = "none";
+          document.querySelectorAll(".message-ai.selected").forEach(el => {
+            el.classList.remove("selected");
+          });
+          currentlyViewingMsgIndex = null;
+          return;
+        }
+      } else {
+        document.querySelectorAll(".message-ai.selected").forEach(el => {
+          el.classList.remove("selected");
+        });
+        const messages = document.querySelectorAll(".message-line.message-ai");
+        if (messages[msgIndex]) {
+          messages[msgIndex].classList.add("selected");
+        }
+        currentlyViewingMsgIndex = msgIndex;
+      }
+      const url = `/reference?request_id=${currentRequestId}&msg_index=${msgIndex}`;
+      fetch(url)
+        .then(r => r.json())
+        .then(data => {
+          if (data.error) {
+            alert(data.error);
+            return;
+          }
+          displayReferenceData(data.references, msgIndex);
+        })
+        .catch(err => {
+          console.error("참조 데이터 로딩 오류:", err);
+          alert("참조 데이터를 불러오는 중 오류 발생");
+        });
+    }
+    function displayReferenceData(refs, msgIndex) {
+      const container = document.getElementById("referenceContainer");
+      container.innerHTML = "";
+      const headerDiv = document.createElement("div");
+      headerDiv.className = "reference-container-header";
+      headerDiv.innerHTML = `
+        <h3>References for Message #${msgIndex + 1}</h3>
+        <button class="close-ref-btn" onclick="closeReferences()">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      `;
+      container.appendChild(headerDiv);
+      if (!refs || refs.length === 0) {
+        container.innerHTML += "<p class='no-references'>참조 데이터가 없습니다.</p>";
+      } else {
+        refs.forEach((ref, idx) => {
+          const div = document.createElement("div");
+          div.className = "reference-item";
+          div.innerHTML = `
+            <div class="reference-header">
+              <h4>Reference #${idx + 1}</h4>
+            </div>
+            <pre>${JSON.stringify(ref, null, 2)}</pre>
+          `;
+          container.appendChild(div);
+        });
+      }
+      container.style.display = "block";
+    }
+    function closeReferences() {
+      document.getElementById("referenceContainer").style.display = "none";
+      document.querySelectorAll(".message-ai.selected").forEach(el => {
+        el.classList.remove("selected");
+      });
+      currentlyViewingMsgIndex = null;
+    }
+    function handleKeyDown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const imageInput = document.getElementById('imageUpload');
+        const messageInput = document.getElementById('userMessage');
+        
+        // Only send if there's text or an image
+        if (messageInput.value.trim() || imageInput.files.length > 0) {
+          sendMessage();
+        }
+      }
+    }
+  </script>
+</body>
+</html>
+
+```
+
+
 -----------------
 
 # Base-Knowledge
@@ -2699,7 +4661,4 @@ async def generate_sql(user_query, model, tokenizer, config):
 
 # My-Requirements
 
- 1. 현재 코드에서 보다시피, ray_utils.py에 있는 image_query를 RAG.py로 옮겨서 model generate 파트를 한군데로 통일하고 싶어.
- 2. image_query에 대해서, RAG.py에 스트리밍으로 답변을 생성하는 image_streaming_query를 만들어줘.
- 3. image_query와 image_streaming_query를 두 함수 모두 기존에 있는 함수들의 답변 양식과 동일해.
- 4. 변경된 내역을 바탕으로 app.py, ray_utils.py에도 이를 반영해줘.
+ 1. html 화면을 테스트하기 위해서는 계속해서 GPU 서버에서 다시 app.py를 하는데, 좀 더 쉽게 변화를 감지하면서 수정하는 방법이 없을까? 알려줘 상세히 스탭바이스탭으로.
