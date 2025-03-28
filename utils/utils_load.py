@@ -243,6 +243,16 @@ def load_model(config):
         engine_args.disable_mm_preprocessor_cache = vllm_conf.get("disable_mm_preprocessor_cache", False)
         engine_args.limit_mm_per_prompt = vllm_conf.get("limit_mm_per_prompt", {"image": 2})
         
+        # --- Metrics (Monitoring) 관련 설정 ---
+        from vllm.config import ObservabilityConfig
+        observability_config = ObservabilityConfig(
+            show_hidden_metrics=True,
+            otlp_traces_endpoint=None,  # 필요에 따라 OTLP endpoint 설정
+            collect_model_forward_time=True,
+            collect_model_execute_time=True
+        )
+        engine_args.observability_config = observability_config
+        
         print("EngineArgs setting be finished")
         
         try:

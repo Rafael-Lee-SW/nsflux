@@ -45,7 +45,7 @@ with open("./config.yaml", "r") as f:
 
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
-    async def __init__(self, config):
+    def __init__(self, config):
         """
         InferenceActor 초기화: 모델, 토크나이저, 데이터 로드 및 배치 처리 설정
         """

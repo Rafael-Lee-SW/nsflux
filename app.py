@@ -22,6 +22,9 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# VLLM FLASH ATTENTION SETTING
+# os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+
 print("[[TEST]]")
 
 from flask import (
@@ -64,6 +67,10 @@ with open("./config.yaml", "r") as f:
     config_yaml = yaml.load(f, Loader=yaml.FullLoader)
     config = Box(config_yaml)
 random_seed(config.seed)
+
+########## Setting the Thread to main ##########
+import multiprocessing
+multiprocessing.set_start_method("spawn", force=True)
 
 ########## Ray Dashboard 8265 port ##########
 init_ray()  # Initialize the Ray
