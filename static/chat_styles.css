@@ -1041,6 +1041,10 @@ body {
         background-color: rgba(16, 163, 127, 0.2);
     }
 }
+/* Tool box */
+.tool-container {
+    display: flex;
+}
 
 /* Image Upload Styles */
 .image-upload-container {
@@ -1055,7 +1059,7 @@ body {
 .image-dropdown-menu {
     display: none;
     position: absolute;
-    top: -300%;
+    top: -350%;
     /* 버튼 아래에 위치 */
     left: 0%;
     background-color: white;
@@ -1065,6 +1069,7 @@ body {
     padding: 0.5rem;
     z-index: 10;
     max-width: 600px;
+    min-width: 150px;
 }
 
 .image-dropdown-menu.active {
