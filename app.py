@@ -142,9 +142,13 @@ def query_stream():
     auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
     qry_contents = body.get("qry_contents", "")
     qry_time = body.get("qry_time")  # 클라이언트 측 타임스탬프
-    image_data = body.get("image_data")
-
+    image_data = body.get("image_data") # Image Data
+    # RAG 여부
+    use_rag = body.get("rag")
+    print(f"[DEBUG] RAG using = ", use_rag)
+    
     print(f"[DEBUG] /query_stream called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{qry_contents}', qry_time='{qry_time}'")
+    
     
     # 새로운 http_query 생성 – 내부 로직에서는 page_id를 채팅방 id로 사용
     http_query = {
@@ -154,6 +158,7 @@ def query_stream():
         "auth_class": auth_class,
         "qry_contents": qry_contents,
         "qry_time": qry_time,
+        "use_rag" : use_rag,
     }
     
     # image_data가 존재하면 http_query에 추가하고, 길이(또는 타입)만 간략하게 출력
