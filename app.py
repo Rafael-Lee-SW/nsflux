@@ -1,20 +1,31 @@
-import os
+# app.py
+
+########## Setting the Thread to main ##########
+import multiprocessing
+multiprocessing.set_start_method("spawn", force=True)
+
 # Setting environment variable
-# os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
-os.environ["HF_HOME"] = "/workspace/huggingface"
-# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import os
+# --------- Huggingface setting ---------
 # For the Huggingface Token setting
+os.environ["HF_HOME"] = "/workspace/huggingface"
 os.environ["HF_TOKEN_PATH"] = "/root/.cache/huggingface/token"
-# Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA),
-# and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
-# OpenMP: Open-Multi-Processing API
-os.environ["MKL_THREADING_LAYER"] = "GNU"
 # Increase download timeout (in seconds)
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+# --------- OpenMP: Open-Multi-Processing API setting ---------
+# Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA), and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
+os.environ["MKL_THREADING_LAYER"] = "GNU"
+# --------- vLLM ---------
 # Use the vLLM as v1 version
 os.environ["VLLM_USE_V1"] = "1"
 os.environ["VLLM_STANDBY_MEM"] = "0"
-os.environ["VLLM_METRICS_LEVEL"] = "1"
+
+# Metrics logging configuration 
+os.environ["VLLM_METRICS_LEVEL"] = "2"  # Increase to max level
+os.environ["VLLM_LOG_STATS_INTERVAL"] = "5"  # Report every 5 seconds
+os.environ["VLLM_SHOW_PROGRESS"] = "1"  # Show progress bars
+os.environ["VLLM_LOG_LEVEL"] = "DEBUG"  # Set log level to DEBUG
+
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
 # GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU - 기본 안정화 세팅은 0번 GPU)
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -23,7 +34,11 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # VLLM FLASH ATTENTION SETTING
-# os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+# --------- Ray ---------
+os.environ["RAY_DEDUP_LOGS"] = "0"
 
 print("[[TEST]]")
 
@@ -67,10 +82,6 @@ with open("./config.yaml", "r") as f:
     config_yaml = yaml.load(f, Loader=yaml.FullLoader)
     config = Box(config_yaml)
 random_seed(config.seed)
-
-########## Setting the Thread to main ##########
-import multiprocessing
-multiprocessing.set_start_method("spawn", force=True)
 
 ########## Ray Dashboard 8265 port ##########
 init_ray()  # Initialize the Ray

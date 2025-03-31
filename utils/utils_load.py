@@ -241,7 +241,7 @@ def load_model(config):
         # --- 멀티모달 (Image) 관련 설정 ---
         engine_args.mm_processor_kwargs = vllm_conf.get("mm_processor_kwargs", {"do_pan_and_scan": True})
         engine_args.disable_mm_preprocessor_cache = vllm_conf.get("disable_mm_preprocessor_cache", False)
-        engine_args.limit_mm_per_prompt = vllm_conf.get("limit_mm_per_prompt", {"image": 2})
+        engine_args.limit_mm_per_prompt = vllm_conf.get("limit_mm_per_prompt", {"image": 5})
         
         # --- Metrics (Monitoring) 관련 설정 ---
         from vllm.config import ObservabilityConfig
