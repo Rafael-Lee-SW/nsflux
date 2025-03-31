@@ -27,7 +27,6 @@ from utils import (
     error_format,
 )
 from utils.summarizer import summarize_conversation
-from utils.debug_tracking import log_batch_info, log_system_info
 # Langchain Memory system
 from ray_deploy.langchain import CustomConversationBufferMemory, serialize_message
 
@@ -50,6 +49,14 @@ class InferenceActor:
         InferenceActor 초기화: 모델, 토크나이저, 데이터 로드 및 배치 처리 설정
         """
         self.config = config
+        
+        # 성능 모니터 초기화 (Ray 액터 내부에서)
+        from utils.debug_tracking import get_performance_monitor, print_memory_usage
+        self.performance_monitor = get_performance_monitor()
+        
+        # 초기 메모리 사용량 로깅
+        print_memory_usage("InferenceActor 초기화 시작")
+        
         # 액터 내부에서 모델 및 토크나이저를 새로 로드 (GPU에 한 번만 로드)
         self.model, self.tokenizer, self.embed_model, self.embed_tokenizer = load_model(
             config
@@ -511,9 +518,17 @@ class InferenceActor:
         # 요청 정보 추출
         http_query, request_id, is_streaming = self._get_request_info(http_query_or_stream_dict)
         
+        # 요청 ID가 없으면 생성 (성능 모니터링용)
+        if not request_id:
+            request_id = str(uuid.uuid4())
+        
         # 사용자 입력 추출
         user_input = http_query.get("qry_contents", "")
         logger.info(f"사용자 입력: {user_input}")
+        
+        # 성능 모니터링 시작 - 요청별 트래킹 시작
+        self.performance_monitor.start_request(request_id, input_text=user_input, tokenizer=self.tokenizer)
+        self.performance_monitor.update_request(request_id, 0, checkpoint="query_received")
         
         try:
             # RAG 사용 여부 확인
@@ -521,19 +536,40 @@ class InferenceActor:
             
             if use_rag is False:
                 logger.info("RAG 비활성화 모드로 실행")
+                self.performance_monitor.update_request(request_id, 0, checkpoint="rag_disabled")
                 await self._process_direct_query(user_input, request_id, future, http_query)
             else:
                 # 이미지 처리 (있는 경우)
                 image_description = await self._process_image_if_exists(http_query)
+                self.performance_monitor.update_request(request_id, 0, checkpoint="image_processed")
                 
                 # RAG 활용 응답 생성
                 await self._process_rag_query(http_query, user_input, image_description, 
-                                           request_id, is_streaming, future)
+                                        request_id, is_streaming, future)
         except Exception as e:
-            await self._handle_error(e, request_id, future)
+            err_msg = f"처리 중 오류 발생: {str(e)}"
+            logger.error(err_msg)
+            
+            # 성능 모니터에 오류 기록
+            self.performance_monitor.update_request(request_id, 0, checkpoint=f"error: {str(e)[:50]}")
+            self.performance_monitor.complete_request(request_id, success=False)
+            
+            # 스트리밍인 경우 에러 토큰 전송
+            if is_streaming:
+                try:
+                    error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                    await self.queue_manager.put_token.remote(request_id, error_token)
+                    await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                    await self.close_sse_queue(request_id)
+                except Exception as e2:
+                    logger.error(f"SSE 에러 전송 중 추가 오류: {str(e2)}")
+                    
+            # Future에 에러 결과 설정
+            future.set_result(error_format(err_msg, 500))
+            
         finally:
             # 스트리밍 요청인 경우 정리 작업
-            if request_id:
+            if is_streaming:
                 try:
                     await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
                 except Exception as ex:
@@ -544,8 +580,8 @@ class InferenceActor:
     # STREAMING PARTIAL ANSWER - 스트리밍 응답 처리
     # -------------------------------------------------------------------------
     async def _stream_partial_answer(self, QU: str, docs, retrieval, chart, 
-                                   request_id: str, future: asyncio.Future, 
-                                   user_input: str, http_query: dict) -> None:
+                                request_id: str, future: asyncio.Future, 
+                                user_input: str, http_query: dict) -> None:
         """
         스트리밍 방식의 부분 응답 생성 및 전송
         
@@ -561,6 +597,12 @@ class InferenceActor:
         """
         logger.info(f"스트리밍 응답 시작: request_id={request_id}")
         
+        # 성능 측정 초기화 - 시작 시간 기록
+        stream_start_time = time.time()
+        token_count = 0
+        first_token_received = False
+        self.performance_monitor.update_request(request_id, 0, checkpoint="stream_start")
+
         try:
             # 1. 참조 데이터 전송
             if retrieval:
@@ -574,6 +616,8 @@ class InferenceActor:
                 }, ensure_ascii=False)
                 await self.queue_manager.put_token.remote(request_id, reference_json)
                 logger.info(f"참조 데이터 전송 완료: request_id={request_id}")
+                self.performance_monitor.update_request(request_id, 0, checkpoint="reference_sent")
+
             
             # 2. 메모리 가져오기
             memory = self.get_memory_for_session(request_id)
@@ -592,8 +636,17 @@ class InferenceActor:
             total_tokens = len(self.tokenizer.tokenize(str(final_query))) + len(retrieval_tokens)
             logger.info(f"토큰 수: 이전 대화={len(past_tokens)}, 검색 자료={len(retrieval_tokens)}, 질문={len(query_tokens)}, 총={total_tokens}")
             
+            self.performance_monitor.update_request(
+                request_id, 0, 
+                checkpoint=f"prompt_ready (total_tokens={total_tokens})"
+            )
+                
             # 5. 스트리밍 응답 생성 및 전송
             partial_accumulator = ""
+            
+            # HTTP 쿼리에 request_id 추가하여 전달 - vLLM 토큰 추적용
+            http_query.update({"page_id": request_id})
+            
             async for partial_text in generate_answer_stream(
                 final_query, docs, self.model, self.tokenizer, self.config, http_query
             ):
@@ -603,12 +656,34 @@ class InferenceActor:
                 if new_text == "":
                     continue
                 
+                # 토큰 수는 이제 StreamingTokenCounter에서 직접 추적되므로 여기서는 간단히 갱신
+                current_tokens = len(partial_accumulator.split())
+                token_count = current_tokens
+                
+                # 첫 토큰 도착 확인 (StreamingTokenCounter에서 성능 모니터에 이미 기록했을 수 있음)
+                current_time = time.time()
+                if not first_token_received and token_count > 0:
+                    first_token_latency = current_time - stream_start_time
+                    first_token_received = True
+                    logger.info(f"첫 토큰 생성: {request_id} (latency: {first_token_latency:.3f}s)")
+                
                 # 응답 토큰 JSON 형식으로 포장하여 전송
                 answer_json = json.dumps({
                     "type": "answer",
                     "answer": new_text
                 }, ensure_ascii=False)
                 await self.queue_manager.put_token.remote(request_id, answer_json)
+            
+            # 생성 완료 시간 계산
+            generation_time = time.time() - stream_start_time
+            tokens_per_second = token_count / generation_time if generation_time > 0 else 0
+            
+            # 최종 성능 지표 업데이트
+            self.performance_monitor.update_request(
+                request_id, token_count,
+                current_output=partial_accumulator,
+                checkpoint=f"generation_complete ({generation_time:.2f}s, {tokens_per_second:.2f} tokens/s, {token_count} tokens)"
+            )
             
             # 6. 최종 축적된 텍스트
             final_text = partial_accumulator
@@ -626,6 +701,9 @@ class InferenceActor:
             # 9. 결과 설정 및 스트리밍 종료 신호 전송
             final_res = process_format_to_response([retrieval, ans] if retrieval else [ans], qry_id=http_query.get("qry_id", ""), continue_="E")
             future.set_result(final_res)
+            
+            # 요청 완료 처리 - 성공
+            self.performance_monitor.complete_request(request_id, success=True)
             
             logger.info(f"스트리밍 응답 완료: request_id={request_id}")
         

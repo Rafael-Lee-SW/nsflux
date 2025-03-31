@@ -8,7 +8,7 @@ Exports:
 
 from .ray_setup import init_ray
 from .ray_utils import InferenceActor, InferenceService
-from .langchain import CustomConversationBufferMemory
+from .langchain import CustomConversationBufferMemory, serialize_message
 from .sse_manager import SSEQueueManager
 
-__all__ = ["init_ray", "InferenceActor", "InferenceService","CustomConversationBufferMemory", "SSEQueueManager"]
+__all__ = ["init_ray", "InferenceActor", "InferenceService","CustomConversationBufferMemory", "serialize_message" , "SSEQueueManager"]

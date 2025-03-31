@@ -4,12 +4,13 @@
 ├─ app.py
 ├─ config.yaml
 ├─ core/RAG.py
-├─ core/SQL_NS.py
-├─ prompt/prompt_rag.py
-├─ prompt/prompt_sql.py
+├─ core/generation.py
+├─ core/image_processing.py
+├─ core/retrieval.py
 ├─ ray_deploy/langchain.py
 ├─ ray_deploy/ray_setup.py
 ├─ ray_deploy/ray_utils.py
+├─ utils/debug_tracking.py
 ├─ utils/utils_format.py
 └─ utils/utils_load.py
 ```
@@ -95,23 +96,34 @@ k : 15                          # SQL Max Rows (None=MAX)
 
 ```python
 
-import os
+# app.py
+
+########## Setting the Thread to main ##########
+import multiprocessing
+multiprocessing.set_start_method("spawn", force=True)
+
 # Setting environment variable
-# os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
-os.environ["HF_HOME"] = "/workspace/huggingface"
-# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import os
+# --------- Huggingface setting ---------
 # For the Huggingface Token setting
+os.environ["HF_HOME"] = "/workspace/huggingface"
 os.environ["HF_TOKEN_PATH"] = "/root/.cache/huggingface/token"
-# Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA),
-# and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
-# OpenMP: Open-Multi-Processing API
-os.environ["MKL_THREADING_LAYER"] = "GNU"
 # Increase download timeout (in seconds)
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+# --------- OpenMP: Open-Multi-Processing API setting ---------
+# Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA), and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
+os.environ["MKL_THREADING_LAYER"] = "GNU"
+# --------- vLLM ---------
 # Use the vLLM as v1 version
 os.environ["VLLM_USE_V1"] = "1"
 os.environ["VLLM_STANDBY_MEM"] = "0"
-os.environ["VLLM_METRICS_LEVEL"] = "1"
+
+# Metrics logging configuration 
+os.environ["VLLM_METRICS_LEVEL"] = "2"  # Increase to max level
+os.environ["VLLM_LOG_STATS_INTERVAL"] = "5"  # Report every 5 seconds
+os.environ["VLLM_SHOW_PROGRESS"] = "1"  # Show progress bars
+os.environ["VLLM_LOG_LEVEL"] = "DEBUG"  # Set log level to DEBUG
+
 os.environ["VLLM_PROFILE_MEMORY"]= "1"
 # GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU - 기본 안정화 세팅은 0번 GPU)
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -119,7 +131,12 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-print("[[TEST]]")
+# VLLM FLASH ATTENTION SETTING
+os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+# --------- Ray ---------
+os.environ["RAY_DEDUP_LOGS"] = "0"
 
 from flask import (
     Flask,
@@ -142,11 +159,88 @@ from utils import random_seed, error_format, send_data_to_server, process_format
 import logging
 import threading
 
-# 로깅 설정: 요청 처리 시간과 현재 스레드 이름을 기록
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s %(levelname)s [%(threadName)s] %(message)s'
-)
+# Metrics logging configuration - 여기에 모든 로깅 설정 통합
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
+
+# 글로벌 로깅 설정
+# app.py 로깅 설정 수정
+def setup_logging():
+    """
+    통합 로깅 설정 - 중복 로그 방지
+    """
+    # 로그 포맷 설정
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - [%(threadName)s] %(message)s'
+    
+    # 루트 로거 설정
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # 기존 핸들러 제거 (중복 방지)
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # 콘솔 핸들러 추가
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(logging.Formatter(log_format))
+    root_logger.addHandler(console_handler)
+    
+    # 성능 전용 로거 설정 - 중복 로그 방지를 위한 추가 확인
+    perf_logger = logging.getLogger("performance")
+    # 기존 핸들러 모두 제거
+    for handler in perf_logger.handlers[:]:
+        perf_logger.removeHandler(handler)
+    
+    perf_logger.propagate = False  # 루트 로거로 전파하지 않음
+    perf_logger.setLevel(logging.INFO)
+    
+    # 성능 로거 핸들러 추가
+    perf_handler = logging.StreamHandler(sys.stdout)
+    perf_handler.setFormatter(logging.Formatter(log_format))
+    perf_logger.addHandler(perf_handler)
+    
+    # 파일 로깅 설정 (폴더 생성 후)
+    try:
+        os.makedirs("logs", exist_ok=True)
+        
+        # 일반 로그 파일 핸들러
+        file_handler = RotatingFileHandler(
+            "logs/server.log", 
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5
+        )
+        file_handler.setFormatter(logging.Formatter(log_format))
+        root_logger.addHandler(file_handler)
+        
+        # 성능 전용 로그 파일
+        perf_file_handler = RotatingFileHandler(
+            "logs/performance.log", 
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5
+        )
+        perf_file_handler.setFormatter(logging.Formatter(log_format))
+        perf_logger.addHandler(perf_file_handler)
+        
+    except (FileNotFoundError, PermissionError) as e:
+        logging.warning(f"로그 파일을 생성할 수 없습니다: {e}. 콘솔 로깅만 활성화됩니다.")
+    
+    # Ray 로거와 vLLM 로거 제어
+    ray_logger = logging.getLogger("ray")
+    ray_logger.setLevel(logging.WARNING)  # Ray 로그 축소
+    
+    vllm_logger = logging.getLogger("vllm")
+    vllm_logger.setLevel(logging.INFO)   # vLLM 로그는 INFO 유지
+    
+    # 스레드 이름으로 로깅되는 것 방지
+    thread_logger = logging.getLogger("Thread")
+    thread_logger.setLevel(logging.WARNING)  
+    
+    # 로깅 설정 확인
+    logging.info("로깅 시스템 초기화 완료 - 중복 로그 방지")
+
+# 로깅 설정 적용
+setup_logging()
 
 import ray
 from ray import serve
@@ -525,27 +619,27 @@ def init_ray():
 
 ```python
 
-
 # ray_deploy/ray_utils.py
 import ray  # Ray library
 from ray import serve
 import json
 import asyncio  # async I/O process module
 from concurrent.futures import ProcessPoolExecutor  # 스레드 컨트롤
-import uuid  # --- NEW OR MODIFIED ---
+import uuid
 import time
-from typing import Dict, Optional  # --- NEW OR MODIFIED ---
+from typing import Dict, Optional, List, Any, Tuple, Union
 import threading  # To find out the usage of thread
 import datetime
+import logging
 
-from core.RAG import (
+from core import (
     query_sort,
     specific_question,
     execute_rag,
     generate_answer,
     generate_answer_stream,
     image_query,
-)  # hypothetically
+)
 from utils import (
     load_model,
     load_data,
@@ -553,11 +647,14 @@ from utils import (
     process_to_format,
     error_format,
 )
-# from summarizer import summarize_conversation
 from utils.summarizer import summarize_conversation
-from utils.debug_tracking import log_batch_info, log_system_info
 # Langchain Memory system
 from ray_deploy.langchain import CustomConversationBufferMemory, serialize_message
+
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('RAY_UTILS')
 
 # Configuration
 import yaml
@@ -568,8 +665,19 @@ with open("./config.yaml", "r") as f:
 
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
-    async def __init__(self, config):
+    def __init__(self, config):
+        """
+        InferenceActor 초기화: 모델, 토크나이저, 데이터 로드 및 배치 처리 설정
+        """
         self.config = config
+        
+        # 성능 모니터 초기화 (Ray 액터 내부에서)
+        from utils.debug_tracking import get_performance_monitor, print_memory_usage
+        self.performance_monitor = get_performance_monitor()
+        
+        # 초기 메모리 사용량 로깅
+        print_memory_usage("InferenceActor 초기화 시작")
+        
         # 액터 내부에서 모델 및 토크나이저를 새로 로드 (GPU에 한 번만 로드)
         self.model, self.tokenizer, self.embed_model, self.embed_tokenizer = load_model(
             config
@@ -604,19 +712,26 @@ class InferenceActor:
         asyncio.create_task(self.continuous_batch_processor())
         
     # -------------------------------------------------------------------------
-    # GET MEMORY FOR SESSION
+    # GET MEMORY FOR SESSION - 세션별 메모리 관리
     # -------------------------------------------------------------------------
     def get_memory_for_session(self, request_id: str) -> CustomConversationBufferMemory:
         """
         세션별 Memory를 안전하게 가져오는 헬퍼 메서드.
         만약 memory_map에 request_id가 없으면 새로 생성해 저장 후 반환.
+        
+        Args:
+            request_id: 세션(대화) ID
+            
+        Returns:
+            CustomConversationBufferMemory: 대화 기록을 저장하는 메모리 객체
         """
         if request_id not in self.memory_map:
-            print(f"[DEBUG] Creating new CustomConversationBufferMemory for session={request_id}")
+            logger.info(f"Creating new ConversationBufferMemory for session={request_id}")
             self.memory_map[request_id] = CustomConversationBufferMemory(return_messages=True)
         return self.memory_map[request_id]
+
     # -------------------------------------------------------------------------
-    # CONTINUOUOS BATCH PROCESSOR
+    # CONTINUOUOS BATCH PROCESSOR - 연속 배치 처리
     # -------------------------------------------------------------------------
     async def continuous_batch_processor(self):
         """
@@ -648,7 +763,7 @@ class InferenceActor:
                     # 활성 작업 목록에 추가
                     self.active_tasks.add(task)
                     
-                    print(f"[Continuous Batching] +1 request => active tasks now {len(self.active_tasks)}/{self.max_concurrent_tasks}")
+                    logger.info(f"[Continuous Batching] +1 request => active tasks now {len(self.active_tasks)}/{self.max_concurrent_tasks}")
                 
                 except asyncio.TimeoutError:
                     # 새 요청이 없으면 잠시 대기
@@ -667,587 +782,669 @@ class InferenceActor:
                         try:
                             await task
                         except Exception as e:
-                            print(f"[ERROR] Task failed: {e}")
+                            logger.error(f"Task failed: {e}")
                     
-                    print(f"[Continuous Batching] Tasks completed: {len(done)} => active tasks now {len(self.active_tasks)}/{self.max_concurrent_tasks}")
+                    logger.info(f"[Continuous Batching] Tasks completed: {len(done)} => active tasks now {len(self.active_tasks)}/{self.max_concurrent_tasks}")
                 else:
                     await asyncio.sleep(0.01)
 
     # -------------------------------------------------------------------------
-    # PROCESS SINGLE QUERY (TEXT TO TEXT)
+    # 유틸리티 함수들: 코드 중복 제거 및 재사용성 향상
     # -------------------------------------------------------------------------
-    async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
+    def _get_request_info(self, http_query_or_stream_dict: dict) -> Tuple[dict, str, bool]:
         """
-        Process a single query from the micro-batch. If 'sse_queue' is given,
-        we do partial-token streaming. Otherwise, normal final result.
-        """
-        body = http_query_or_stream_dict["http_query"]
-        request_check = body.get("qry_contents", "")
-        print(
-            f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {request_check}, 현재 스레드: {threading.current_thread().name}"
-        )
+        요청 정보를 추출하는 유틸리티 함수
         
-        # RAG on/off using boolean
-        use_rag = body.get("use_rag")
-        
-        if use_rag is False:
-            print(f"[NOT-USING-RAG] RAG is FALSE")
+        Args:
+            http_query_or_stream_dict: 원본 요청 데이터
             
-            # Determine) === Is streaming or not ===
+        Returns:
+            Tuple[dict, str, bool]: (http_query, request_id, is_streaming) 형태의 튜플
+        """
+        # 스트리밍 여부 및 request_id 확인
+        if isinstance(http_query_or_stream_dict, dict) and "request_id" in http_query_or_stream_dict:
+            request_id = http_query_or_stream_dict["request_id"]
+            http_query = http_query_or_stream_dict["http_query"]
+            is_streaming = True
+            logger.info(f"[STREAM] request_id={request_id}")
+        else:
             request_id = None
-            # For streaming, the dict contains a "request_id"
-            if isinstance(http_query_or_stream_dict, dict) and "request_id" in http_query_or_stream_dict:
-                request_id = http_query_or_stream_dict["request_id"]
-                http_query = http_query_or_stream_dict["http_query"]
-                is_streaming = True
-                print(f"[STREAM] _process_single_query: request_id={request_id}")
-            else:
-                request_id = None
-                http_query = http_query_or_stream_dict
-                is_streaming = False
-                print("[NORMAL] _process_single_query started...")
-                
-            # 1) bring the user's input query
-            user_input = http_query.get("qry_contents", "")
-            print("[PROCESS_SINGLE_QUERY] user input : ", user_input)
+            http_query = http_query_or_stream_dict
+            is_streaming = False
+            logger.info("[NORMAL] Non-streaming request")
             
-            # Determine) === Make a description of image ===
-            image_data = http_query.get("image_data")
-                
-            # 2) Memory 객체 정보 가져오기 (없으면 새로 생성)
-            page_id = http_query.get("page_id", request_id)
-            memory = self.get_memory_for_session(page_id)
+        return http_query, request_id, is_streaming
+    
+    async def _load_conversation_history(self, page_id: str) -> str:
+        """
+        대화 기록 로드하는 유틸리티 함수
+        
+        Args:
+            page_id: 세션(대화) ID
             
-            # 4) LangChain Memory에서 이전 대화 이력(history) 추출
+        Returns:
+            str: 포맷팅된 대화 이력 텍스트
+        """
+        memory = self.get_memory_for_session(page_id)
+        
+        try:
             past_context = memory.load_memory_variables({}).get("history", [])
             # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
             if isinstance(past_context, list):
                 recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
-                past_context = "\n\n".join(recent_messages)
+                return "\n\n".join(recent_messages)
             else:
                 # 문자열인 경우, 메시지 구분자를 "\n\n"으로 가정하여 분리
                 messages = str(past_context).split("\n\n")
                 recent_messages = messages[-5:]
-                past_context = "\n\n".join(recent_messages)
+                return "\n\n".join(recent_messages)
+        except Exception as e:
+            logger.error(f"대화 기록 로드 중 오류: {e}")
+            return ""
+        
+    async def _process_image_if_exists(self, http_query: dict) -> dict:
+        """
+        이미지 데이터가 있는 경우 이미지 처리 수행
+        
+        Args:
+            http_query: 요청 데이터
+            
+        Returns:
+            dict: 이미지 설명 정보
+        """
+        image_data = http_query.get("image_data")
+        if image_data is not None:
+            logger.info("이미지 데이터 감지, 이미지 처리 시작")
+            return await image_query(http_query, self.model, self.config)
+        return {"is_structured": False, "description": "이미지는 입력되지 않았습니다."}
+    
+    async def _store_conversation(self, memory: CustomConversationBufferMemory, 
+                                user_input: str, output: str, 
+                                chunk_ids: List[str], http_query: dict) -> None:
+        """
+        대화 내용을 메모리에 저장하는 유틸리티 함수
+        
+        Args:
+            memory: 대화 메모리 객체
+            user_input: 사용자 입력
+            output: AI 응답
+            chunk_ids: 참조된 청크 ID 목록
+            http_query: 원본 요청 데이터
+        """
+        try:
+            memory.save_context(
+                {
+                    "qry_contents": user_input,
+                    "qry_id": http_query.get("qry_id", ""),
+                    "user_id": http_query.get("user_id", ""),
+                    "auth_class": http_query.get("auth_class", ""),
+                    "qry_time": http_query.get("qry_time", "")
+                },
+                {
+                    "output": output,
+                    "chunk_ids": chunk_ids
+                }
+            )
+            logger.debug(f"대화 저장 완료: 청크 ID {chunk_ids}")
+        except Exception as e:
+            logger.error(f"대화 저장 중 오류: {e}")
+    
+    def _extract_chunk_ids(self, retrieval: dict) -> List[str]:
+        """
+        검색 결과에서 청크 ID 추출하는 유틸리티 함수
+        
+        Args:
+            retrieval: 검색 결과 데이터
+            
+        Returns:
+            List[str]: 청크 ID 목록
+        """
+        chunk_ids = []
+        for doc in retrieval.get("rsp_data", []):
+            if "chunk_id" in doc:
+                chunk_ids.append(doc["chunk_id"])
+        return chunk_ids
+    
+    async def _handle_error(self, e: Exception, request_id: str, future: asyncio.Future) -> None:
+        """
+        오류 처리를 위한 유틸리티 함수
+        
+        Args:
+            e: 발생한 예외
+            request_id: 요청 ID
+            future: 결과를 설정할 Future 객체
+        """
+        err_msg = f"처리 중 오류 발생: {str(e)}"
+        logger.error(err_msg)
+        
+        # 스트리밍인 경우 에러 토큰 전송
+        if request_id:
+            try:
+                error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                await self.queue_manager.put_token.remote(request_id, error_token)
+                await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                await self.close_sse_queue(request_id)
+            except Exception as e2:
+                logger.error(f"SSE 에러 전송 중 추가 오류: {str(e2)}")
                 
+        # Future에 에러 결과 설정
+        future.set_result(error_format(err_msg, 500))
+    
+    # -------------------------------------------------------------------------
+    # 메인 처리 함수: RAG 활용 쿼리 처리
+    # -------------------------------------------------------------------------
+    async def _process_rag_query(self, http_query: dict, user_input: str, 
+                               image_description: dict, request_id: str, 
+                               is_streaming: bool, future: asyncio.Future) -> None:
+        """
+        RAG를 사용하는 쿼리 처리 로직
+        
+        Args:
+            http_query: 요청 데이터
+            user_input: 사용자 입력
+            image_description: 이미지 설명 데이터
+            request_id: 요청 ID
+            is_streaming: 스트리밍 여부
+            future: 결과를 설정할 Future 객체
+        """
+        try:
+            # 데이터 다시 로드 (항상 최신 데이터 사용)
+            self.data = load_data(self.config.data_path)
+            
+            # 질문 분류 및 RAG 파라미터 준비
+            params = {
+                "user_input": f"사용자 질문: {user_input} [이미지 설명: {image_description.get('description')}]",
+                "model": self.model,
+                "tokenizer": self.tokenizer,
+                "embed_model": self.embed_model,
+                "embed_tokenizer": self.embed_tokenizer,
+                "data": self.data,
+                "config": self.config,
+            }
+            
+            # 질문 구체화
+            QU, KE, TA, TI = await query_sort(params)
+            logger.info(f"질문 구체화 결과: QU={QU}, KE={KE}, TA={TA}, TI={TI}")
+            
+            # 테이블 데이터가 필요한 경우 (SQL 기반 RAG)
+            if TA == "yes":
+                await self._process_table_query(QU, KE, TA, TI, user_input, request_id, is_streaming, future, http_query)
+            else:
+                # 일반 RAG 처리
+                await self._process_standard_rag(QU, KE, TA, TI, user_input, request_id, is_streaming, future, http_query)
+                
+        except Exception as e:
+            await self._handle_error(e, request_id, future)
+    
+    # -------------------------------------------------------------------------
+    # SQL 테이블 기반 처리 함수
+    # -------------------------------------------------------------------------
+    async def _process_table_query(self, QU: str, KE: str, TA: str, TI: str,
+                                 user_input: str, request_id: str,
+                                 is_streaming: bool, future: asyncio.Future, 
+                                 http_query: dict) -> None:
+        """
+        테이블 데이터가 필요한 쿼리 처리 (SQL 기반)
+        
+        Args:
+            QU, KE, TA, TI: 질문 분류 결과
+            user_input: 사용자 입력
+            request_id: 요청 ID
+            is_streaming: 스트리밍 여부
+            future: 결과를 설정할 Future 객체
+            http_query: 원본 요청 데이터
+        """
+        try:
+            # SQL 실행 및 데이터 추출
+            docs, docs_list = await execute_rag(
+                QU, KE, TA, TI,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                embed_model=self.embed_model,
+                embed_tokenizer=self.embed_tokenizer,
+                data=self.data,
+                config=self.config,
+            )
+            
+            # 포맷 변환
+            try:
+                retrieval, chart = process_to_format(docs_list, type="SQL")
+            except Exception as e:
+                logger.error(f"SQL 결과 포맷 변환 실패: {str(e)}")
+                retrieval, chart = [], None
+                
+            # 스트리밍 또는 일반 응답 처리
+            if is_streaming:
+                await self._stream_partial_answer(QU, docs, retrieval, chart, request_id, future, user_input, http_query)
+            else:
+                # 일반 최종 결과 생성
+                output = await generate_answer(QU, docs, model=self.model, tokenizer=self.tokenizer, config=self.config)
+                answer = process_to_format([output, chart], type="Answer")
+                final_data = [retrieval, answer]
+                outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                
+                # 청크 ID 추출 및 대화 저장
+                chunk_ids = self._extract_chunk_ids(retrieval)
+                memory = self.get_memory_for_session(http_query.get("page_id", request_id))
+                await self._store_conversation(memory, user_input, output, chunk_ids, http_query)
+                
+                # 최종 결과 반환
+                future.set_result(outputs)
+                
+        except Exception as e:
+            await self._handle_error(e, request_id, future)
+            
+    # -------------------------------------------------------------------------
+    # 표준 RAG 처리 함수
+    # -------------------------------------------------------------------------
+    async def _process_standard_rag(self, QU: str, KE: str, TA: str, TI: str,
+                                  user_input: str, request_id: str,
+                                  is_streaming: bool, future: asyncio.Future, 
+                                  http_query: dict) -> None:
+        """
+        일반 RAG 처리 로직
+        
+        Args:
+            QU, KE, TA, TI: 질문 분류 결과
+            user_input: 사용자 입력
+            request_id: 요청 ID
+            is_streaming: 스트리밍 여부
+            future: 결과를 설정할 Future 객체
+            http_query: 원본 요청 데이터
+        """
+        try:
+            # 대화 이력 기반 질문 구체화
+            QU, KE, TA, TI = await specific_question({
+                "user_input": user_input,
+                "model": self.model,
+                "tokenizer": self.tokenizer,
+                "embed_model": self.embed_model,
+                "embed_tokenizer": self.embed_tokenizer,
+                "data": self.data,
+                "config": self.config,
+            })
+            
+            # RAG 실행
+            docs, docs_list = await execute_rag(
+                QU, KE, TA, TI,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                embed_model=self.embed_model,
+                embed_tokenizer=self.embed_tokenizer,
+                data=self.data,
+                config=self.config,
+            )
+            
+            # 검색 결과 포맷 변환
+            retrieval = process_to_format(docs_list, type="Retrieval")
+            
+            # 스트리밍 또는 일반 응답 처리
+            if is_streaming:
+                await self._stream_partial_answer(QU, docs, retrieval, None, request_id, future, user_input, http_query)
+            else:
+                # 최종 답변 생성
+                output = await generate_answer(QU, docs, model=self.model, tokenizer=self.tokenizer, config=self.config)
+                answer = process_to_format([output], type="Answer")
+                final_data = [retrieval, answer]
+                outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                
+                # 청크 ID 추출 및 대화 저장
+                chunk_ids = self._extract_chunk_ids(retrieval)
+                memory = self.get_memory_for_session(http_query.get("page_id", request_id))
+                await self._store_conversation(memory, user_input, output, chunk_ids, http_query)
+                
+                # 최종 결과 반환
+                future.set_result(outputs)
+                
+        except Exception as e:
+            await self._handle_error(e, request_id, future)
+            
+    # -------------------------------------------------------------------------
+    # RAG 없이 직접 응답 생성 함수
+    # -------------------------------------------------------------------------
+    async def _process_direct_query(self, user_input: str, request_id: str, 
+                                  future: asyncio.Future, http_query: dict) -> None:
+        """
+        RAG를 사용하지 않고 직접 응답을 생성하는 로직
+        
+        Args:
+            user_input: 사용자 입력
+            request_id: 요청 ID
+            future: 결과를 설정할 Future 객체
+            http_query: 원본 요청 데이터
+        """
+        try:
+            # 이 함수는 RAG를 사용하지 않고 직접 응답을 생성합니다
             docs = None
             retrieval = None
             chart = None
             
+            # 스트리밍 방식으로 응답 생성
             await self._stream_partial_answer(user_input, docs, retrieval, chart, request_id, future, user_input, http_query)
-            
-        else:
-            try:
-                # Determine) === Is streaming or not ===
-                request_id = None
-                # For streaming, the dict contains a "request_id"
-                if isinstance(http_query_or_stream_dict, dict) and "request_id" in http_query_or_stream_dict:
-                    request_id = http_query_or_stream_dict["request_id"]
-                    http_query = http_query_or_stream_dict["http_query"]
-                    is_streaming = True
-                    print(f"[STREAM] _process_single_query: request_id={request_id}")
-                else:
-                    request_id = None
-                    http_query = http_query_or_stream_dict
-                    is_streaming = False
-                    print("[NORMAL] _process_single_query started...")
-                    
-                # 1) bring the user's input query
-                user_input = http_query.get("qry_contents", "")
-                print("[PROCESS_SINGLE_QUERY] user input : ", user_input)
-                
-                # Determine) === Make a description of image ===
-                image_data = http_query.get("image_data")
-                image_description = {"is_structured": False, "description": "이미지는 입력되지 않았습니다."}
-                if image_data is not None:
-                    print("[DEBUG] _process_single_query: image_data detected, initiating image_sorting process.")
-                    image_description = await image_query(http_query, self.model, config) 
-                    
-                # 2) Memory 객체 정보 가져오기 (없으면 새로 생성)
-                page_id = http_query.get("page_id", request_id)
-                memory = self.get_memory_for_session(page_id)
-                
-                # 4) LangChain Memory에서 이전 대화 이력(history) 추출
-                past_context = memory.load_memory_variables({}).get("history", [])
-                # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
-                if isinstance(past_context, list):
-                    recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
-                    past_context = "\n\n".join(recent_messages)
-                else:
-                    # 문자열인 경우, 메시지 구분자를 "\n\n"으로 가정하여 분리
-                    messages = str(past_context).split("\n\n")
-                    recent_messages = messages[-5:]
-                    past_context = "\n\n".join(recent_messages)
-                
-                # ★ 토큰 수 계산 코드 추가 ★
-                past_tokens = self.tokenizer.tokenize(str(past_context))
-                query_tokens = self.tokenizer.tokenize(str(user_input))
-                total_tokens = len(past_tokens) + len(query_tokens)
-                print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, 사용자 입력 질문: {len(query_tokens)}, 총합: {total_tokens}")
-                
-                # 5) 필요하다면 RAG 데이터를 다시 로드(1.16version 유지)
-                self.data = load_data(self.config.data_path)  # if you want always-latest, else skip
-                
-                # 6) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
-                params = {
-                    "user_input": f"사용자 질문: {user_input} [이미지 설명: {image_description.get('description')}]",
-                    "model": self.model,
-                    "tokenizer": self.tokenizer,
-                    "embed_model": self.embed_model,
-                    "embed_tokenizer": self.embed_tokenizer,
-                    "data": self.data,
-                    "config": self.config,
-                }
-                print("[PROCESS_SINGLE_QUERY]... calling query_sort() ...")
-                QU, KE, TA, TI = await query_sort(params)
-                print(f"   ... query_sort => QU={QU}, KE={KE}, TA={TA}, TI={TI}")
-
-                # 4) RAG
-                if TA == "yes":
-                    try:
-                        print("[SOOWAN] config 설정 : ", self.config)
-                        docs, docs_list = await execute_rag(
-                            QU,
-                            KE,
-                            TA,
-                            TI,
-                            model=self.model,
-                            tokenizer=self.tokenizer,
-                            embed_model=self.embed_model,
-                            embed_tokenizer=self.embed_tokenizer,
-                            data=self.data,
-                            config=self.config,
-                        )
-                        try:
-                                                    # 기존 방식
-                            retrieval, chart = process_to_format(docs_list, type="SQL")
-                            # 수정된 방식 - Talbe,Chart 없이 Answer Part에 SQL 결과 전송.
-                            # retrieval_sql = process_to_format(docs, type="Answer")
-                            # await self.queue_manager.put_token.remote(request_id, retrieval_sql)
-                        except Exception as e:
-                            print("[ERROR] process_to_format (SQL) failed:", str(e))
-                            retrieval, chart = [], None
-
-                        # If streaming => partial tokens
-                        if is_streaming:
-                            print(
-                                f"[STREAM] Starting partial generation for request_id={request_id}"
-                            )
-                            await self._stream_partial_answer(
-                                QU, docs, retrieval, chart, request_id, future, user_input, http_query
-                            )
-                        else:
-                            # normal final result
-                            output = await generate_answer(
-                                QU,
-                                docs,
-                                model=self.model,
-                                tokenizer=self.tokenizer,
-                                config=self.config,
-                            )
-                            answer = process_to_format([output, chart], type="Answer")
-                            final_data = [retrieval, answer]
-                            outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
-                            
-                            # >>> Record used chunk IDs
-                            # 변경 후: retrieval 결과에서 추출
-                            chunk_ids_used = []
-                            print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
-                            for doc in retrieval.get("rsp_data", []):
-                                if "chunk_id" in doc:
-                                    chunk_ids_used.append(doc["chunk_id"])
-                                                            
-                            # 메모리에 저장
-                            try:
-                                memory.save_context(
-                                    {
-                                        "qry_contents": user_input,
-                                        "qry_id": http_query.get("qry_id"),
-                                        "user_id": http_query.get("user_id"),
-                                        "auth_class": http_query.get("auth_class"),
-                                        "qry_time": http_query.get("qry_time")
-                                    },
-                                    {
-                                        "output": output,
-                                        "chunk_ids": chunk_ids_used
-                                    }
-                                )
-                            except Exception as e:
-                                print(f"[ERROR memory.save_context] {e}")
-                            # >>> CHANGED -----------------------------------------------------
-                            future.set_result(outputs)
-
-                    except Exception as e:
-                        outputs = error_format("내부 Excel 에 해당 자료가 없습니다.", 551)
-                        future.set_result(outputs)
-
-                else:
-                    try:
-                        print("[SOOWAN] TA is No, before make a retrieval")
-                        QU, KE, TA, TI = await specific_question(params) # TA == no, so that have to remake the question based on history
-                        
-                        docs, docs_list = await execute_rag(
-                            QU,
-                            KE,
-                            TA,
-                            TI,
-                            model=self.model,
-                            tokenizer=self.tokenizer,
-                            embed_model=self.embed_model,
-                            embed_tokenizer=self.embed_tokenizer,
-                            data=self.data,
-                            config=self.config,
-                        )
-                        retrieval = process_to_format(docs_list, type="Retrieval")
-                        print("[SOOWAN] TA is No, and make a retrieval is successed")
-                        if is_streaming:
-                            print(
-                                f"[STREAM] Starting partial generation for request_id={request_id}"
-                            )
-                            await self._stream_partial_answer(
-                                QU, docs, retrieval, None, request_id, future, user_input, http_query
-                            )
-                        else:
-                            output = await generate_answer(
-                                QU,
-                                docs,
-                                model=self.model,
-                                tokenizer=self.tokenizer,
-                                config=self.config,
-                            )
-                            print("process_to_format 이후에 OUTPUT 생성 완료")
-                            answer = process_to_format([output], type="Answer")
-                            print("process_to_format 이후에 ANSWER까지 생성 완료")
-                            final_data = [retrieval, answer]
-                            outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
-                            
-                            # >>> CHANGED: Record used chunk ID
-                            chunk_ids_used = []
-                            print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
-                            for doc in retrieval.get("rsp_data", []):
-                                if "chunk_id" in doc:
-                                    chunk_ids_used.append(doc["chunk_id"])
-                                    
-                            # 메모리 저장
-                            try:
-                                memory.save_context(
-                                    {
-                                        "qry_contents": user_input,
-                                        "qry_id": http_query.get("qry_id"),
-                                        "user_id": http_query.get("user_id"),
-                                        "auth_class": http_query.get("auth_class"),
-                                        "qry_time": http_query.get("qry_time")
-                                    },
-                                    {
-                                        "output": output,
-                                        "chunk_ids": chunk_ids_used
-                                    }
-                                )
-                            except Exception as e:
-                                print(f"[ERROR memory.save_context] {e}")
-                            # --------------------------------------------------------------------
-                            
-                            future.set_result(outputs)
-
-                    except Exception as e:
-                        # ====== 이 부분에서 SSE를 즉시 닫고 스트리밍 종료 ======
-                        err_msg = f"[ERROR] 처리 중 오류 발생: {str(e)}"
-                        print(err_msg)
-
-                        # SSE 전송 (error 이벤트)
-                        if request_id:
-                            try:
-                                error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
-                                await self.queue_manager.put_token.remote(request_id, error_token)
-                                # 스트리밍 종료
-                                await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-                            except Exception as e2:
-                                print(f"[ERROR] SSE 전송 중 추가 예외 발생: {str(e2)}")
-                            finally:
-                                # SSEQueue 정리
-                                await self.close_sse_queue(request_id)
-
-                        # Future 응답도 에러로
-                        future.set_result(error_format(str(e), 500))
-                        return
-                    
-            except Exception as e:
-                err_msg = f"[ERROR] 처리 중 오류 발생: {str(e)}"
-                print("[ERROR]", err_msg)
-                # SSE 스트리밍인 경우 error 토큰과 종료 토큰 전송
-                if request_id:
-                    try:
-                        error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
-                        await self.queue_manager.put_token.remote(request_id, error_token)
-                    except Exception as e2:
-                        print(f"[ERROR] SSE 전송 중 추가 예외 발생: {str(e2)}")
-                future.set_result(error_format(err_msg, 500))
-            finally:
-                # 스트리밍 요청인 경우 반드시 SSE 큐에 종료 토큰을 넣고 큐를 정리한다.
-                if request_id:
-                    try:
-                        await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-                    except Exception as ex:
-                        print(f"[DEBUG] Error putting STREAM_DONE: {str(ex)}")
-                    await self.close_sse_queue(request_id)
-                
-    # ------------------------------------------------------------
-    # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
-    # ------------------------------------------------------------
-    async def _stream_partial_answer(
-        self, QU, docs, retrieval, chart, request_id, future, user_input, http_query
-    ):
-        """
-        Instead of returning a final string, we generate partial tokens
-        and push them to the SSE queue in real time.
-        We'll do a "delta" approach so each chunk is only what's newly added.
-        """
-        print(
-            f"[STREAM] _stream_partial_answer => request_id={request_id}, chart={chart}"
-        )
-        
-        # 먼저, 참조 데이터 전송: type을 "reference"로 명시
-        reference_json = json.dumps({
-            "type": "reference",
-            "status_code": 200,
-            "result": "OK",
-            "detail": "Reference data",
-            "evt_time": datetime.datetime.now().isoformat(),
-            "data_list": [retrieval]
-        }, ensure_ascii=False)
-        # Debug: print the reference JSON before sending
-        print(f"[DEBUG] Prepared reference data: {reference_json}")
-        await self.queue_manager.put_token.remote(request_id, reference_json)
-        
-        print(f"[STREAM] Sent reference data for request_id={request_id}")
-        
-        # 1) 메모리 가져오기 (없으면 생성)
-        try:
-            memory = self.get_memory_for_session(request_id)
         except Exception as e:
-            msg = f"[STREAM] Error retrieving memory for {request_id}: {str(e)}"
-            print(msg)
-            # 에러 응답을 SSE로 전송하고 종료
-            error_token = json.dumps({"type":"error","message":msg}, ensure_ascii=False)
-            await self.queue_manager.put_token.remote(request_id, error_token)
-            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-            future.set_result(error_format(msg, 500))
-            return
+            await self._handle_error(e, request_id, future)
+    
+    # -------------------------------------------------------------------------
+    # PROCESS SINGLE QUERY (분기 처리 단순화)
+    # -------------------------------------------------------------------------
+    async def _process_single_query(self, http_query_or_stream_dict: dict, future: asyncio.Future, sse_queue) -> None:
+        """
+        단일 쿼리 처리의 메인 함수 (개선된 버전)
         
-        # 2) 과거 대화 이력 로드
+        Args:
+            http_query_or_stream_dict: 원본 요청 데이터
+            future: 결과를 설정할 Future 객체
+            sse_queue: 스트리밍을 위한 SSE 큐
+        """
+        # 요청 정보 추출
+        http_query, request_id, is_streaming = self._get_request_info(http_query_or_stream_dict)
+        
+        # 요청 ID가 없으면 생성 (성능 모니터링용)
+        if not request_id:
+            request_id = str(uuid.uuid4())
+        
+        # 사용자 입력 추출
+        user_input = http_query.get("qry_contents", "")
+        logger.info(f"사용자 입력: {user_input}")
+        
+        # 성능 모니터링 시작 - 요청별 트래킹 시작
+        self.performance_monitor.start_request(request_id, input_text=user_input, tokenizer=self.tokenizer)
+        self.performance_monitor.update_request(request_id, 0, checkpoint="query_received")
+        
         try:
-            past_context = memory.load_memory_variables({})["history"]
-            # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
-            if isinstance(past_context, list):
-                recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
-                past_context = "\n\n".join(recent_messages)
+            # RAG 사용 여부 확인
+            use_rag = http_query.get("use_rag", True)
+            
+            if use_rag is False:
+                logger.info("RAG 비활성화 모드로 실행")
+                self.performance_monitor.update_request(request_id, 0, checkpoint="rag_disabled")
+                await self._process_direct_query(user_input, request_id, future, http_query)
             else:
-                # 문자열인 경우, 메시지 구분자를 "\n\n"으로 가정하여 분리
-                messages = str(past_context).split("\n\n")
-                recent_messages = messages[-5:]
-                past_context = "\n\n".join(recent_messages)
-            
-        except KeyError:
-            # 만약 "history" 키가 없으면 빈 문자열로 처리
-            print(f"[STREAM] No 'history' in memory for {request_id}, using empty.")
-            past_context = ""
+                # 이미지 처리 (있는 경우)
+                image_description = await self._process_image_if_exists(http_query)
+                self.performance_monitor.update_request(request_id, 0, checkpoint="image_processed")
+                
+                # RAG 활용 응답 생성
+                await self._process_rag_query(http_query, user_input, image_description, 
+                                        request_id, is_streaming, future)
         except Exception as e:
-            msg = f"[STREAM] load_memory_variables error for {request_id}: {str(e)}"
-            print(msg)
-            error_token = json.dumps({"type":"error","message":msg}, ensure_ascii=False)
-            await self.queue_manager.put_token.remote(request_id, error_token)
-            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-            future.set_result(error_format(msg, 500))
-            return
+            err_msg = f"처리 중 오류 발생: {str(e)}"
+            logger.error(err_msg)
+            
+            # 성능 모니터에 오류 기록
+            self.performance_monitor.update_request(request_id, 0, checkpoint=f"error: {str(e)[:50]}")
+            self.performance_monitor.complete_request(request_id, success=False)
+            
+            # 스트리밍인 경우 에러 토큰 전송
+            if is_streaming:
+                try:
+                    error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                    await self.queue_manager.put_token.remote(request_id, error_token)
+                    await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                    await self.close_sse_queue(request_id)
+                except Exception as e2:
+                    logger.error(f"SSE 에러 전송 중 추가 오류: {str(e2)}")
+                    
+            # Future에 에러 결과 설정
+            future.set_result(error_format(err_msg, 500))
+            
+        finally:
+            # 스트리밍 요청인 경우 정리 작업
+            if is_streaming:
+                try:
+                    await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                except Exception as ex:
+                    logger.error(f"STREAM_DONE 토큰 전송 중 오류: {str(ex)}")
+                await self.close_sse_queue(request_id)
 
-        # 3) 최종 프롬프트 구성
-        final_query = f"{past_context}\n\n[사용자 질문]\n{QU}"
-        print(f"[STREAM] final_query = \n{final_query}")
+    # -------------------------------------------------------------------------
+    # STREAMING PARTIAL ANSWER - 스트리밍 응답 처리
+    # -------------------------------------------------------------------------
+    async def _stream_partial_answer(self, QU: str, docs, retrieval, chart, 
+                                request_id: str, future: asyncio.Future, 
+                                user_input: str, http_query: dict) -> None:
+        """
+        스트리밍 방식의 부분 응답 생성 및 전송
         
-        # ★ 토큰 수 계산 코드 추가 ★
-        # retrieval 자료는 dict나 리스트일 수 있으므로 문자열로 변환하여 토큰화합니다.
-        retrieval_str = str(retrieval)
-        # 각 입력값을 명시적으로 str()로 변환합니다.
-        past_tokens = self.tokenizer.tokenize(str(past_context))
-        query_tokens = self.tokenizer.tokenize(str(QU))
-        retrieval_tokens = self.tokenizer.tokenize(retrieval_str)
-        total_tokens = len(self.tokenizer.tokenize(str(final_query))) + len(retrieval_tokens)
-        print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, RAG 검색 자료: {len(retrieval_tokens)}, 사용자 구체화 질문: {len(query_tokens)}, 총합: {total_tokens}")
+        Args:
+            QU: 구체화된 질문
+            docs: RAG 검색 문서 내용
+            retrieval: 검색 결과 포맷
+            chart: 차트 데이터 (있는 경우)
+            request_id: 요청 ID
+            future: 결과를 설정할 Future 객체
+            user_input: 원본 사용자 입력
+            http_query: 원본 요청 데이터
+        """
+        logger.info(f"스트리밍 응답 시작: request_id={request_id}")
         
-        partial_accumulator = ""
+        # 성능 측정 초기화 - 시작 시간 기록
+        stream_start_time = time.time()
+        token_count = 0
+        first_token_received = False
+        self.performance_monitor.update_request(request_id, 0, checkpoint="stream_start")
 
         try:
-            print(
-                f"[STREAM] SSE: calling generate_answer_stream for request_id={request_id}"
+            # 1. 참조 데이터 전송
+            if retrieval:
+                reference_json = json.dumps({
+                    "type": "reference",
+                    "status_code": 200,
+                    "result": "OK",
+                    "detail": "Reference data",
+                    "evt_time": datetime.datetime.now().isoformat(),
+                    "data_list": [retrieval]
+                }, ensure_ascii=False)
+                await self.queue_manager.put_token.remote(request_id, reference_json)
+                logger.info(f"참조 데이터 전송 완료: request_id={request_id}")
+                self.performance_monitor.update_request(request_id, 0, checkpoint="reference_sent")
+
+            
+            # 2. 메모리 가져오기
+            memory = self.get_memory_for_session(request_id)
+            
+            # 3. 대화 이력 불러오기
+            past_context = await self._load_conversation_history(request_id)
+            
+            # 4. 최종 프롬프트 구성
+            final_query = f"{past_context}\n\n[사용자 질문]\n{QU}"
+            
+            # 토큰 수 계산
+            retrieval_str = str(retrieval) if retrieval else ""
+            past_tokens = self.tokenizer.tokenize(str(past_context))
+            query_tokens = self.tokenizer.tokenize(str(QU))
+            retrieval_tokens = self.tokenizer.tokenize(retrieval_str)
+            total_tokens = len(self.tokenizer.tokenize(str(final_query))) + len(retrieval_tokens)
+            logger.info(f"토큰 수: 이전 대화={len(past_tokens)}, 검색 자료={len(retrieval_tokens)}, 질문={len(query_tokens)}, 총={total_tokens}")
+            
+            self.performance_monitor.update_request(
+                request_id, 0, 
+                checkpoint=f"prompt_ready (total_tokens={total_tokens})"
             )
+                
+            # 5. 스트리밍 응답 생성 및 전송
+            partial_accumulator = ""
+            
+            # HTTP 쿼리에 request_id 추가하여 전달 - vLLM 토큰 추적용
+            http_query.update({"page_id": request_id})
+            
             async for partial_text in generate_answer_stream(
                 final_query, docs, self.model, self.tokenizer, self.config, http_query
             ):
-                # print(f"[STREAM] Received partial_text: {partial_text}")
-                new_text = partial_text[len(partial_accumulator) :]
+                new_text = partial_text[len(partial_accumulator):]
                 partial_accumulator = partial_text
                 
-                # 수정: new_text가 완전히 빈 문자열("")인 경우에만 건너뛰기
                 if new_text == "":
                     continue
                 
-                # Wrap answer tokens in a JSON object with type "answer"
+                # 토큰 수는 이제 StreamingTokenCounter에서 직접 추적되므로 여기서는 간단히 갱신
+                current_tokens = len(partial_accumulator.split())
+                token_count = current_tokens
+                
+                # 첫 토큰 도착 확인 (StreamingTokenCounter에서 성능 모니터에 이미 기록했을 수 있음)
+                current_time = time.time()
+                if not first_token_received and token_count > 0:
+                    first_token_latency = current_time - stream_start_time
+                    first_token_received = True
+                    logger.info(f"첫 토큰 생성: {request_id} (latency: {first_token_latency:.3f}s)")
+                
+                # 응답 토큰 JSON 형식으로 포장하여 전송
                 answer_json = json.dumps({
                     "type": "answer",
                     "answer": new_text
                 }, ensure_ascii=False)
-                # Use the central SSEQueueManager to put tokens
-                # print(f"[STREAM] Sending token: {answer_json}")
                 await self.queue_manager.put_token.remote(request_id, answer_json)
-            final_text = partial_accumulator
-                
-            # >>> CHANGED: Update conversation summary in streaming branch as well
-            chunk_ids_used = []
-            print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
-            for doc in retrieval.get("rsp_data", []):
-                if "chunk_id" in doc:
-                    chunk_ids_used.append(doc["chunk_id"])
-                    
-            # 메모리 저장
-            try:
-                memory.save_context(
-                    {
-                        "qry_contents": user_input,
-                        "qry_id": "",  # 필요한 경우 http_query에 있는 값을 넣음
-                    },
-                    {
-                        "output": final_text,
-                        "chunk_ids": chunk_ids_used
-                    }
-                )
-            except Exception as e:
-                print(f"[ERROR memory.save_context in stream] {e}")
             
-            print("메시지 저장 직후 chunk_id 확인 : ", memory)
-
-            # 최종 응답 구조
+            # 생성 완료 시간 계산
+            generation_time = time.time() - stream_start_time
+            tokens_per_second = token_count / generation_time if generation_time > 0 else 0
+            
+            # 최종 성능 지표 업데이트
+            self.performance_monitor.update_request(
+                request_id, token_count,
+                current_output=partial_accumulator,
+                checkpoint=f"generation_complete ({generation_time:.2f}s, {tokens_per_second:.2f} tokens/s, {token_count} tokens)"
+            )
+            
+            # 6. 최종 축적된 텍스트
+            final_text = partial_accumulator
+            
+            # 7. 대화 저장
+            chunk_ids = self._extract_chunk_ids(retrieval) if retrieval else []
+            await self._store_conversation(memory, user_input, final_text, chunk_ids, http_query)
+            
+            # 8. 최종 응답 구조 생성
             if chart is not None:
                 ans = process_to_format([final_text, chart], type="Answer")
-                final_res = process_format_to_response(retrieval, ans)
             else:
                 ans = process_to_format([final_text], type="Answer")
-                final_res = process_format_to_response(retrieval, ans)
                 
-            # 담아서 보내기
+            # 9. 결과 설정 및 스트리밍 종료 신호 전송
+            final_res = process_format_to_response([retrieval, ans] if retrieval else [ans], qry_id=http_query.get("qry_id", ""), continue_="E")
             future.set_result(final_res)
-            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-            print(
-                f"[STREAM] done => placed [[STREAM_DONE]] for request_id={request_id}"
-            )
+            
+            # 요청 완료 처리 - 성공
+            self.performance_monitor.complete_request(request_id, success=True)
+            
+            logger.info(f"스트리밍 응답 완료: request_id={request_id}")
+        
         except Exception as e:
-            msg = f"[STREAM] error in partial streaming => {str(e)}"
-            print(msg)
-            future.set_result(error_format(msg, 500))
+            err_msg = f"스트리밍 응답 중 오류: {str(e)}"
+            logger.error(err_msg)
+            future.set_result(error_format(err_msg, 500))
             await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
 
-    # --------------------------------------------------------
-    # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
-    # --------------------------------------------------------
-    async def process_query(self, http_query):
+    # -------------------------------------------------------------------------
+    # API 인터페이스 메서드들
+    # -------------------------------------------------------------------------
+    async def process_query(self, http_query: dict):
         """
-        Existing synchronous method. Returns final string/dict once done.
+        일반 쿼리 처리 메서드 - 최종 결과를 한 번에 반환
+        
+        Args:
+            http_query: 요청 데이터
+            
+        Returns:
+            dict: 처리 결과
         """
         loop = asyncio.get_event_loop()
         future = loop.create_future()
-        # There's no SSE queue for normal queries
-        sse_queue = None
-        await self.request_queue.put((http_query, future, sse_queue))
-        # print("self.request_queue : ", self.request_queue)
+        # 스트리밍 아님 - sse_queue는 None
+        await self.request_queue.put((http_query, future, None))
         return await future
-    # ----------------------
-    # 1) Streaming Entrypoint
-    # ----------------------
+    
     async def process_query_stream(self, http_query: dict) -> str:
         """
-        /query_stream 호출 시 page_id(채팅방 id)를 기반으로 SSE queue 생성하고,
-        대화 저장에 활용할 수 있도록 합니다.
+        스트리밍 쿼리 처리 메서드 - SSE 큐를 생성하고 request_id 반환
+        
+        Args:
+            http_query: 요청 데이터
+            
+        Returns:
+            str: 생성된 채팅/요청 ID
         """
         # page_id를 채팅방 id로 사용 (없으면 생성)
         chat_id = http_query.get("page_id")
         if not chat_id:
             chat_id = str(uuid.uuid4())
         http_query["page_id"] = chat_id  # 강제 할당
-        await self.queue_manager.create_queue.remote(chat_id)
-        print(f"[STREAM] process_query_stream => chat_id={chat_id}")
         
-        # http_query 전체를 출력할 때 image_data 내용은 생략(요약 정보만 출력)
+        # SSE 큐 생성
+        await self.queue_manager.create_queue.remote(chat_id)
+        logger.info(f"스트리밍 처리 시작: chat_id={chat_id}")
+        
+        # 이미지 데이터 로그 출력 시 내용 생략
         http_query_print = http_query.copy()
         if "image_data" in http_query_print:
             http_query_print["image_data"] = "<omitted>"
-        print(f"[DEBUG] Built http_query: {http_query_print}")
+        logger.debug(f"요청 데이터: {http_query_print}")
 
+        # 비동기 처리를 위한 Future 생성
         loop = asyncio.get_event_loop()
         final_future = loop.create_future()
 
+        # 처리 요청 큐에 추가
         sse_queue = asyncio.Queue()
         self.active_sse_queues[chat_id] = sse_queue
-        print(f"[STREAM] Created SSE queue for chat_id={chat_id}")
-
-        # 기존과 동일하게 micro-batch queue에 푸시 (http_query에 새 필드들이 포함됨)
+        
         queued_item = {
-            "request_id": chat_id,   # 내부적으로 page_id를 request_id처럼 사용
+            "request_id": chat_id,
             "http_query": http_query,
         }
 
-        print(f"[STREAM] Putting item into request_queue for chat_id={chat_id}")
         await self.request_queue.put((queued_item, final_future, sse_queue))
-        print(f"[STREAM] Done putting item in queue => chat_id={chat_id}")
+        logger.info(f"처리 큐에 추가됨: chat_id={chat_id}")
 
         return chat_id
-
-    # ----------------------
-    # 2) SSE token popping
-    # ----------------------
+    
     async def pop_sse_token(self, request_id: str) -> Optional[str]:
         """
-        The SSE route calls this repeatedly to get partial tokens.
-        If no token is available, we block up to 120s, else return None.
+        SSE 토큰 꺼내기 - 클라이언트에 전송할 부분 토큰 추출
+        
+        Args:
+            request_id: 요청 ID
+            
+        Returns:
+            Optional[str]: 다음 토큰 (없으면 None)
         """
         if request_id not in self.active_sse_queues:
-            print(
-                f"[STREAM] pop_sse_token => no SSE queue found for request_id={request_id}"
-            )
+            logger.warning(f"SSE 큐 없음: request_id={request_id}")
             return None
 
         queue = self.active_sse_queues[request_id]
         try:
             token = await asyncio.wait_for(queue.get(), timeout=120.0)
-            # print(f"[STREAM] pop_sse_token => got token from queue: {token}")
             return token
         except asyncio.TimeoutError:
-            print(
-                f"[STREAM] pop_sse_token => timed out waiting for token, request_id={request_id}"
-            )
+            logger.warning(f"토큰 대기 시간 초과: request_id={request_id}")
             return None
-
-    # ----------------------
-    # 3) SSE queue cleanup
-    # ----------------------
+    
     async def close_sse_queue(self, request_id: str):
         """
-        Called by the SSE route after finishing.
-        Remove the queue from memory.
+        SSE 큐 종료 및 정리
+        
+        Args:
+            request_id: 요청 ID
         """
         if request_id in self.active_sse_queues:
-            print(
-                f"[STREAM] close_sse_queue => removing SSE queue for request_id={request_id}"
-            )
+            logger.info(f"SSE 큐 종료: request_id={request_id}")
             del self.active_sse_queues[request_id]
         else:
-            print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
+            logger.warning(f"종료할 SSE 큐 없음: request_id={request_id}")
     
-    # ----------------------
-    # /history | 대화 기록 가져오기
-    # ----------------------
-    async def get_conversation_history(self, request_id: str) -> dict:
+    # -------------------------------------------------------------------------
+    # 대화 기록 및 참조 관련 메서드들
+    # -------------------------------------------------------------------------
+    async def get_conversation_history(self, request_id: str, last_index: int = None) -> dict:
         """
-        Returns the conversation history for the given request_id.
-        The messages are serialized into a JSON-friendly format.
+        요청 ID에 해당하는 대화 기록 조회
+        
+        Args:
+            request_id: 요청 ID
+            last_index: 마지막으로 받은 메시지 인덱스 (이후 메시지만 반환)
+            
+        Returns:
+            dict: 직렬화된 대화 기록
         """
         try:
             if request_id in self.memory_map:
@@ -1256,24 +1453,38 @@ class InferenceActor:
                 if "history" in history_obj and isinstance(history_obj["history"], list):
                     # 직렬화
                     serialized = [serialize_message(msg) for msg in history_obj["history"]]
-                    print("[HISTORY] 대화 기록 반환(직렬화) : ", serialized)
+                    logger.info(f"대화 기록 반환: 메시지 {len(serialized)}개")
+                    
+                    # last_index 이후의 메시지만 반환
+                    if last_index is not None and isinstance(last_index, int):
+                        serialized = serialized[last_index+1:]
+                        
                     return {"history": serialized}
                 else:
-                    print("[HISTORY] 대화 기록 반환(직렬화X) : ", history_obj)
+                    logger.warning("대화 기록이 리스트 형식이 아님")
                     return {"history": []}
             else:
+                logger.info(f"해당 ID의 대화 기록 없음: {request_id}")
                 return {"history": []}
         except Exception as e:
-            print(f"[ERROR get_conversation_history] {e}")
+            logger.error(f"대화 기록 조회 오류: {e}")
             return {"history": []}
         
-    # ----------------------
-    # /reference | 해당 답변의 출처 가져오기
-    # ----------------------
-    async def get_reference_data(self, chunk_ids: list):
+    async def get_reference_data(self, chunk_ids: list) -> list:
+        """
+        청크 ID 목록에 해당하는 참조 데이터 조회
+        
+        Args:
+            chunk_ids: 청크 ID 목록
+            
+        Returns:
+            list: 참조 데이터 목록
+        """
         try:
             result = []
             data = self.data
+            
+            # 주어진 청크 ID에 해당하는 데이터 찾기
             for cid in chunk_ids:
                 if cid in data["chunk_ids"]:
                     idx = data["chunk_ids"].index(cid)
@@ -1284,47 +1495,112 @@ class InferenceActor:
                         "date": str(data["times"][idx])
                     }
                     result.append(record)
+            
+            logger.info(f"참조 데이터 조회: {len(result)}/{len(chunk_ids)} 항목 찾음")
             return result
         except Exception as e:
-            print(f"[ERROR get_reference_data] {e}")
+            logger.error(f"참조 데이터 조회 오류: {e}")
             return []
 
-# Ray Serve를 통한 배포
+
+# -------------------------------------------------------------------------
+# Ray Serve 배포를 위한 서비스 클래스
+# -------------------------------------------------------------------------
 @serve.deployment(name="inference", max_ongoing_requests=100)
 class InferenceService:
+    """
+    Ray Serve를 통한 배포를 위한 서비스 클래스
+    각 요청을 InferenceActor로 전달하고 결과를 반환함
+    """
     def __init__(self, config):
+        """
+        InferenceService 초기화
+        
+        Args:
+            config: 설정 객체
+        """
         self.config = config
         self.actor = InferenceActor.options(
             num_gpus=config.ray.num_gpus, 
             num_cpus=config.ray.num_cpus
         ).remote(config)
 
-    # Text
     async def query(self, http_query: dict):
+        """
+        일반 쿼리 처리 API
+        
+        Args:
+            http_query: 요청 데이터
+            
+        Returns:
+            dict: 처리 결과
+        """
         result = await self.actor.process_query.remote(http_query)
         return result
-    # Text Stream
+    
     async def process_query_stream(self, http_query: dict) -> str:
+        """
+        스트리밍 쿼리 처리 API
+        
+        Args:
+            http_query: 요청 데이터
+            
+        Returns:
+            str: 생성된 채팅/요청 ID
+        """
         req_id = await self.actor.process_query_stream.remote(http_query)
         return req_id
     
     async def pop_sse_token(self, req_id: str) -> str:
+        """
+        SSE 토큰 조회 API
+        
+        Args:
+            req_id: 요청 ID
+            
+        Returns:
+            str: 다음 토큰
+        """
         token = await self.actor.pop_sse_token.remote(req_id)
         return token
 
     async def close_sse_queue(self, req_id: str) -> str:
+        """
+        SSE 큐 종료 API
+        
+        Args:
+            req_id: 요청 ID
+            
+        Returns:
+            str: 종료 상태
+        """
         await self.actor.close_sse_queue.remote(req_id)
         return "closed"
     
-    # /history
     async def get_history(self, request_id: str, last_index: int = None):
-        result = await self.actor.get_conversation_history.remote(request_id)
-        if last_index is not None and isinstance(result.get("history"), list):
-            result["history"] = result["history"][last_index+1:]
+        """
+        대화 기록 조회 API
+        
+        Args:
+            request_id: 요청 ID
+            last_index: 마지막으로 받은 메시지 인덱스
+            
+        Returns:
+            dict: 대화 기록
+        """
+        result = await self.actor.get_conversation_history.remote(request_id, last_index)
         return result
 
-    # /reference
     async def get_reference_data(self, chunk_ids: list):
+        """
+        참조 데이터 조회 API
+        
+        Args:
+            chunk_ids: 청크 ID 목록
+            
+        Returns:
+            list: 참조 데이터 목록
+        """
         result = await self.actor.get_reference_data.remote(chunk_ids)
         return result
 
@@ -1937,8 +2213,22 @@ def load_model(config):
         # --- 멀티모달 (Image) 관련 설정 ---
         engine_args.mm_processor_kwargs = vllm_conf.get("mm_processor_kwargs", {"do_pan_and_scan": True})
         engine_args.disable_mm_preprocessor_cache = vllm_conf.get("disable_mm_preprocessor_cache", False)
-        engine_args.limit_mm_per_prompt = vllm_conf.get("limit_mm_per_prompt", {"image": 2})
+        engine_args.limit_mm_per_prompt = vllm_conf.get("limit_mm_per_prompt", {"image": 5})
         
+        # # --- Metrics (Monitoring) 관련 설정 ---
+        # from vllm.config import ObservabilityConfig
+        # observability_config = ObservabilityConfig(
+        #     show_hidden_metrics=True,
+        #     otlp_traces_endpoint=None,
+        #     collect_model_forward_time=True,
+        #     collect_model_execute_time=True
+        # )
+
+        # # Ensure it's properly assigned to engine_args
+        # engine_args.observability_config = observability_config
+    
+        engine_args.show_hidden_metrics_for_version = "0.7"
+    
         print("EngineArgs setting be finished")
         
         try:
@@ -1948,12 +2238,12 @@ def load_model(config):
                 original_signal = signal.signal
                 signal.signal = lambda s, h: None  # signal 설정 무시
                 print("비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.")
-            # --- v1 구동 해결책: ------------------------------------------------------ ---
+            # --- v1 구동 해결책: -------------------------------------------------------------
             engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
-            # v1 구동 해결책: 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) ----------------- ---
+            # v1 구동 해결책: 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) -----------------
             if threading.current_thread() is not threading.main_thread():
                 signal.signal = original_signal
-            # --- v1 구동 해결책: ------------------------------------------------------ ---
+            # --- v1 구동 해결책: -------------------------------------------------------------
             print("DEBUG: vLLM engine successfully created.") # Original
             
         except Exception as e:
@@ -2170,513 +2460,737 @@ def random_seed(seed):
 ```
 
 
---- core/RAG.py
+--- utils/debug_tracking.py
 
 ```python
 
-# core/RAG.py
+# utils/debug_tracking.py의 수정된 버전
+
+import os
+import time
 import torch
-import re
-import numpy as np
-import rank_bm25
-import random
-import uuid
+import psutil
+import threading
 import logging
-from datetime import datetime, timedelta
-# from sql import generate_sql  # (구) 제거된 import
+import json
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
+import gc
+import uuid
 
-# Tracking
-from utils.tracking import time_tracker
+# 로거 설정
+logger = logging.getLogger("performance")
 
-# Import the vLLM to use the AsyncLLMEngine
-from vllm.engine.async_llm_engine import AsyncLLMEngine
-# 이미지 임베딩을 별도로 계산하여 프롬프트에 포함하기
-from vllm.model_executor.models.interfaces import SupportsMultiModal
-
-# Prompt 템플릿 불러오기
-from prompt import QUERY_SORT_PROMPT, GENERATE_PROMPT_TEMPLATE, STREAM_PROMPT_TEMPLATE, SQL_EXTRACTION_PROMPT_TEMPLATE, IMAGE_DESCRIPTION_PROMPT
-# SQL만 담당하는 함수들만 import
-from core.SQL_NS import run_sql_unno, run_sql_bl, get_metadata  
-
-global beep
-beep = "-------------------------------------------------------------------------------------------------------------------------------------------------------------------------"
-
-@time_tracker
-async def execute_rag(QU, KE, TA, TI, **kwargs):
-    print("[SOOWAN]: execute_rag : 진입")
-    model = kwargs.get("model")
-    tokenizer = kwargs.get("tokenizer")
-    embed_model = kwargs.get("embed_model")
-    embed_tokenizer = kwargs.get("embed_tokenizer")
-    data = kwargs.get("data")
-    config = kwargs.get("config")
+class PerformanceMonitor:
+    """성능 메트릭을 수집하고 로깅하는 클래스"""
     
-    if TA == "yes":  # Table 이 필요하면
-        print("[SOOWAN]: execute_rag : 테이블 필요 (TA == yes). SQL 생성 시작합니다.")
-        try:
-            # generate_sql 함수를 이 파일(RAG.py) 내부에 새로 정의했으므로, 여기서 직접 호출
-            result = await generate_sql(QU, model, tokenizer, config)
-        except Exception as e:
-            # 1) generate_sql() 자체가 도중에 예외를 던지는 경우
-            print("[ERROR] generate_sql() 도중 예외 발생:", e)
-            # 멈추지 않고, 에러 형식으로 데이터를 만들어 반환
-            docs = (
-                "테이블 조회 시도 중 예외가 발생했습니다. "
-                "해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다."
-            )
-            docs_list = []
-            return docs, docs_list
+    # 클래스 변수로 싱글톤 인스턴스 관리
+    _instance = None
+    
+    @classmethod
+    def get_instance(cls, log_interval: int = 5):
+        """
+        싱글톤 인스턴스 반환 (Ray 직렬화 호환성을 위해 클래스 메서드로 구현)
+        """
+        if cls._instance is None:
+            cls._instance = cls(log_interval)
+        return cls._instance
+    
+    def __init__(self, log_interval: int = 5):
+        """
+        성능 모니터 초기화 (직접 호출 대신 get_instance() 사용 권장)
+        
+        Args:
+            log_interval: 정기 로깅 간격 (초)
+        """
+        self.requests = {}  # request_id로 인덱싱된 요청 성능 데이터
+        # threading.Lock() 대신 각 메서드에서 직접 동기화 관리
+        self.log_interval = log_interval
+        
+        # 전역 통계
+        self.global_stats = {
+            "total_requests": 0,
+            "completed_requests": 0,
+            "failed_requests": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_processing_time": 0.0,
+            "avg_tokens_per_second": 0.0,
+            "avg_first_token_latency": 0.0,
+            "first_token_latencies": [],  # 첫 토큰 레이턴시 기록 목록
+        }
+        
+        # 정기 로깅 시작
+        self._start_periodic_logging()
+        logger.info(f"성능 모니터링 시스템 초기화 완료 (로깅 간격: {log_interval}초)")
+    
+    def _start_periodic_logging(self):
+        """정기적인 성능 로깅을 수행하는 백그라운드 스레드 시작"""
+        def log_periodically():
+            while True:
+                try:
+                    self.log_current_state()
+                except Exception as e:
+                    logger.error(f"정기 로깅 중 오류: {e}")
+                time.sleep(self.log_interval)
+        
+        thread = threading.Thread(target=log_periodically, daemon=True)
+        thread.start()
 
-        # 2) 함수가 정상 실행됐지만 결과가 None인 경우(= SQL 쿼리 결과가 없거나 오류)
-        if result is None:
-            print(
-                "[WARNING] generate_sql()에서 None을 반환했습니다. "
-                "SQL 수행 결과가 없거나 에러가 발생한 것일 수 있습니다."
-            )
-            docs = (
-                "테이블 조회 결과가 비어 있습니다. "
-                "조회할 데이터가 없거나 SQL 오류가 발생했습니다."
-            )
-            docs_list = []
-            return docs, docs_list
+    def start_request(self, request_id: str, input_text: str = "", tokenizer = None) -> None:
+        """
+        새 요청 추적 시작
+        
+        Args:
+            request_id: 요청 ID
+            input_text: 입력 텍스트
+            tokenizer: 토큰 계산에 사용할 토크나이저 (선택 사항)
+        """
+        # 이미 존재하는 요청이면 건너뜀
+        if request_id in self.requests:
+            logger.warning(f"이미 추적 중인 요청 ID: {request_id}")
+            return
+            
+        # 입력 토큰 수 계산 (토크나이저가 있으면 정확하게, 없으면 추정)
+        input_tokens = 0
+        if tokenizer:
+            try:
+                input_tokens = len(tokenizer.encode(input_text))
+            except Exception:
+                # 토크나이저 에러 시 공백 기준 단어 수로 추정
+                input_tokens = len(input_text.split())
+        else:
+            input_tokens = len(input_text.split())
+        
+        # 요청 성능 데이터 초기화
+        self.requests[request_id] = {
+            "start_time": time.time(),
+            "last_update_time": time.time(),
+            "first_token_time": None,
+            "input_tokens": input_tokens,
+            "output_tokens": 0,
+            "output_sequence": "",
+            "tokens_per_second": 0.0,
+            "status": "running",
+            "gpu_stats": self._get_gpu_stats() if torch.cuda.is_available() else {},
+            "checkpoint_times": []  # 주요 이벤트의 타임스탬프를 기록
+        }
+        
+        # 전역 통계 업데이트
+        self.global_stats["total_requests"] += 1
+        self.global_stats["total_input_tokens"] += input_tokens
+        
+        logger.info(f"요청 추적 시작: {request_id} (입력 토큰: {input_tokens})")
+    
+    def update_request(self, request_id: str, tokens_generated: int, 
+                      current_output: str = "", checkpoint: str = None) -> None:
+        """
+        요청 성능 데이터 업데이트
+        
+        Args:
+            request_id: 요청 ID
+            tokens_generated: 현재까지 생성된 토큰 수
+            current_output: 현재까지 생성된 출력 텍스트 (선택 사항)
+            checkpoint: 체크포인트 이름 (예: "retrieved_docs", "first_token", 등)
+        """
+        if request_id not in self.requests:
+            logger.warning(f"알 수 없는 요청 ID: {request_id}")
+            return
+        
+        req_data = self.requests[request_id]
+        current_time = time.time()
+        
+        # 요청 데이터 업데이트 (토큰 수 무조건 업데이트)
+        prev_tokens = req_data["output_tokens"]
+        req_data["output_tokens"] = tokens_generated
+        
+        # 첫 토큰 시간 기록 (처음으로 토큰이 생성된 경우)
+        if req_data["first_token_time"] is None and tokens_generated > 0:
+            req_data["first_token_time"] = current_time
+            
+            # 첫 토큰 레이턴시 계산 및 로깅
+            first_token_latency = current_time - req_data["start_time"]
+            logger.info(f"첫 토큰 생성: {request_id} (latency: {first_token_latency:.3f}s)")
+            
+            # 체크포인트에 "first_token" 추가
+            req_data["checkpoint_times"].append({
+                "name": "first_token",
+                "time": current_time,
+                "elapsed": first_token_latency
+            })
+        
+        # 토큰 속도 계산 (초당 토큰 수)
+        time_diff = current_time - req_data["last_update_time"]
+        token_diff = tokens_generated - prev_tokens
+        
+        if time_diff > 0 and token_diff > 0:
+            # 실제 토큰 속도 계산
+            tokens_per_second = token_diff / time_diff
+            
+            # v0 호환 속도 계산 (스케일링 팩터 적용)
+            v0_compatible_rate = tokens_per_second * 2.1  # v0과 v1의 측정 방식 차이를 보정하는 계수
+            
+            # 지수 이동 평균으로 토큰 속도 부드럽게 업데이트
+            alpha = 0.3  # 가중치 계수
+            current_rate = req_data.get("tokens_per_second", 0)
+            if current_rate > 0:
+                req_data["tokens_per_second"] = (1-alpha) * current_rate + alpha * v0_compatible_rate
+            else:
+                req_data["tokens_per_second"] = v0_compatible_rate
+            
+            logger.debug(f"토큰 생성 속도 업데이트: {request_id}, {req_data['tokens_per_second']:.2f} tokens/s")
+        
+        # 출력 텍스트 업데이트
+        if current_output:
+            req_data["output_sequence"] = current_output
+        
+        # 마지막 업데이트 시간 기록
+        req_data["last_update_time"] = current_time
+        
+        # 체크포인트 기록 (제공된 경우)
+        if checkpoint:
+            elapsed = current_time - req_data["start_time"]
+            req_data["checkpoint_times"].append({
+                "name": checkpoint,
+                "time": current_time,
+                "elapsed": elapsed
+            })
+            logger.info(f"체크포인트 {checkpoint}: {request_id} (경과: {elapsed:.3f}s, 토큰: {tokens_generated})")
+        
+        # GPU 통계 업데이트 (가능한 경우)
+        # 체크포인트에서만 GPU 통계 업데이트 (성능 향상)
+        if checkpoint and torch.cuda.is_available():
+            req_data["gpu_stats"] = self._get_gpu_stats()
+            
+    
+    def log_current_state(self) -> Dict[str, Any]:
+        """
+        현재 시스템 상태와 성능 메트릭을 로깅하고 반환
+        
+        Returns:
+            Dict[str, Any]: 현재 성능 메트릭
+        """
+        # 시스템 리소스 사용량
+        process = psutil.Process(os.getpid())
+        mem_info = process.memory_info()
+        cpu_percent = process.cpu_percent(interval=0.1)
+        
+        # GPU 사용량 (가능한 경우)
+        gpu_stats = self._get_gpu_stats() if torch.cuda.is_available() else {}
+        
+        # 활성 요청 요약
+        active_requests = len(self.requests)
+        
+        # 현재 초당 평균 토큰 수 계산
+        current_tokens_per_second = 0.0
+        total_tokens_generated = 0
+        active_request_details = []
+        
+        if active_requests > 0:
+            token_rates = []
+            for req_id, req_data in self.requests.items():
+                req_token_rate = req_data.get("tokens_per_second", 0)
+                if req_token_rate > 0:
+                    token_rates.append(req_token_rate)
+                total_tokens_generated += req_data.get("output_tokens", 0)
+                
+                # 요청별 세부 정보
+                active_request_details.append({
+                    "id": req_id[:8] + ".." if len(req_id) > 10 else req_id,
+                    "tokens": req_data.get("output_tokens", 0),
+                    "rate": req_token_rate,
+                    "elapsed": time.time() - req_data.get("start_time", time.time())
+                })
+            
+            if token_rates:
+                current_tokens_per_second = sum(token_rates) / len(token_rates)
+        
+        # 글로벌 성능 지표 업데이트 - 활성 요청이 없을 때는 현재 속도를 0으로 리셋
+        if active_requests == 0:
+            cooldown_period = 5.0  # 요청 완료 후 5초 지나면 지표 리셋
+            # 활성 요청이 없으면 현재 속도는 0
+            current_tokens_per_second = 0
+            
+            # 최근 완료된 요청이 없거나 일정 시간이 지났으면 모든 지표 리셋
+            if not hasattr(self, '_last_completed_time') or time.time() - self._last_completed_time > cooldown_period:
+                self.global_stats["avg_first_token_latency"] = 0
+                self.global_stats["avg_tokens_per_second"] = 0
+                
+                # 로그 스킵 로직 - 유휴 상태에서는 30초에 한 번만 로그 출력
+                if not hasattr(self, '_last_idle_log') or time.time() - self._last_idle_log > 30.0:
+                    self._last_idle_log = time.time()
+                    logger.info("시스템 유휴 상태: 활성 요청 없음")
+                    # 최소한의 지표만 로깅 및 반환
+                    return self._create_minimal_metrics()
+                else:
+                    # 중간 유휴 시간에는 로깅하지 않고 지표만 반환
+                    return self._create_minimal_metrics()
+                
+        # 메트릭 구성
+        metrics = {
+            "timestamp": datetime.now().isoformat(),
+            "process": {
+                "memory_rss_gb": mem_info.rss / (1024**3),
+                "memory_vms_gb": mem_info.vms / (1024**3),
+                "cpu_percent": cpu_percent
+            },
+            "gpu": gpu_stats,
+            "requests": {
+                "active": active_requests,
+                "total": self.global_stats["total_requests"],
+                "completed": self.global_stats["completed_requests"],
+                "failed": self.global_stats["failed_requests"],
+                "active_details": active_request_details
+            },
+            "performance": {
+                "current_tokens_per_second": current_tokens_per_second,
+                "avg_tokens_per_second": self.global_stats["avg_tokens_per_second"] if active_requests > 0 or (hasattr(self, '_last_completed_time') and time.time() - self._last_completed_time < cooldown_period) else 0,
+                "avg_first_token_latency": self.global_stats.get("avg_first_token_latency", 0) * 1000,  # ms
+                "total_input_tokens": self.global_stats["total_input_tokens"],
+                "total_output_tokens": self.global_stats["total_output_tokens"],
+                "current_output_tokens": total_tokens_generated
+            }
+        }
+        
 
-        # 기존 generate_sql은 이제 6개의 값을 반환합니다.
-        final_sql_query, title, explain, table_json, chart_json, detailed_result = result
-
-        # docs : LLM 입력용 (string)
-        PROMPT = (
-            f"실제 사용된 SQL문: {final_sql_query}\n\n"
-            f"추가 설명: {explain}\n\n"
-            f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
-            f"실제 선적된 B/L 데이터: {str(detailed_result)}\n\n"
+        
+        # GPU 메모리 정보 문자열 구성
+        gpu_memory_str = ""
+        if gpu_stats:
+            gpu_memory_str = ', '.join([f'GPU {i}: {stats["allocated_gb"]:.1f}GB' for i, stats in gpu_stats.items()])
+        
+        # 활성 요청 세부 정보 문자열
+        active_req_str = ""
+        if active_request_details:
+            req_details = [f"{d['id']}({d['tokens']}t, {d['rate']:.1f}t/s)" for d in active_request_details]
+            active_req_str = f" | Active: {', '.join(req_details)}"
+        
+        # vLLM 스타일 로그 포맷 (v1에서 나타나지 않는 문제 대응)
+        vllm_style_log = (
+            f"[성능 지표] "
+            f"Prompt: {metrics['performance']['current_tokens_per_second']:.1f} t/s, "
+            f"생성: {metrics['performance']['avg_tokens_per_second']:.1f} t/s | "
+            f"요청: {metrics['requests']['active']} 실행, "
+            f"{metrics['requests']['completed']} 완료, "
+            f"{metrics['performance']['current_output_tokens']} 토큰"
+            f"{active_req_str} | "
+            f"{gpu_memory_str} | "
+            f"첫 토큰: {metrics['performance']['avg_first_token_latency']:.1f}ms"
         )
-        # docs_list에 DG B/L 상세 정보를 추가하여 총 3개 항목으로 구성합니다.
-        docs_list = [
-            {"title": title, "data": table_json},
-            {"title": "DG B/L 상세 정보", "data": detailed_result},
-        ]
-        print("[SOOWAN]: execute_rag : 테이블 부분 정상 처리 완료")
+        
+        logger.info(vllm_style_log)
+        return metrics
+    
+    def _create_minimal_metrics(self) -> Dict[str, Any]:
+        """유휴 상태에서 사용할 최소한의 메트릭 생성"""
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "process": {"memory_rss_gb": 0, "memory_vms_gb": 0, "cpu_percent": 0},
+            "gpu": self._get_gpu_stats() if torch.cuda.is_available() else {},
+            "requests": {
+                "active": 0,
+                "total": self.global_stats["total_requests"],
+                "completed": self.global_stats["completed_requests"],
+                "failed": self.global_stats["failed_requests"],
+                "active_details": []
+            },
+            "performance": {
+                "current_tokens_per_second": 0,
+                "avg_tokens_per_second": 0,
+                "avg_first_token_latency": 0,
+                "total_input_tokens": self.global_stats["total_input_tokens"],
+                "total_output_tokens": self.global_stats["total_output_tokens"],
+                "current_output_tokens": 0
+            }
+        }
 
-        return PROMPT, docs_list
-
-    else:
-        print("[SOOWAN]: execute_rag : 테이블 필요없음")
-        # 적응형 시간 필터링으로 RAG 실행
-        filtered_data = expand_time_range_if_needed(TI, data, min_docs=50)
-
-        # 디버깅을 위해 문서 수 로깅
-        print(f"[RETRIEVE] 검색에 사용되는 문서 수: {len(filtered_data.get('vectors', []))}")
-
-        docs, docs_list = retrieve(KE, filtered_data, config.N, embed_model, embed_tokenizer)
-        return docs, docs_list
-
-@time_tracker
-async def generate_answer(query, docs, **kwargs):
-    model = kwargs.get("model")
-    tokenizer = kwargs.get("tokenizer")
-    config = kwargs.get("config")
-
-    answer = await generate(docs, query, model, tokenizer, config)
-    return answer
-
-
-@time_tracker
-async def query_sort(params):
-    max_attempts = 3
-    attempt = 0
-    while attempt < max_attempts:
-        # params: 딕셔너리로 전달된 값들
-        query = params["user_input"]
-        model = params["model"]
-        tokenizer = params["tokenizer"]
-        embed_model = params["embed_model"]
-        embed_tokenizer = params["embed_tokenizer"]
-        data = params["data"]
-        config = params["config"]
-
-        # 프롬프트 생성
-        PROMPT = QUERY_SORT_PROMPT.format(user_query=query)
-        print("##### query_sort is starting, attempt:", attempt + 1, "#####")
-
-        # Get Answer from LLM
-        if config.use_vllm:  # use_vllm = True case
-            from vllm import SamplingParams
-
-            sampling_params = SamplingParams(
-                max_tokens=config.model.max_new_tokens,
-                temperature=config.model.temperature,
-                top_k=config.model.top_k,
-                top_p=config.model.top_p,
-                repetition_penalty=config.model.repetition_penalty,
-            )
-            accepted_request_id = str(uuid.uuid4())
-            answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+    def complete_request(self, request_id: str, success: bool = True) -> Dict[str, Any]:
+        """
+        요청 완료 처리 및 최종 성능 데이터 반환
+        
+        Args:
+            request_id: 요청 ID
+            success: 요청 성공 여부
+            
+        Returns:
+            Dict[str, Any]: 완료된 요청의 성능 데이터
+        """
+        if request_id not in self.requests:
+            logger.warning(f"알 수 없는 요청 ID: {request_id}")
+            return {}
+        
+        req_data = self.requests[request_id]
+        end_time = time.time()
+        total_time = end_time - req_data["start_time"]
+        
+        # 요청 상태 업데이트
+        req_data["status"] = "completed" if success else "failed"
+        req_data["total_time"] = total_time
+        
+        # 전역 통계 업데이트
+        if success:
+            self.global_stats["completed_requests"] += 1
         else:
-            input_ids = tokenizer(
-                PROMPT, return_tensors="pt", truncation=True, max_length=4024
-            ).to("cuda")
-            token_count = input_ids["input_ids"].shape[1]
-            outputs = model.generate(
-                **input_ids,
-                max_new_tokens=config.model.max_new_tokens,
-                do_sample=config.model.do_sample,
-                temperature=config.model.temperature,
-                top_k=config.model.top_k,
-                top_p=config.model.top_p,
-                repetition_penalty=config.model.repetition_penalty,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.eos_token_id,
+            self.global_stats["failed_requests"] += 1
+        
+        self.global_stats["total_output_tokens"] += req_data["output_tokens"]
+        self.global_stats["total_processing_time"] += total_time
+        
+        # 현재까지의 평균 계산
+        completed = self.global_stats["completed_requests"]
+        if completed > 0:
+            self.global_stats["avg_tokens_per_second"] = (
+                self.global_stats["total_output_tokens"] / 
+                self.global_stats["total_processing_time"]
             )
-            answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-
-        print("[DEBUG query_sort] Generated answer:")
-        print(answer)
-
-        # Regular expressions for tags
-        query_pattern = r"<query.*?>(.*?)<query.*?>"
-        keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
-        table_pattern = r"<table.*?>(.*?)<table.*?>"
-        time_pattern = r"<time.*?>(.*?)<time.*?>"
-
-        m_query = re.search(query_pattern, answer, re.DOTALL)
-        m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
-        m_table = re.search(table_pattern, answer, re.DOTALL)
-        m_time = re.search(time_pattern, answer, re.DOTALL)
-
-        if m_query and m_keyword and m_table and m_time:
-            QU = m_query.group(1).strip()
-            KE = m_keyword.group(1).strip()
-            TA = m_table.group(1).strip()
-            TI = m_time.group(1).strip()
-            if TI == "all":
-                TI = "1900-01-01:2099-01-01"
-            print(beep)
-            print(f"구체화 질문: {QU}, 키워드 : {KE}, 테이블 필요 유무: {TA}, 시간: {TI}")
-            print(beep)
-            return QU, KE, TA, TI
-        else:
-            print("[ERROR query_sort] 필요한 태그들이 누락되었습니다. 재시도합니다.")
-            attempt += 1
-
-    # 3회 재시도 후에도 실패하면 에러 발생
-    raise ValueError("LLM이 올바른 태그 형식의 답변을 생성하지 못했습니다.")
-
-
-@time_tracker
-async def specific_question(params):
-    """
-    query_sort와 동일한 로직을 수행할 수도 있으나,
-    별도로 분리된 이유가 있다면 여기서 추가 처리 가능
-    """
-    max_attempts = 3
-    attempt = 0
-    while attempt < max_attempts:
-        query = params["user_input"]
-        model = params["model"]
-        tokenizer = params["tokenizer"]
-        embed_model = params["embed_model"]
-        embed_tokenizer = params["embed_tokenizer"]
-        data = params["data"]
-        config = params["config"]
-
-        PROMPT = QUERY_SORT_PROMPT.format(user_query=query)
-        print("##### query_sort is starting, attempt:", attempt + 1, "#####")
-
-        if config.use_vllm:
-            from vllm import SamplingParams
-
-            sampling_params = SamplingParams(
-                max_tokens=config.model.max_new_tokens,
-                temperature=config.model.temperature,
-                top_k=config.model.top_k,
-                top_p=config.model.top_p,
-                repetition_penalty=config.model.repetition_penalty,
-            )
-            accepted_request_id = str(uuid.uuid4())
-            answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
-        else:
-            input_ids = tokenizer(
-                PROMPT, return_tensors="pt", truncation=True, max_length=4024
-            ).to("cuda")
-            token_count = input_ids["input_ids"].shape[1]
-            outputs = model.generate(
-                **input_ids,
-                max_new_tokens=config.model.max_new_tokens,
-                do_sample=config.model.do_sample,
-                temperature=config.model.temperature,
-                top_k=config.model.top_k,
-                top_p=config.model.top_p,
-                repetition_penalty=config.model.repetition_penalty,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-            answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-
-        print("[DEBUG query_sort] Generated answer:")
-        print(answer)
-
-        query_pattern = r"<query.*?>(.*?)<query.*?>"
-        keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
-        table_pattern = r"<table.*?>(.*?)<table.*?>"
-        time_pattern = r"<time.*?>(.*?)<time.*?>"
-
-        m_query = re.search(query_pattern, answer, re.DOTALL)
-        m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
-        m_table = re.search(table_pattern, answer, re.DOTALL)
-        m_time = re.search(time_pattern, answer, re.DOTALL)
-
-        if m_query and m_keyword and m_table and m_time:
-            QU = m_query.group(1).strip()
-            KE = m_keyword.group(1).strip()
-            TA = m_table.group(1).strip()
-            TI = m_time.group(1).strip()
-            if TI == "all":
-                TI = "1900-01-01:2099-01-01"
-            print(beep)
-            print(f"구체화 질문: {QU}, 키워드 : {KE}, 테이블 필요 유무: {TA}, 시간: {TI}")
-            print(beep)
-            return QU, KE, TA, TI
-        else:
-            print("[ERROR query_sort] 필요한 태그들이 누락되었습니다. 재시도합니다.")
-            attempt += 1
-
-    raise ValueError("LLM이 올바른 태그 형식의 답변을 생성하지 못했습니다.")
-
-
-@time_tracker
-def sort_by_time(time_bound, data):
-    """
-    원본 데이터는 유지하고 필터링된 복사본을 반환하는 함수
-    """
-    original_count = len(data["times"])
-    print(f"[시간 필터 전] 문서 수: {original_count}")
-
-    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
-        print(f"[시간 필터] 전체 기간 사용 - 모든 문서 포함")
-        return data  # 원본 그대로
-
-    date_format = "%Y-%m-%d"
-    target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
-    target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
-
-    matching_indices = [
-        i
-        for i, date in enumerate(data["times"])
-        if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
-    ]
-
-    filtered_count = len(matching_indices)
-    print(f"[시간 필터 후] 문서 수: {filtered_count}, 기간: {time_bound}")
-
-    if filtered_count < 50 and filtered_count < original_count * 0.1:
-        print(f"[경고] 시간 필터로 인해 문서가 크게 줄었습니다: {original_count} → {filtered_count}")
-
-    filtered_data = {}
-    filtered_data["file_names"] = [data["file_names"][i] for i in matching_indices]
-    filtered_data["titles"] = [data["titles"][i] for i in matching_indices]
-    filtered_data["times"] = [data["times"][i] for i in matching_indices]
-    filtered_data["chunk_ids"] = [data["chunk_ids"][i] for i in matching_indices]
-
-    if isinstance(data["vectors"], torch.Tensor):
-        filtered_data["vectors"] = data["vectors"][matching_indices]
-    else:
-        filtered_data["vectors"] = [data["vectors"][i] for i in matching_indices]
-
-    filtered_data["texts"] = [data["texts"][i] for i in matching_indices]
-    filtered_data["texts_short"] = [data["texts_short"][i] for i in matching_indices]
-    filtered_data["texts_vis"] = [data["texts_vis"][i] for i in matching_indices]
-
-    return filtered_data
-
-
-@time_tracker
-def retrieve(query, data, N, embed_model, embed_tokenizer):
-    print("[SOOWAN] retrieve : 진입")
-    logging.info(f"Retrieval for query: '{query}'")
-    logging.info(f"Available documents: {len(data['vectors'])}")
-
-    try:
-        sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
-        logging.info(f"Similarity score shape: {sim_score.shape}")
-
-        bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
-        logging.info(f"BM25 score shape: {bm25_score.shape}")
-
-        scaled_sim_score = min_max_scaling(sim_score)
-        scaled_bm25_score = min_max_scaling(bm25_score)
-
-        score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
-        score_values = score[:, 0, 0]
-        top_k = score[:, 0, 0].argsort()[-N:][::-1]
-
-        logging.info(f"Top {N} document indices: {top_k}")
-        logging.info(f"Top {N} document scores: {[score[:, 0, 0][i] for i in top_k]}")
-        logging.info(f"Top document titles: {[data['titles'][i] for i in top_k]}")
-
-        documents = ""
-        documents_list = []
-        for i, index in enumerate(top_k):
-            score_str = f"{score_values[index]:.4f}"
-            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}, , Score: {score_str}\n"
-            documents_list.append(
-                {
-                    "file_name": data["file_names"][index],
-                    "title": data["titles"][index],
-                    "contents": data["texts_vis"][index],
-                    "chunk_id": data["chunk_ids"][index],
+        
+        # 첫 토큰 레이턴시가 측정된 경우, 평균 업데이트
+        if req_data["first_token_time"]:
+            first_token_latency = req_data["first_token_time"] - req_data["start_time"]
+            
+            # 첫 토큰 레이턴시 목록에 추가
+            self.global_stats["first_token_latencies"].append(first_token_latency)
+            
+            # 최근 20개 샘플만 유지 (메모리 관리)
+            if len(self.global_stats["first_token_latencies"]) > 20:
+                self.global_stats["first_token_latencies"] = self.global_stats["first_token_latencies"][-20:]
+            
+            # 평균 계산
+            self.global_stats["avg_first_token_latency"] = sum(
+                self.global_stats["first_token_latencies"]
+            ) / len(self.global_stats["first_token_latencies"])
+        
+        # 마지막 완료 시간 기록 - 지표 표시 제어를 위함
+        self._last_completed_time = end_time
+        
+        # 완료 로깅
+        tokens_per_second = req_data["output_tokens"] / total_time if total_time > 0 else 0
+        logger.info(
+            f"요청 완료: {request_id} "
+            f"({req_data['status']}, "
+            f"시간: {total_time:.3f}s, "
+            f"토큰: {req_data['output_tokens']}, "
+            f"속도: {tokens_per_second:.2f} tokens/s)"
+        )
+        
+        # 요청 데이터 복사 후 반환 (메모리 최적화를 위해 원본 제거)
+        result = req_data.copy()
+        del self.requests[request_id]
+        
+        return result
+    
+    def _get_gpu_stats(self) -> Dict[str, Dict[str, float]]:
+        """
+        모든 가용 GPU의 메모리 사용량 통계 수집
+        
+        Returns:
+            Dict[str, Dict[str, float]]: GPU별 메모리 사용량 통계
+        """
+        stats = {}
+        try:
+            for i in range(torch.cuda.device_count()):
+                allocated = torch.cuda.memory_allocated(i)
+                reserved = torch.cuda.memory_reserved(i)
+                total = torch.cuda.get_device_properties(i).total_memory
+                
+                stats[str(i)] = {
+                    "allocated_bytes": allocated,
+                    "reserved_bytes": reserved,
+                    "total_bytes": total,
+                    "allocated_gb": allocated / (1024**3),
+                    "reserved_gb": reserved / (1024**3),
+                    "total_gb": total / (1024**3),
+                    "utilization": allocated / total if total > 0 else 0
                 }
-            )
-        print("-------------자료 검색 성공--------------")
-        print("-------", documents_list, "-------")
-        print("---------------------------------------")
-        return documents, documents_list
-
-    except Exception as e:
-        logging.error(f"Retrieval error: {str(e)}", exc_info=True)
-        return "", []
-
-
-@time_tracker
-def expand_time_range_if_needed(time_bound, data, min_docs=50):
-    """
-    시간 필터링 결과가 너무 적은 경우 자동으로 시간 범위를 확장하는 함수
-    """
-    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
-        print(f"[시간 범위] 전체 기간 사용")
-        return data
-
-    filtered_data = sort_by_time(time_bound, data)
-    filtered_count = len(filtered_data.get("times", []))
-
-    if filtered_count >= min_docs:
-        print(f"[시간 범위] 원래 범위로 충분한 문서 확보: {filtered_count}개")
-        return filtered_data
-
-    print(f"[시간 범위 확장] 원래 범위는 {filtered_count}개 문서만 제공 (최소 필요: {min_docs}개)")
-
-    date_format = "%Y-%m-%d"
-    try:
-        start_date = datetime.strptime(time_bound.split(":")[0], date_format)
-        end_date = datetime.strptime(time_bound.split(":")[1], date_format)
-    except Exception as e:
-        print(f"[시간 범위 오류] 날짜 형식 오류: {time_bound}, 오류: {e}")
-        return data
-
-    expansions = [
-        (3, "3개월"),
-        (6, "6개월"),
-        (12, "1년"),
-        (24, "2년"),
-        (60, "5년"),
-    ]
-
-    for months, label in expansions:
-        new_start = start_date - timedelta(days=30 * months // 2)
-        new_end = end_date + timedelta(days=30 * months // 2)
-
-        new_range = f"{new_start.strftime(date_format)}:{new_end.strftime(date_format)}"
-        print(f"[시간 범위 확장] {label} 확장 시도: {new_range}")
-
-        expanded_data = sort_by_time(new_range, data)
-        expanded_count = len(expanded_data.get("times", []))
-
-        if expanded_count >= min_docs:
-            print(f"[시간 범위 확장] {label} 확장으로 {expanded_count}개 문서 확보")
-            return expanded_data
-
-    print(f"[시간 범위 확장] 모든 확장 시도 실패, 전체 데이터셋 사용")
-    return data
-
-
-@time_tracker
-def cal_sim_score(query, chunks, embed_model, embed_tokenizer):
-    print("[SOOWAN] cal_sim_score : 진입 / query : ", query)
-    query_V = embed(query, embed_model, embed_tokenizer)
-    print("[SOOWAN] cal_sim_score : query_V 생산 완료")
-    if len(query_V.shape) == 1:
-        query_V = query_V.unsqueeze(0)
-        print("[SOOWAN] cal_sim_score : query_V.shape == 1")
-    score = []
-    for chunk in chunks:
-        if len(chunk.shape) == 1:
-            chunk = chunk.unsqueeze(0)
-        query_norm = query_V / query_V.norm(dim=1)[:, None]
-        chunk_norm = chunk / chunk.norm(dim=1)[:, None]
-        tmp = torch.mm(query_norm, chunk_norm.transpose(0, 1)) * 100
-        score.append(tmp.detach())
-    return np.array(score)
-
-
-@time_tracker
-def cal_bm25_score(query, indexes, embed_tokenizer):
-    logging.info(f"Starting BM25 calculation for query: {query}")
-    logging.info(f"Document count: {len(indexes)}")
-
-    if not indexes:
-        logging.warning("Empty document list provided to BM25")
-        return np.zeros(0)
-
-    tokenized_corpus = []
-    for i, text in enumerate(indexes):
-        try:
-            tokens = embed_tokenizer(
-                text,
-                return_token_type_ids=False,
-                return_attention_mask=False,
-                return_offsets_mapping=False,
-            )
-            tokens = embed_tokenizer.convert_ids_to_tokens(tokens["input_ids"])
-            if len(tokens) == 0:
-                logging.warning(f"Document {i} tokenized to empty list")
-                tokens = ["<empty>"]
-            tokenized_corpus.append(tokens)
+                
+                # 필요시 CUDA 유틸리티 추가 (CUDA 설치된 경우)
+                if hasattr(torch.cuda, 'utilization'):
+                    stats[str(i)]["compute_utilization"] = torch.cuda.utilization(i)
         except Exception as e:
-            logging.error(f"Failed to tokenize document {i}: {str(e)}")
-            tokenized_corpus.append(["<error>"])
-
-    try:
-        bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
-        tokenized_query = embed_tokenizer.convert_ids_to_tokens(embed_tokenizer(query)["input_ids"])
-        scores = bm25.get_scores(tokenized_query)
-
-        if np.isnan(scores).any() or np.isinf(scores).any():
-            logging.warning("BM25 produced NaN/Inf scores - replacing with zeros")
-            scores = np.nan_to_num(scores)
-
-        logging.info(
-            f"BM25 scores: min={scores.min():.4f}, max={scores.max():.4f}, mean={scores.mean():.4f}"
+            logger.error(f"GPU 상태 수집 중 오류: {e}")
+        
+        return stats
+    
+    def _log_performance_metrics(self):
+        """주기적으로 성능 지표를 로깅"""
+        active_requests = len(self.requests)
+        if active_requests == 0:
+            logging.getLogger("performance").info("시스템 유휴 상태: 활성 요청 없음")
+            return
+            
+        # 통계 계산
+        total_prompt_tokens = 0
+        total_output_tokens = 0
+        prompt_speed = 0
+        generation_speed = 0
+        gpu_usage = 0
+        
+        active_request_info = []
+        for req_id, req_data in self.requests.items():
+            tokens = req_data.get("token_count", 0)
+            total_output_tokens += tokens
+            
+            # 토큰 생성 속도 계산
+            elapsed = time.time() - req_data.get("start_time", time.time())
+            if elapsed > 0:
+                req_speed = tokens / elapsed
+                generation_speed += req_speed
+                
+                # 요약 정보 추가
+                active_request_info.append(
+                    f"{req_id[:8]}..({tokens}t, {req_speed:.1f}t/s)"
+                )
+            
+            # GPU 사용량 누적
+            gpu_usage = max(gpu_usage, req_data.get("gpu_usage", 0))
+        
+        # 첫 토큰 시간 측정값 추출
+        first_token_times = []
+        for req_id, req_data in self.requests.items():
+            for checkpoint in req_data.get("checkpoints", []):
+                if "first_token_generated" in checkpoint.get("name", ""):
+                    # 괄호 안의 지연 시간 추출
+                    latency_match = re.search(r"latency: ([\d\.]+)s", checkpoint.get("name", ""))
+                    if latency_match:
+                        first_token_times.append(float(latency_match.group(1)) * 1000)  # ms 단위로 변환
+        
+        # 첫 토큰 평균 시간 계산
+        avg_first_token = sum(first_token_times) / len(first_token_times) if first_token_times else 0
+        
+        # 메트릭 로깅
+        logging.getLogger("performance").info(
+            f"[성능 지표] Prompt: {prompt_speed:.1f} t/s, 생성: {generation_speed:.1f} t/s | "
+            f"요청: {active_requests} 실행, {len(self.completed_requests)} 완료, {total_output_tokens} 토큰 | "
+            f"Active: {', '.join(active_request_info)} | "
+            f"GPU {0}: {gpu_usage:.1f}GB | "
+            f"첫 토큰: {avg_first_token:.1f}ms"
         )
-        return scores
-    except Exception as e:
-        logging.error(f"BM25 scoring failed: {str(e)}")
-        return np.zeros(len(indexes))
+        
+# 성능 모니터 가져오기 - Ray와 호환되는 방식
+def get_performance_monitor() -> PerformanceMonitor:
+    """
+    PerformanceMonitor의 싱글톤 인스턴스 반환 (Ray 호환 방식)
+    
+    Returns:
+        PerformanceMonitor: 싱글톤 인스턴스
+    """
+    log_interval = int(os.environ.get("VLLM_LOG_STATS_INTERVAL", "5"))
+    return PerformanceMonitor.get_instance(log_interval)
 
+# 하위 호환성 함수들
+def log_system_info(label=""):
+    """현재 시스템 상태 로깅"""
+    monitor = get_performance_monitor()
+    monitor.log_current_state()
+
+def log_batch_info(batch):
+    """배치 정보 로깅"""
+    if not batch:
+        return
+    
+    batch_size = len(batch)
+    token_counts = []
+    
+    for item in batch:
+        # item은 (http_query, future, sse_queue) 튜플
+        http_query = item[0]
+        # http_query가 dict라면 qry_contents를 가져옵니다.
+        query = http_query.get("qry_contents", "") if isinstance(http_query, dict) else ""
+        tokens = query.split()
+        token_counts.append(len(tokens))
+    
+    logger.info(f"[Batch Tracking] Batch size: {batch_size}, Token counts: {token_counts}")
+
+# 스트리밍 토큰 카운터
+class StreamingTokenCounter:
+    """스트리밍 생성 시 토큰 수를 정확하게 추적하는 클래스"""
+    
+    def __init__(self, request_id: str, tokenizer=None):
+        """토큰 카운터 초기화"""
+        self.request_id = request_id
+        self.tokenizer = tokenizer
+        self.accumulated_text = ""
+        self.token_count = 0
+        self.start_time = time.time()
+        self.last_update_time = self.start_time
+        self.first_token_time = None
+        self.generation_start_time = time.time()  # 생성 시작 시간 추가
+        self.vllm_tokens = []  # vLLM 토큰 정보를 누적할 리스트
+        # 첫 토큰 처리를 추적하기 위한 플래그 추가
+        self.first_token_reported = False
+        # Monritor
+        self.perf_monitor = get_performance_monitor()
+        # 객체 직렬화 시 다시 초기화될 메서드
+        self._init_monitor()
+    
+    def _init_monitor(self):
+        """성능 모니터 참조 초기화 (Ray 액터 내부에서 호출될 것임)"""
+        self.monitor = get_performance_monitor()
+        
+    def update(self, new_text, vllm_info=None):
+        """토큰 카운터 업데이트 및 성능 모니터링 갱신"""
+        current_time = time.time()
+        
+        # vLLM 정보가 있으면 더 정확한 토큰 수를 얻을 수 있음
+        if vllm_info and "token_ids" in vllm_info:
+            new_tokens = len(vllm_info["token_ids"])
+        else:
+            # 간단한 추정 (더 정확한 토큰화 메서드로 대체 가능)
+            new_tokens = len(new_text.split())
+        
+        self.token_count += new_tokens
+        
+        # 첫 토큰 시간 측정 및 보고
+        if not self.first_token_reported and self.token_count > 0:
+            first_token_latency = current_time - self.start_time
+            self.perf_monitor.update_request(
+                self.request_id, 
+                self.token_count,
+                checkpoint=f"first_token_generated (latency: {first_token_latency:.3f}s)",
+                current_output=new_text
+            )
+            self.first_token_reported = True
+            
+        # GPU 사용량 측정 추가
+        gpu_usage = self._measure_gpu_usage()
+            
+        # 성능 모니터에 현재 상태 업데이트
+        self.perf_monitor.update_request(
+            self.request_id, 
+            self.token_count,
+            generation_speed=(self.token_count / (current_time - self.start_time)),
+            gpu_usage=gpu_usage,
+            current_output=new_text
+        )
+        
+        self.last_update_time = current_time
+
+    def _measure_gpu_usage(self):
+        """현재 GPU 사용량을 MB 단위로 측정"""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                # 현재 활성 GPU의 메모리 사용량 반환 (GB 단위)
+                return torch.cuda.memory_allocated() / (1024 ** 3)
+        except (ImportError, Exception):
+            pass
+        return 0  # 측정 실패 시 0 반환
+
+# 메모리 사용량 모니터링 함수
+def print_memory_usage(label: str = "") -> Dict[str, Any]:
+    """현재 메모리 사용량을 로깅하고 반환"""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    
+    metrics = {
+        "rss_gb": mem_info.rss / (1024**3),
+        "vms_gb": mem_info.vms / (1024**3),
+    }
+    
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / (1024**3)
+            reserved = torch.cuda.memory_reserved(i) / (1024**3)
+            metrics[f"gpu{i}_allocated_gb"] = allocated
+            metrics[f"gpu{i}_reserved_gb"] = reserved
+    
+    prefix = f"[{label}] " if label else ""
+    logger.info(
+        f"{prefix}Memory usage: "
+        f"RAM: {metrics['rss_gb']:.2f}GB (RSS), {metrics['vms_gb']:.2f}GB (VMS)"
+    )
+    
+    if torch.cuda.is_available():
+        gpu_info = ", ".join(
+            f"GPU{i}: {metrics[f'gpu{i}_allocated_gb']:.2f}GB/{metrics[f'gpu{i}_reserved_gb']:.2f}GB" 
+            for i in range(torch.cuda.device_count())
+        )
+        logger.info(f"{prefix}GPU memory: {gpu_info}")
+    
+    return metrics
+
+# 가비지 컬렉션 함수
+def force_gc() -> None:
+    """메모리 해제를 위한 강제 가비지 컬렉션 수행"""
+    before = print_memory_usage("GC 전")
+    
+    gc.collect()
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    
+    after = print_memory_usage("GC 후")
+    
+    # 변화량 계산
+    rss_diff = before["rss_gb"] - after["rss_gb"]
+    vms_diff = before["vms_gb"] - after["vms_gb"]
+    
+    logger.info(f"GC 효과: RAM: {rss_diff:.2f}GB (RSS), {vms_diff:.2f}GB (VMS)")
+
+```
+
+
+--- core/generation.py
+
+```python
+
+# core/generation.py
+"""
+텍스트 생성 관련 기능을 제공하는 모듈
+
+주요 기능:
+1. LLM을 통한 텍스트 생성
+2. 스트리밍 방식의 텍스트 생성
+3. vLLM 관련 유틸리티 기능
+"""
+
+import logging
+import asyncio
+import concurrent.futures
+from typing import Dict, Any, List, Generator, AsyncGenerator
+import uuid
+
+from utils.tracking import time_tracker
+from prompt import GENERATE_PROMPT_TEMPLATE
+
+# vLLM 관련 임포트
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm import SamplingParams
+
+# 로깅 설정
+logger = logging.getLogger("RAG.Generation")
 
 @time_tracker
-def embed(query, embed_model, embed_tokenizer):
-    print("[SOOWAN] embed: 진입")
-    inputs = embed_tokenizer(query, padding=True, truncation=True, return_tensors="pt")
-    embeddings, _ = embed_model(**inputs, return_dict=False)
-    print("[SOOWAN] embed: 완료")
-    return embeddings[0][0]
-
-
-@time_tracker
-def min_max_scaling(arr):
-    arr_min = arr.min()
-    arr_max = arr.max()
-    if arr_max == arr_min:
-        print("[SOOWAN] min_max_scaling: Zero range detected, returning zeros.")
-        return np.zeros_like(arr)
-    return (arr - arr_min) / (arr_max - arr_min)
-
-
-@time_tracker
-async def generate(docs, query, model, tokenizer, config):
-    PROMPT = GENERATE_PROMPT_TEMPLATE.format(docs=docs, query=query)
-    print("Inference steps")
+async def generate(
+    docs: str, 
+    query: str, 
+    model, 
+    tokenizer, 
+    config
+) -> str:
+    """
+    검색된 문서와 질문을 바탕으로 응답 생성
+    
+    Args:
+        docs: 검색된 문서 내용
+        query: 사용자 질문
+        model: 언어 모델
+        tokenizer: 토크나이저
+        config: 설정
+        
+    Returns:
+        str: 생성된 텍스트
+    """
+    # 프롬프트 구성
+    prompt = GENERATE_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    logger.info("텍스트 생성 시작: prompt_length=%d", len(prompt))
+    
+    # vLLM 모드인 경우
     if config.use_vllm:
         from vllm import SamplingParams
+        
+        # 샘플링 파라미터 설정
         sampling_params = SamplingParams(
             max_tokens=config.model.max_new_tokens,
             temperature=config.model.temperature,
@@ -2684,13 +3198,27 @@ async def generate(docs, query, model, tokenizer, config):
             top_p=config.model.top_p,
             repetition_penalty=config.model.repetition_penalty,
         )
+        
+        # 요청 ID 생성
         accepted_request_id = str(uuid.uuid4())
-        answer = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
+        
+        # vLLM으로 텍스트 생성
+        answer = await collect_vllm_text(prompt, model, sampling_params, accepted_request_id)
+    
+    # 표준 HuggingFace 모델 사용
     else:
-        input_ids = tokenizer(PROMPT, return_tensors="pt", truncation=True, max_length=4024).to(
-            "cuda"
-        )
+        # 입력 토큰화
+        input_ids = tokenizer(
+            prompt, 
+            return_tensors="pt", 
+            truncation=True, 
+            max_length=4024
+        ).to("cuda")
+        
+        # 토큰 수 계산
         token_count = input_ids["input_ids"].shape[1]
+        
+        # 텍스트 생성
         outputs = model.generate(
             **input_ids,
             max_new_tokens=config.model.max_new_tokens,
@@ -2702,110 +3230,832 @@ async def generate(docs, query, model, tokenizer, config):
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
         )
+        
+        # 생성된 텍스트만 추출
         answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-        print(answer)
-        print(">>> decode done, returning answer")
+        logger.debug("생성된 답변: %s", answer)
+    
+    logger.info("텍스트 생성 완료")
     return answer
 
-
 @time_tracker
-async def collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id):
-    import asyncio, concurrent.futures
-    print("[SOOWAN] collect_vllm_text 진입 PROMPT: ")
+async def collect_vllm_text(
+    prompt: Any, 
+    model: AsyncLLMEngine, 
+    sampling_params: SamplingParams, 
+    request_id: str
+) -> str:
+    """
+    vLLM 모델에서 텍스트 생성 후 결과 수집
+    
+    Args:
+        prompt: 프롬프트 (텍스트 또는 멀티모달 요청 객체)
+        model: vLLM 엔진
+        sampling_params: 샘플링 파라미터
+        request_id: 요청 ID
+        
+    Returns:
+        str: 생성된 텍스트
+    """
+    logger.info(f"vLLM 텍스트 생성 시작: request_id={request_id}")
+    
     outputs = []
-    async for output in model.generate(PROMPT, request_id=accepted_request_id, sampling_params=sampling_params):
+    async for output in model.generate(prompt, request_id=request_id, sampling_params=sampling_params):
         outputs.append(output)
+    
+    # 출력이 없는 경우 오류 발생
     if not outputs:
-        raise RuntimeError("No outputs were generated by the model.")
+        error_msg = "모델이 출력을 생성하지 않음"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    
+    # 마지막 또는 완료된 출력 선택
     final_output = next((o for o in outputs if getattr(o, "finished", False)), outputs[-1])
+    
+    # 텍스트 추출
     answer = "".join([getattr(comp, "text", "") for comp in getattr(final_output, "outputs", [])])
+    
+    logger.info(f"vLLM 텍스트 생성 완료: text_length={len(answer)}")
     return answer
 
+@time_tracker
+async def collect_vllm_text_stream(
+    prompt: Any, 
+    engine: AsyncLLMEngine, 
+    sampling_params: SamplingParams, 
+    request_id: str
+) -> AsyncGenerator[str, None]:
+    """
+    vLLM 모델에서 스트리밍 방식으로 텍스트 생성 및 반환
+    
+    Args:
+        prompt: 프롬프트 (텍스트 또는 멀티모달 요청 객체)
+        engine: vLLM 엔진
+        sampling_params: 샘플링 파라미터
+        request_id: 요청 ID
+        
+    Yields:
+        str: 생성된 부분 텍스트
+    """
+    logger.info(f"vLLM 스트리밍 텍스트 생성 시작: request_id={request_id}")
+    
+    # 토큰 카운터 초기화
+    from utils.debug_tracking import StreamingTokenCounter
+    token_counter = StreamingTokenCounter(request_id)
+    
+    accumulated_text = ""
+    
+    try:
+        async for request_output in engine.generate(prompt, request_id=request_id, sampling_params=sampling_params):
+            if not request_output.outputs:
+                continue
+                
+            for completion in request_output.outputs:
+                new_text = completion.text
+                
+                # 새 텍스트가 생성된 경우에만 처리
+                if new_text != accumulated_text:
+                    # 새로 생성된 텍스트 부분만 추출
+                    new_portion = new_text[len(accumulated_text):]
+                    accumulated_text = new_text
+                    
+                    # vLLM 정보 추출 (가능한 경우)
+                    vllm_info = None
+                    if hasattr(completion, "token_ids"):
+                        vllm_info = {"token_ids": completion.token_ids}
+                    elif hasattr(completion, "logprobs") and completion.logprobs:
+                        # 로그 확률이 있는 경우 토큰 ID 추출 가능
+                        vllm_info = {"token_ids": [lp.token_id for lp in completion.logprobs if hasattr(lp, "token_id")]}
+                    
+                    # 토큰 카운터 업데이트
+                    token_counter.update(new_portion, vllm_info)
+                    
+                    yield new_text
+    except Exception as e:
+        logger.error(f"vLLM 스트리밍 생성 중 오류: {str(e)}")
+        raise
+
+    logger.info(f"vLLM 스트리밍 텍스트 생성 완료: request_id={request_id}")
+
+```
+
+
+--- core/image_processing.py
+
+```python
+
+# core/image_processing.py
+"""
+이미지 처리 관련 기능을 제공하는 모듈
+
+주요 기능:
+1. 이미지 로드 및 처리
+2. 이미지에 대한 설명 생성
+3. 멀티모달 요청 준비
+"""
+
+import base64
+import io
+import logging
+import json
+import re
+import uuid
+from typing import Dict, Any, Optional, Union
+from PIL import Image
+
+from utils.tracking import time_tracker
+from prompt import IMAGE_DESCRIPTION_PROMPT
+
+# vLLM 관련 임포트
+from vllm.multimodal.utils import fetch_image
+
+# 로깅 설정
+logger = logging.getLogger("RAG.ImageProcessing")
 
 @time_tracker
-async def generate_answer_stream(query, docs, model, tokenizer, config, http_query):
+async def prepare_image(image_data: Union[str, bytes]) -> Optional[Image.Image]:
+    """
+    다양한 형식의 이미지 데이터를 PIL Image로 변환
     
-    prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
-    print("최종 LLM 추론용 prompt 생성 : ", prompt)
-    
-    import uuid
-    import base64
-    import io
-    from PIL import Image
-    from transformers import AutoProcessor
-    from vllm import SamplingParams
-    from vllm.multimodal.utils import fetch_image
-    
-    print("[IMAGE-STREAMING-QUERY] Image_query 진입")
-    
-    image_data = http_query.get("image_data")
-    
-    # 2) Image -> PIL (image_data가 있을 경우에만 처리)
-    pil_image = None
-    if image_data:
-        try:
-            print("[DEBUG] Step2 - Converting image data to PIL...")
-            if isinstance(image_data, str) and (image_data.startswith("http://") or image_data.startswith("https://")):
-                print("[DEBUG]   => image_data is a URL; using fetch_image()")
-                pil_image = fetch_image(image_data)
-            else:
-                print("[DEBUG]   => image_data is presumably base64")
-                if isinstance(image_data, str) and image_data.startswith("data:image/"):
-                    print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
-                    image_data = image_data.split(",", 1)[-1]
-                decoded = base64.b64decode(image_data)
-                print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
-                pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
-            print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
-        except Exception as e:
-            err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
-            print(err_msg)
-    else:
-        print("[DEBUG] No image_data provided; proceeding with text-only query.")
-    
-    # 3) HF Processor 로드
+    Args:
+        image_data: 이미지 데이터 (URL 또는 base64 인코딩된 데이터)
+        
+    Returns:
+        Optional[Image.Image]: 변환된 PIL 이미지, 실패 시 None
+    """
     try:
-        print(f"[DEBUG] Step3 - Loading processor from '{config.model_id}' ... (use_fast=False)")
+        logger.info("이미지 변환 시작: 데이터 타입=%s", type(image_data))
+        
+        # URL인 경우
+        if isinstance(image_data, str) and (image_data.startswith("http://") or image_data.startswith("https://")):
+            logger.info("URL 형식 이미지 로드")
+            pil_image = fetch_image(image_data)
+            
+        # Base64 인코딩 데이터인 경우
+        else:
+            logger.info("Base64 형식 이미지 로드")
+            # Data URL 형식인 경우 헤더 제거
+            if isinstance(image_data, str) and image_data.startswith("data:image/"):
+                logger.info("'data:image/' 접두사 감지 - 분리")
+                image_data = image_data.split(",", 1)[-1]
+                
+            # Base64 디코딩
+            decoded = base64.b64decode(image_data)
+            logger.info("Base64 디코딩 완료: %d 바이트", len(decoded))
+            
+            # PIL 이미지로 변환
+            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
+            
+        logger.info("이미지 로드 성공: 크기=%s", pil_image.size)
+        return pil_image
+        
+    except Exception as e:
+        logger.error("이미지 로드 실패: %s", str(e), exc_info=True)
+        return None
+
+@time_tracker
+async def prepare_processor(model_id: str) -> Any:
+    """
+    이미지 처리를 위한 프로세서 로드
+    
+    Args:
+        model_id: 모델 ID
+        
+    Returns:
+        Any: 로드된 프로세서
+    """
+    try:
+        from transformers import AutoProcessor
+        
+        logger.info(f"프로세서 로드: model_id='{model_id}'")
         processor = AutoProcessor.from_pretrained(
-            config.model_id,
+            model_id,
             use_fast=False  # 모델이 fast processor를 지원한다면 True로 시도 가능
         )
-        print("[DEBUG]   => processor loaded:", type(processor).__name__)
+        
+        logger.info("프로세서 로드 완료: 타입=%s", type(processor).__name__)
+        return processor
+        
     except Exception as e:
-        err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
-        print(err_msg)
+        logger.error("프로세서 로드 실패: %s", str(e), exc_info=True)
+        raise
+
+@time_tracker
+async def prepare_multimodal_request(
+    prompt: str, 
+    pil_image: Image.Image, 
+    model_id: Any, 
+    tokenizer: Any
+) -> Dict[str, Any]:
+    """
+    멀티모달 요청 준비
     
-    # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
-    print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
+    Args:
+        prompt: 텍스트 프롬프트
+        pil_image: PIL 이미지
+        model: 언어 모델
+        tokenizer: 토크나이저
+        
+    Returns:
+        Dict[str, Any]: 멀티모달 요청 객체
+    """
+    try:
+        from transformers import AutoProcessor
+        
+        # 모델 프로세서 로드
+        processor = await prepare_processor(model_id)
+        
+        logger.info("멀티모달 메시지 구성")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "url": pil_image},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        
+        # 채팅 템플릿 적용
+        prompt_string = processor.apply_chat_template(
+            messages,
+            tokenize=False,  # 토큰화 없이 문자열만 생성
+            add_generation_prompt=True,
+        )
+        
+        logger.info("멀티모달 요청 객체 생성: prompt_length=%d", len(prompt_string))
+        generate_request = {
+            "prompt": prompt_string,
+            "multi_modal_data": {
+                "image": [pil_image]  # 여러 이미지 지원 시 리스트에 추가
+            }
+        }
+        
+        return generate_request
+        
+    except Exception as e:
+        logger.error("멀티모달 요청 준비 실패: %s", str(e), exc_info=True)
+        raise
+
+@time_tracker
+async def image_query(http_query: Dict[str, Any], model, config) -> Dict[str, Any]:
+    """
+    이미지 입력을 받아 설명 생성 (비 스트리밍)
+    
+    Args:
+        http_query: HTTP 요청 데이터
+        model: 언어 모델
+        config: 설정
+        
+    Returns:
+        Dict[str, Any]: 이미지 설명 결과
+    """
+    logger.info("이미지 분석 쿼리 처리 시작")
+    
+    # 파라미터 파싱
+    request_id = http_query.get("request_id", str(uuid.uuid4()))
+    image_input = http_query.get("image_data")
+    user_query = http_query.get("qry_contents", "이 이미지를 한국어로 잘 설명해주세요.")
+    
+    logger.info(f"요청 정보: request_id={request_id}, user_query='{user_query}'")
+    
+    # 이미지 변환
+    pil_image = await prepare_image(image_input)
+    if not pil_image:
+        error_msg = "이미지 로드 실패"
+        logger.error(error_msg)
+        return {"type": "error", "message": error_msg}
+    
+    # 프로세서 로드
+    try:
+        processor = await prepare_processor(config.model_id)
+    except Exception as e:
+        error_msg = f"프로세서 로드 실패: {str(e)}"
+        logger.error(error_msg)
+        return {"type": "error", "message": error_msg}
+    
+    # 이미지 정보 및 프롬프트 구성
+    image_info = "Image data provided"  # 실제 서비스에서는 이미지 메타데이터 추출 가능
+    prompt_image_sorting = IMAGE_DESCRIPTION_PROMPT.format(image_info=image_info, user_query=user_query)
+    
+    # 메시지 구성
+    messages = [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": prompt_image_sorting}]
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "url": pil_image},
+                {"type": "text", "text": user_query},
+            ],
+        }
+    ]
+    
+    # 채팅 템플릿 적용
+    try:
+        prompt_string = processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        logger.info("프롬프트 생성 완료: length=%d", len(prompt_string))
+    except Exception as e:
+        error_msg = f"채팅 템플릿 적용 오류: {str(e)}"
+        logger.error(error_msg)
+        return {"type": "error", "message": error_msg}
+    
+    # 샘플링 파라미터 설정
+    from vllm import SamplingParams
+    sampling_params = SamplingParams(
+        max_tokens=config.model.max_new_tokens,
+        temperature=config.model.temperature,
+        top_k=config.model.top_k,
+        top_p=config.model.top_p,
+        repetition_penalty=config.model.repetition_penalty,
+    )
+    
+    # vLLM으로 생성
+    result_chunks = []
+    try:
+        # 멀티모달 요청 구성
+        generate_request = {
+            "prompt": prompt_string,
+            "multi_modal_data": {
+                "image": [pil_image]
+            }
+        }
+
+        # 생성 실행
+        async for out in model.generate(
+            prompt=generate_request,
+            sampling_params=sampling_params,
+            request_id=request_id,
+        ):
+            result_chunks.append(out)
+            
+        logger.info("생성 완료: 청크 수=%d", len(result_chunks))
+
+    except Exception as e:
+        error_msg = f"생성 중 오류: {str(e)}"
+        logger.error(error_msg)
+        return {"type": "error", "message": error_msg}
+
+    # 출력이 없는 경우
+    if not result_chunks:
+        logger.error("모델 출력 없음")
+        return {"type": "error", "message": "모델에서 출력이 없습니다."}
+
+    # 최종 출력 추출
+    final_output = next((c for c in result_chunks if getattr(c, "finished", False)), result_chunks[-1])
+    answer_text = "".join(piece.text for piece in final_output.outputs)
+    logger.info(f"최종 답변: length={len(answer_text)}")
+    
+    # JSON 형식 추출 시도
+    try:
+        # JSON 블록 추출
+        match = re.search(r'\{.*\}', answer_text, re.DOTALL)
+        if match:
+            result = json.loads(match.group(0))
+        else:
+            raise ValueError("JSON 응답 형식 미확인")
+            
+        if "is_structured" not in result or "description" not in result:
+            raise ValueError("응답에 필요한 키가 누락됨")
+            
+    except Exception as e:
+        # 파싱 실패 시 기본 처리
+        logger.warning(f"JSON 파싱 실패: {str(e)} - 기본값으로 대체")
+        result = {"is_structured": False, "description": http_query.get("qry_contents", "")}
+        
+    return result
+
+@time_tracker
+async def image_streaming_query(
+    http_query: Dict[str, Any], 
+    model, 
+    tokenizer, 
+    config
+) -> Any:
+    """
+    이미지 입력을 받아 스트리밍 방식으로 설명 생성
+    
+    Args:
+        http_query: HTTP 요청 데이터
+        model: 언어 모델
+        tokenizer: 토크나이저
+        config: 설정
+        
+    Yields:
+        str: 생성된 부분 텍스트
+    """
+    logger.info("이미지 스트리밍 쿼리 처리 시작")
+    
+    # 파라미터 파싱
+    request_id = http_query.get("request_id", str(uuid.uuid4()))
+    image_input = http_query.get("image_data")
+    user_query = http_query.get("qry_contents", "이 이미지를 설명해주세요.")
+    
+    logger.info(f"요청 정보: request_id={request_id}, user_query='{user_query}'")
+    
+    # 이미지 변환
+    try:
+        pil_image = await prepare_image(image_input)
+        if not pil_image:
+            error_msg = "이미지 로드 실패"
+            logger.error(error_msg)
+            yield {"type": "error", "message": error_msg}
+            return
+    except Exception as e:
+        error_msg = f"이미지 로드 실패: {str(e)}"
+        logger.error(error_msg)
+        yield {"type": "error", "message": error_msg}
+        return
+    
+    # 프로세서 로드
+    try:
+        processor = await prepare_processor(config.model_id)
+    except Exception as e:
+        error_msg = f"프로세서 로드 실패: {str(e)}"
+        logger.error(error_msg)
+        yield {"type": "error", "message": error_msg}
+        return
+    
+    # 메시지 구성
     messages = [
         {
             "role": "user",
-            "content": []
+            "content": [
+                {"type": "image", "url": pil_image},
+                {"type": "text", "text": user_query},
+            ],
         }
     ]
-    if pil_image is not None:
-        messages[0]["content"].append({"type": "image", "url": pil_image})
-    messages[0]["content"].append({"type": "text",  "text": prompt})
     
+    # 채팅 템플릿 적용
     try:
-        # tokenize=False => prompt를 'raw string' 형태로 얻음
         prompt_string = processor.apply_chat_template(
             messages,
-            tokenize=False,           # 핵심!
+            tokenize=False,
             add_generation_prompt=True,
         )
-        print("[DEBUG]   => prompt_string : ", prompt_string)
+        logger.info("프롬프트 생성 완료")
     except Exception as e:
-        err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
-        print(err_msg)
+        error_msg = f"채팅 템플릿 적용 오류: {str(e)}"
+        logger.error(error_msg)
+        yield {"type": "error", "message": error_msg}
+        return
     
+    # 샘플링 파라미터 설정
+    from vllm import SamplingParams
+    sampling_params = SamplingParams(
+        max_tokens=config.model.max_new_tokens,
+        temperature=config.model.temperature,
+        top_k=config.model.top_k,
+        top_p=config.model.top_p,
+        repetition_penalty=config.model.repetition_penalty,
+    )
+    
+    # 멀티모달 요청 구성
     generate_request = {
         "prompt": prompt_string,
-        "multi_modal_data": {}
+        "multi_modal_data": {
+            "image": [pil_image]
+        }
     }
-    if pil_image is not None:
-        generate_request["multi_modal_data"]["image"] = [pil_image]
     
+    # 스트리밍 생성
+    from core.generation import collect_vllm_text_stream
+    
+    async for partial_chunk in collect_vllm_text_stream(
+        generate_request, model, sampling_params, request_id
+    ):
+        yield partial_chunk
+
+```
+
+
+--- core/RAG.py
+
+```python
+
+# core/RAG.py
+"""
+RAG(Retrieval-Augmented Generation) 시스템의 메인 모듈
+
+이 모듈은 다음 핵심 기능들을 제공합니다:
+1. 질문 분류 및 구체화 (query_sort, specific_question)
+2. RAG 실행 및 조정 (execute_rag)
+3. 응답 생성 (generate_answer, generate_answer_stream)
+
+기타 세부 기능들은 하위 모듈로 분리되었습니다:
+- retrieval: 문서 검색 관련 기능
+- generation: 텍스트 생성 관련 기능
+- image_processing: 이미지 처리 관련 기능
+- query_processing: 쿼리 처리 관련 기능
+- sql_processing: SQL 쿼리 관련 기능
+"""
+
+import asyncio
+import logging
+import re
+import uuid
+from typing import Dict, List, Tuple, Any, Optional, Union, Generator
+
+# 내부 모듈 임포트
+from core.retrieval import retrieve, expand_time_range_if_needed
+from core.generation import generate, collect_vllm_text, collect_vllm_text_stream
+from core.sql_processing import generate_sql
+
+# SQL 관련 함수 임포트
+from core.SQL_NS import run_sql_unno, run_sql_bl, get_metadata
+
+# 프롬프트 템플릿 불러오기
+from prompt import (
+    QUERY_SORT_PROMPT, 
+    GENERATE_PROMPT_TEMPLATE, 
+    STREAM_PROMPT_TEMPLATE
+)
+
+# 유틸리티 임포트
+from utils.tracking import time_tracker
+
+# vLLM 관련 임포트
+from vllm import SamplingParams
+from vllm.engine.async_llm_engine import AsyncLLMEngine
+from vllm.model_executor.models.interfaces import SupportsMultiModal
+
+# Tracking
+from utils.debug_tracking import get_performance_monitor
+
+# 로깅 설정
+logger = logging.getLogger("RAG")
+
+# 글로벌 구분자
+SECTION_SEPARATOR = "-" * 100
+
+@time_tracker
+async def execute_rag(
+    query: str, 
+    keywords: str, 
+    needs_table: str, 
+    time_range: str, 
+    **kwargs
+) -> Tuple[str, List[Dict]]:
+    """
+    RAG(Retrieval-Augmented Generation) 실행의 메인 진입점
+    
+    Args:
+        query: 구체화된 사용자 질문
+        keywords: 검색에 사용할 키워드
+        needs_table: 테이블 데이터 필요 여부 ("yes" 또는 "no")
+        time_range: 검색 시간 범위 ("all" 또는 "시작일:종료일" 형식)
+        **kwargs: 추가 파라미터 (model, tokenizer, embed_model, embed_tokenizer, data, config)
+    
+    Returns:
+        Tuple[str, List[Dict]]: (검색된 문서 내용, 문서 메타데이터 리스트)
+    """
+    logger.info("execute_rag 진입: query='%s', needs_table=%s", query, needs_table)
+    
+    # 필수 파라미터 추출
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    embed_model = kwargs.get("embed_model")
+    embed_tokenizer = kwargs.get("embed_tokenizer")
+    data = kwargs.get("data")
+    config = kwargs.get("config")
+    
+    # 테이블 필요 여부 확인
+    if needs_table == "yes":
+        logger.info("테이블 데이터 필요: SQL 생성 시작")
+        try:
+            # SQL 생성 및 실행
+            result = await generate_sql(query, model, tokenizer, config)
+            
+            # SQL 실행 결과가 없는 경우
+            if result is None:
+                logger.warning("SQL 실행 결과 없음")
+                docs = "테이블 조회 결과가 비어 있습니다. 조회할 데이터가 없거나 SQL 오류가 발생했습니다."
+                docs_list = []
+                return docs, docs_list
+            
+            # SQL 실행 결과 처리
+            final_sql_query, title, explain, table_json, chart_json, detailed_result = result
+            
+            # LLM 입력용 프롬프트 구성
+            prompt = (
+                f"실제 사용된 SQL문: {final_sql_query}\n\n"
+                f"추가 설명: {explain}\n\n"
+                f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
+                f"실제 선적된 B/L 데이터: {str(detailed_result)}\n\n"
+            )
+            
+            # 결과 메타데이터 구성
+            docs_list = [
+                {"title": title, "data": table_json},
+                {"title": "DG B/L 상세 정보", "data": detailed_result},
+            ]
+            
+            logger.info("테이블 데이터 처리 완료")
+            return prompt, docs_list
+            
+        except Exception as e:
+            logger.error("SQL 처리 중 오류 발생: %s", str(e), exc_info=True)
+            docs = f"테이블 조회 시도 중 예외가 발생했습니다. 해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다. 오류: {str(e)}"
+            docs_list = []
+            return docs, docs_list
+    else:
+        logger.info("표준 검색 실행: 키워드='%s', 시간 범위='%s'", keywords, time_range)
+        
+        # 적응형 시간 필터링 적용
+        filtered_data = expand_time_range_if_needed(time_range, data, min_docs=50)
+        
+        # 문서 검색 실행
+        logger.info("검색에 사용되는 문서 수: %d", len(filtered_data.get("vectors", [])))
+        docs, docs_list = retrieve(
+            keywords, 
+            filtered_data, 
+            config.N, 
+            embed_model, 
+            embed_tokenizer
+        )
+        
+        return docs, docs_list
+
+@time_tracker
+async def generate_answer(
+    query: str, 
+    docs: str, 
+    **kwargs
+) -> str:
+    """
+    검색된 문서를 기반으로 최종 답변 생성
+    
+    Args:
+        query: 사용자 질문
+        docs: 검색된 문서 내용
+        **kwargs: 추가 파라미터 (model, tokenizer, config)
+    
+    Returns:
+        str: 생성된 답변
+    """
+    model = kwargs.get("model")
+    tokenizer = kwargs.get("tokenizer")
+    config = kwargs.get("config")
+
+    answer = await generate(docs, query, model, tokenizer, config)
+    return answer
+
+@time_tracker
+async def query_sort(params: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    """
+    사용자 질문을 분석하여 구체화하고 RAG 파라미터를 추출
+    
+    Args:
+        params: 파라미터 딕셔너리 (user_input, model, tokenizer, embed_model, embed_tokenizer, data, config)
+    
+    Returns:
+        Tuple[str, str, str, str]: (구체화된 질문, 키워드, 테이블 필요 여부, 시간 범위)
+    """
+    max_attempts = 3
+    attempt = 0
+    
+    while attempt < max_attempts:
+        # 필요 파라미터 추출
+        query = params["user_input"]
+        model = params["model"]
+        tokenizer = params["tokenizer"]
+        config = params["config"]
+        
+        # 프롬프트 구성
+        prompt = QUERY_SORT_PROMPT.format(user_query=query)
+        logger.info("query_sort 시작 (시도 %d)", attempt + 1)
+        
+        # LLM에서 응답 생성
+        if config.use_vllm:
+            sampling_params = SamplingParams(
+                max_tokens=config.model.max_new_tokens,
+                temperature=config.model.temperature,
+                top_k=config.model.top_k,
+                top_p=config.model.top_p,
+                repetition_penalty=config.model.repetition_penalty,
+            )
+            request_id = str(uuid.uuid4())
+            answer = await collect_vllm_text(prompt, model, sampling_params, request_id)
+        else:
+            input_ids = tokenizer(
+                prompt, return_tensors="pt", truncation=True, max_length=4024
+            ).to("cuda")
+            token_count = input_ids["input_ids"].shape[1]
+            outputs = model.generate(
+                **input_ids,
+                max_new_tokens=config.model.max_new_tokens,
+                do_sample=config.model.do_sample,
+                temperature=config.model.temperature,
+                top_k=config.model.top_k,
+                top_p=config.model.top_p,
+                repetition_penalty=config.model.repetition_penalty,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+            answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
+        
+        logger.debug("Generated answer: %s", answer)
+        
+        # 응답에서 태그로 감싸진 정보 추출
+        query_pattern = r"<query.*?>(.*?)<query.*?>"
+        keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
+        table_pattern = r"<table.*?>(.*?)<table.*?>"
+        time_pattern = r"<time.*?>(.*?)<time.*?>"
+        
+        m_query = re.search(query_pattern, answer, re.DOTALL)
+        m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
+        m_table = re.search(table_pattern, answer, re.DOTALL)
+        m_time = re.search(time_pattern, answer, re.DOTALL)
+        
+        # 모든 필수 태그가 존재하는 경우
+        if m_query and m_keyword and m_table and m_time:
+            qu = m_query.group(1).strip()
+            ke = m_keyword.group(1).strip()
+            ta = m_table.group(1).strip()
+            ti = m_time.group(1).strip()
+            
+            # 'all' 시간 범위 처리
+            if ti == "all":
+                ti = "1900-01-01:2099-01-01"
+                
+            logger.info("질문 구체화 결과: 질문='%s', 키워드='%s', 테이블='%s', 시간='%s'", qu, ke, ta, ti)
+            return qu, ke, ta, ti
+        else:
+            logger.error("필요한 태그가 누락됨. 재시도 %d", attempt + 1)
+            attempt += 1
+    
+    # 최대 시도 횟수를 초과한 경우
+    raise ValueError("LLM이 올바른 태그 형식의 답변을 생성하지 못했습니다.")
+
+@time_tracker
+async def specific_question(params: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    """
+    대화 이력을 고려한 구체적인 질문 생성
+    (query_sort와 유사하지만 대화 이력 처리에 차이가 있을 수 있음)
+    
+    Args:
+        params: 파라미터 딕셔너리
+    
+    Returns:
+        Tuple[str, str, str, str]: (구체화된 질문, 키워드, 테이블 필요 여부, 시간 범위)
+    """
+    # query_sort와 동일한 로직 사용
+    return await query_sort(params)
+
+@time_tracker
+async def generate_answer_stream(
+    query: str, 
+    docs: str, 
+    model, 
+    tokenizer, 
+    config, 
+    http_query: Dict
+) -> Generator[str, None, None]:
+    """
+    스트리밍 방식으로 답변 생성
+    
+    Args:
+        query: 사용자 질문
+        docs: 검색된 문서 내용
+        model: 언어 모델
+        tokenizer: 토크나이저
+        config: 설정
+        http_query: HTTP 요청 정보
+    
+    Yields:
+        str: 생성된 부분 텍스트
+    """
+    # 프롬프트 구성
+    prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    logger.info("스트리밍 답변 생성 시작: prompt_length=%d", len(prompt))
+    
+    # 이미지 처리 관련 파라미터
+    image_data = http_query.get("image_data")
+    pil_image = None
+    
+    # 요청 ID 추출 (성능 모니터링 용)
+    request_id = http_query.get("page_id") or http_query.get("qry_id")
+    if not request_id:
+        request_id = str(uuid.uuid4())
+    
+    # 이미지 데이터가 있는 경우 처리
+    if image_data:
+        try:
+            # 이미지 처리 로직은 image_processing 모듈로 이동
+            from core.image_processing import prepare_image
+            pil_image = await prepare_image(image_data)
+            logger.info("이미지 로드 성공: %s", str(pil_image.size if pil_image else None))
+        except Exception as e:
+            logger.error("이미지 로드 실패: %s", str(e))
+    
+    # 스트리밍 방식으로 답변 생성
     if config.use_vllm:
         sampling_params = SamplingParams(
             max_tokens=config.model.max_new_tokens,
@@ -2814,13 +4064,34 @@ async def generate_answer_stream(query, docs, model, tokenizer, config, http_que
             top_p=config.model.top_p,
             repetition_penalty=config.model.repetition_penalty,
         )
-        request_id = str(uuid.uuid4())
+        
+        # 멀티모달 요청 구성
+        if pil_image:
+            # 멀티모달 처리를 위한 요청 구성
+            from core.image_processing import prepare_multimodal_request
+            generate_request = await prepare_multimodal_request(prompt, pil_image, config.model_id, tokenizer)
+        else:
+            generate_request = prompt
+        
+        # 성능 모니터링 위한 초기화
+        from utils.debug_tracking import get_performance_monitor
+        perf_monitor = get_performance_monitor()
+        if request_id:
+            perf_monitor.update_request(
+                request_id, 0, 
+                checkpoint="start_vllm_generation",
+                current_output=""
+            )
+        
+        # 스트리밍 생성
         async for partial_chunk in collect_vllm_text_stream(generate_request, model, sampling_params, request_id):
+            # 성능 모니터링 업데이트는 collect_vllm_text_stream 내부에서 수행
             yield partial_chunk
     else:
+        # HuggingFace 모델 사용 (비 vLLM)
         import torch
         from transformers import TextIteratorStreamer
-
+        
         input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
         streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
         generation_kwargs = dict(
@@ -2833,889 +4104,393 @@ async def generate_answer_stream(query, docs, model, tokenizer, config, http_que
             top_p=config.model.top_p,
             repetition_penalty=config.model.repetition_penalty,
         )
+        
         import threading
-
         t = threading.Thread(target=model.generate, kwargs=generation_kwargs)
         t.start()
+        
         for new_token in streamer:
             yield new_token
 
-
-@time_tracker
-async def collect_vllm_text_stream(prompt, engine: AsyncLLMEngine, sampling_params, request_id) -> str:
-    async for request_output in engine.generate(prompt, request_id=request_id, sampling_params=sampling_params):
-        if not request_output.outputs:
-            continue
-        for completion in request_output.outputs:
-            yield completion.text
-
-# -------------------------------------------------------------------------
-# PROCESS IMAGE QUERY (IMAGE TO TEXT) - Legacy
-# -------------------------------------------------------------------------
-@time_tracker
-async def image_query(http_query, model, config):
-    """
-    기존 ray_utils.py의 process_image_query 로직을 옮겨온 함수.
-    이미지 입력을 받아 최종 한 번에 답변을 생성(스트리밍 없음).
-    """
-    import uuid
-    import base64
-    import io
-    from PIL import Image
-    from transformers import AutoProcessor
-    from vllm import SamplingParams
-    from vllm.multimodal.utils import fetch_image
-    
-    print("[IMAGE-NONSTREAMING-QUERY] Image_query 진입")
-    
-    # 1) 파라미터 파싱
-    request_id = http_query.get("request_id", str(uuid.uuid4()))
-    image_input = http_query.get("image_data")
-    user_query = http_query.get("qry_contents", "이 이미지를 한국어로 잘 설명해주세요.")
-    print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
-    
-    # 2) Image -> PIL
-    pil_image = None
-    try:
-        print("[DEBUG] Step2 - Converting image data to PIL...")
-        if isinstance(image_input, str) and (
-            image_input.startswith("http://") or image_input.startswith("https://")
-        ):
-            print("[DEBUG]   => image_input is a URL; using fetch_image()")
-            pil_image = fetch_image(image_input)
-        else:
-            print("[DEBUG]   => image_input is presumably base64")
-            if isinstance(image_input, str) and image_input.startswith("data:image/"):
-                print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
-                image_input = image_input.split(",", 1)[-1]
-            decoded = base64.b64decode(image_input)
-            print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
-            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
-        print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
-    except Exception as e:
-        err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
-        print(err_msg)
-        return {"type": "error", "message": err_msg}
-    
-    # 3) HF Processor 로드
-    try:
-        print(f"[DEBUG] Step3 - Loading processor from '{config.model_id}' ... (use_fast=False)")
-        processor = AutoProcessor.from_pretrained(
-            config.model_id,
-            use_fast=False  # 모델이 fast processor를 지원한다면 True로 시도 가능
-        )
-        print("[DEBUG]   => processor loaded:", type(processor).__name__)
-    except Exception as e:
-        err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
-        print(err_msg)
-        return {"type": "error", "message": err_msg}
-    
-    print("[DEBUG] step 3.5 이미지에 대한 간단한 정보 및 프롬프트화 ")
-    # 이미지에 대한 간단한 정보(실제 서비스에서는 이미지 메타데이터 추출 등을 수행할 수 있음)
-    image_info = "Image data provided"  # 현재는 간단한 문자열 사용
-    
-    prompt_image_sorting = IMAGE_DESCRIPTION_PROMPT.format(image_info=image_info, user_query=user_query)
-    
-    # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
-    print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
-    messages = [
-        {
-            "role": "system",
-            "content": [{"type": "text", "text": prompt_image_sorting}]
-        },
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "url": pil_image},
-                {"type": "text",  "text": user_query},
-            ],
-        }
-    ]
-    
-    try:
-        # tokenize=False => prompt를 'raw string' 형태로 얻음
-        prompt_string = processor.apply_chat_template(
-            messages,
-            tokenize=False,           # 핵심!
-            add_generation_prompt=True,
-        )
-        print("[DEBUG]   => prompt_string full version:", prompt_string)
-    except Exception as e:
-        err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
-        print(err_msg)
-        return {"type": "error", "message": err_msg}
-    
-    # 5) Sampling Params
-    print("[DEBUG] Step5 - Setting sampling params...")
-    sampling_params = SamplingParams(
-        max_tokens=config.model.max_new_tokens,
-        temperature=config.model.temperature,
-        top_k=config.model.top_k,
-        top_p=config.model.top_p,
-        repetition_penalty=config.model.repetition_penalty,
-    )
-    print("[DEBUG]   => sampling_params =", sampling_params)
-    
-    # 6) Generate 호출
-    print("[DEBUG] Step6 - Starting vLLM generate(...) using multi_modal_data")
-    result_chunks = []
-    try:
-        # vLLM에 prompt와 함께 multi_modal_data를 넘김
-        # => vLLM 내부에서 Gemma3MultiModalProcessor가 image 임베딩 및 token placement 처리
-        generate_request = {
-            "prompt": prompt_string,
-            "multi_modal_data": {
-                "image": [pil_image]  # 여러 장이라면 list에 더 추가
-            }
-        }
-
-        async for out in model.generate(
-            prompt=generate_request,
-            sampling_params=sampling_params,
-            request_id=request_id,
-        ):
-            result_chunks.append(out)
-        print("[DEBUG] Step6 - All chunks retrieved: total:", len(result_chunks))
-
-    except Exception as e:
-        err_msg = f"[ERROR-step6] Error in model.generate: {str(e)}"
-        print(err_msg)
-        return {"type": "error", "message": err_msg}
-
-    if not result_chunks:
-        print("[DEBUG] Step6 - No output from model => returning error")
-        return {"type": "error", "message": "No output from model."}
-
-    final_output = next((c for c in result_chunks if getattr(c, "finished", False)), result_chunks[-1])
-    answer_text = "".join(piece.text for piece in final_output.outputs)
-    print(f"[DEBUG] Final answer: {answer_text}")
-
-    # 완료
-    print(f"[DEBUG] [process_image_query] DONE => request_id={request_id}")
-    
-    import json
-    try:
-        # 강제적으로 JSON 파싱 – 추가 문장이 있을 경우 추출
-        # 예를 들어, JSON 블록만 추출
-        match = re.search(r'\{.*\}', answer_text, re.DOTALL)
-        if match:
-            result = json.loads(match.group(0))
-        else:
-            raise ValueError("JSON 응답 형식 미확인")
-        if "is_structured" not in result or "description" not in result:
-            raise ValueError("응답에 필요한 키가 누락됨")
-    except Exception as e:
-        # 파싱 실패 시 기본 처리: 추가 RAG가 필요하도록 설정
-        result = {"is_structured": False, "description": http_query.get("qry_contents", "")}
-    return result
-
-
-@time_tracker
-async def image_streaming_query(http_query, model, tokenizer, config):
-    """
-    새로 추가된 이미지 스트리밍 함수:
-    - 이미지 입력 + 사용자 텍스트를 받아서, 부분 토큰을 SSE로 전달할 수 있도록 yield 함.
-    - use_vllm=True일 때는 collect_vllm_text_stream와 동일한 방식으로 partial chunk를 yield
-    - HF standard는 TextIteratorStreamer를 이용한 방식으로 partial chunk를 yield
-    """
-    import uuid
-    import base64
-    import io
-    from PIL import Image
-    from transformers import AutoProcessor
-    from vllm import SamplingParams
-    from vllm.multimodal.utils import fetch_image
-
-    print("[IMAGE-STREAMING-QUERY] Image_streaming_query 진입")
-
-    # 1) 파라미터 파싱
-    request_id = http_query.get("request_id", str(uuid.uuid4()))
-    image_input = http_query.get("image_data")
-    user_query = http_query.get("qry_contents", "이 이미지를 설명해주세요.")
-    print(f"[DEBUG] Step1 - user_query='{user_query}', image_input type={type(image_input)}")
-    
-    # 2) Image -> PIL
-    try:
-        print("[DEBUG] Step2 - Converting image data to PIL...")
-        if isinstance(image_input, str) and (image_input.startswith("http://") or image_input.startswith("https://")):
-            print("[DEBUG]   => image_input is a URL; using fetch_image()")
-            pil_image = fetch_image(image_input)
-        else:
-            print("[DEBUG]   => image_input is presumably base64")
-            if isinstance(image_input, str) and image_input.startswith("data:image/"):
-                print("[DEBUG]   => detected 'data:image/' prefix => splitting off base64 header")
-                image_input = image_input.split(",", 1)[-1]
-            decoded = base64.b64decode(image_input)
-            print(f"[DEBUG]   => decoded base64 length={len(decoded)} bytes")
-            pil_image = Image.open(io.BytesIO(decoded)).convert("RGB")
-        print("[DEBUG] Step2 - PIL image loaded successfully:", pil_image.size)
-    except Exception as e:
-        err_msg = f"[ERROR-step2] Failed to load image: {str(e)}"
-        print(err_msg)
-        yield {"type": "error", "message": err_msg}
-        return  # No value, simply return
-
-    # 3) HF Processor 로드
-    try:
-        print(f"[DEBUG] Step3 - Loading processor from '{config.model_id}' ... (use_fast=False)")
-        processor = AutoProcessor.from_pretrained(config.model_id, use_fast=False)
-        print("[DEBUG]   => processor loaded:", type(processor).__name__)
-    except Exception as e:
-        err_msg = f"[ERROR-step3] Failed to load processor: {str(e)}"
-        print(err_msg)
-        yield {"type": "error", "message": err_msg}
-        return
-
-    # 4) Chat Template 적용 (tokenize=False => 최종 prompt string만 얻음)
-    print("[DEBUG] Step4 - Constructing messages & applying chat template (tokenize=False)...")
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "url": pil_image},
-                {"type": "text",  "text": user_query},
-            ],
-        }
-    ]
-    try:
-        prompt_string = processor.apply_chat_template(
-            messages,
-            tokenize=False,           # 핵심!
-            add_generation_prompt=True,
-        )
-        print("[DEBUG]   => prompt_string :", prompt_string
-              )
-    except Exception as e:
-        err_msg = f"[ERROR-step4] Error in processor.apply_chat_template: {str(e)}"
-        print(err_msg)
-        yield {"type": "error", "message": err_msg}
-        return
-
-    # 5) Sampling Params
-    print("[DEBUG] Step5 - Setting sampling params...")
-    sampling_params = SamplingParams(
-        max_tokens=config.model.max_new_tokens,
-        temperature=config.model.temperature,
-        top_k=config.model.top_k,
-        top_p=config.model.top_p,
-        repetition_penalty=config.model.repetition_penalty,
-    )
-    print("[DEBUG]   => sampling_params =", sampling_params)
-    
-    # 6) Generate 호출
-    print("[DEBUG] Step6 - Starting vLLM generate(...) using multi_modal_data")
-    generate_request = {
-        "prompt": prompt_string,
-        "multi_modal_data": {
-            "image": [pil_image]
-        }
-    }
-    async for partial_chunk in collect_vllm_text_stream(generate_request, model, sampling_params, request_id):
-        yield partial_chunk
-
-# ---------------------------
-# *** 새로 추가된 generate_sql 함수 ***
-# *** (기존에는 SQL_NS.py 안에 있었음) ***
-# ---------------------------
-@time_tracker
-async def generate_sql(user_query, model, tokenizer, config):
-    """
-    기존 SQL_NS.py에서 VLLM을 통해 <unno>, <class>, <pol_port>, <pod_port>를 추출한 뒤
-    run_sql_unno, run_sql_bl를 호출하는 로직을 RAG.py로 옮겼습니다.
-    """
-    # 먼저 메타데이터를 읽어옴
-    metadata_location, metadata_unno = get_metadata(config)
-    print("")
-    # 프롬프트 생성
-    PROMPT = SQL_EXTRACTION_PROMPT_TEMPLATE.format(metadata_location=metadata_location, query=user_query)
-
-    from vllm import SamplingParams
-    import uuid
-
-    sampling_params = SamplingParams(
-        max_tokens=config.model.max_new_tokens,
-        temperature=config.model.temperature,
-        top_k=config.model.top_k,
-        top_p=config.model.top_p,
-        repetition_penalty=config.model.repetition_penalty,
-    )
-
-    # 최대 3회 시도
-    max_attempts = 3
-    attempt = 0
-    UN_number = UN_class = POL = POD = "NULL"
-    unno_pattern = r'<unno.*?>(.*?)<unno.*?>'
-    class_pattern = r'<class.*?>(.*?)<class.*?>'
-    pol_port_pattern = r'<pol_port.*?>(.*?)<pol_port.*?>'
-    pod_port_pattern = r'<pod_port.*?>(.*?)<pod_port.*?>'
-
-    while attempt < max_attempts:
-        accepted_request_id = str(uuid.uuid4())
-        outputs_result = await collect_vllm_text(PROMPT, model, sampling_params, accepted_request_id)
-        print(f"[GENERATE_SQL] Attempt {attempt+1}, SQL Model Outputs: {outputs_result}")
-
-        match_unno = re.search(unno_pattern, outputs_result, re.DOTALL)
-        UN_number = match_unno.group(1).strip() if match_unno else "NULL"
-
-        match_class = re.search(class_pattern, outputs_result, re.DOTALL)
-        UN_class = match_class.group(1).strip() if match_class else "NULL"
-
-        match_pol = re.search(pol_port_pattern, outputs_result, re.DOTALL)
-        POL = match_pol.group(1).strip() if match_pol else "NULL"
-
-        match_pod = re.search(pod_port_pattern, outputs_result, re.DOTALL)
-        POD = match_pod.group(1).strip() if match_pod else "NULL"
-
-        print(f"[GENERATE_SQL] 추출 결과 - UN_number: {UN_number}, UN_class: {UN_class}, POL: {POL}, POD: {POD}")
-
-        # 조건: (UN_number != NULL or UN_class != NULL) and (POL != NULL) and (POD != NULL)
-        if ((UN_number != "NULL" or UN_class != "NULL") and POL != "NULL" and POD != "NULL"):
-            break
-        attempt += 1
-
-    print(f"[GENERATE_SQL] 최종 추출 값 - UN_number: {UN_number}, UN_class: {UN_class}, POL: {POL}, POD: {POD}")
-
-    # run_sql_unno로 DG 가능 여부 확인
-    final_sql_query, result = run_sql_unno(UN_class, UN_number, POL, POD)
-    # 상세 B/L SQL
-    detailed_sql_query, detailed_result = run_sql_bl(UN_class, UN_number, POL, POD)
-
-    # Temporary: title, explain, table_json, chart_json = None
-    title, explain, table_json, chart_json = (None,) * 4
-
-    return final_sql_query, title, explain, result, chart_json, detailed_result
+# 이 RAG.py 파일은 이제 다른 모듈에서 필요한 함수들만 노출하며,
+# 세부 구현은 각각의 특화된 모듈로 이동되었습니다.
 
 ```
 
 
---- core/SQL_NS.py
+--- core/retrieval.py
 
 ```python
 
-# core/SQL_NS.py
+# core/retrieval.py
+"""
+문서 검색 관련 기능을 제공하는 모듈
 
-import os
-import subprocess
+주요 기능:
+1. 검색어(키워드)에 기반한 문서 검색
+2. 검색 결과 스코어링 및 정렬 
+3. 시간 기준 필터링 및 범위 조정
+"""
+
+import logging
+import numpy as np
+import torch
+import rank_bm25
+from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Any, Optional, Union
+
 from utils.tracking import time_tracker
-import json
-import yaml
-from box import Box
-import re
 
-# ÌôòÍ≤Ω Î≥ÄÏàò ÏÑ§Ï†ï
-os.environ['ORACLE_HOME'] = '/workspace/oracle/instantclient_23_7'
-os.environ['LD_LIBRARY_PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('LD_LIBRARY_PATH', '')
-os.environ['PATH'] = os.environ['ORACLE_HOME'] + ':' + os.environ.get('PATH', '')
-
-# Config Î∂àÎü¨Ïò§Í∏∞ (DB Ï†ëÏÜç Îì± Í∏∞ÌÉÄ Ï†ïÎ≥¥Î•º config.yamlÏóêÏÑú Í∞ÄÏ†∏Ïò®Îã§Í≥† Í∞ÄÏ†ï)
-with open("./config.yaml", "r") as f:
-    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
-    config = Box(config_yaml)
-
-# Í∏∞Î≥∏ SQL Ï†ëÏÜçÏΩîÎìú (‚Äª Ïã§Ï†ú DB Ï†ëÏÜç Í≥ÑÏ†ï/Ï£ºÏÜåÎäî Î≥∏Ïù∏ ÌôòÍ≤ΩÏóê ÎßûÍ≤å ÏàòÏ†ï ÌïÑÏöî)
-sqlplus_command = [
-    "sqlplus", "-S", "LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR"
-]
-
-'''
-### ORACLE DB Ï†ïÎ≥¥ ###
-TABLE : ai_dg_check
-    COLUMNS : CLS (ÏúÑÌóòÎ¨º ÌÅ¥ÎûòÏä§)
-              UNNO (ÏúÑÌóòÎ¨º UN Î≤àÌò∏)
-              PORT (Ìè¨Ìä∏ Î≤àÌò∏)
-              ALLOW_YN (Ï∑®Í∏â Í∞ÄÎä• Ïó¨Î∂Ä)
-'''
+# 로깅 설정
+logger = logging.getLogger("RAG.Retrieval")
 
 @time_tracker
-def check_sqlplus():
+def retrieve(
+    query: str, 
+    data: Dict[str, Any], 
+    top_n: int, 
+    embed_model, 
+    embed_tokenizer
+) -> Tuple[str, List[Dict]]:
     """
-    sqlplus Î≤ÑÏ†Ñ Ï†ïÎ≥¥ ÌôïÏù∏
+    주어진 쿼리와 관련된 문서를 검색하고 순위를 매긴 뒤 반환
+    
+    Args:
+        query: 검색 쿼리 또는 키워드
+        data: 벡터화된 문서 데이터베이스
+        top_n: 반환할 상위 문서 수
+        embed_model: 임베딩 모델
+        embed_tokenizer: 임베딩 토크나이저
+    
+    Returns:
+        Tuple[str, List[Dict]]: (문서 내용 문자열, 문서 메타데이터 리스트)
     """
+    logger.info(f"검색 시작: 쿼리='{query}', 문서 수={len(data['vectors'])}")
+    
     try:
-        result = subprocess.run(['sqlplus', '-version'], capture_output=True, text=True, check=True)
-        print(" SQL*Plus is working!")
-        print("Version info:\n", result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f"Error: {e.stderr}")
-
+        # 유사도 스코어 계산
+        sim_score = cal_sim_score(query, data["vectors"], embed_model, embed_tokenizer)
+        logger.info(f"유사도 스코어 계산 완료: shape={sim_score.shape}")
+        
+        # BM25 스코어 계산
+        bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
+        logger.info(f"BM25 스코어 계산 완료: shape={bm25_score.shape}")
+        
+        # 스코어 정규화
+        scaled_sim_score = min_max_scaling(sim_score)
+        scaled_bm25_score = min_max_scaling(bm25_score)
+        
+        # 최종 스코어 계산 (가중치 적용)
+        score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+        score_values = score[:, 0, 0]
+        
+        # 상위 N개 문서 선택
+        top_k = score[:, 0, 0].argsort()[-top_n:][::-1]
+        
+        logger.info(f"상위 {top_n}개 문서 인덱스: {top_k}")
+        logger.info(f"상위 {top_n}개 문서 스코어: {[score[:, 0, 0][i] for i in top_k]}")
+        
+        # 문서 컨텐츠와 메타데이터 구성
+        documents = ""
+        documents_list = []
+        
+        for i, index in enumerate(top_k):
+            score_str = f"{score_values[index]:.4f}"
+            # 문서 텍스트 컨텐츠 구성
+            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}, , Score: {score_str}\n"
+            
+            # 문서 메타데이터 구성
+            documents_list.append({
+                "file_name": data["file_names"][index],
+                "title": data["titles"][index],
+                "contents": data["texts_vis"][index],
+                "chunk_id": data["chunk_ids"][index],
+            })
+        
+        logger.info("검색 완료: %d개 문서 반환", len(documents_list))
+        return documents, documents_list
+        
+    except Exception as e:
+        logger.error(f"검색 중 오류 발생: {str(e)}", exc_info=True)
+        return "", []
 
 @time_tracker
-def check_db_connection():
+def cal_sim_score(
+    query: str, 
+    chunks: Union[torch.Tensor, List[torch.Tensor]], 
+    embed_model, 
+    embed_tokenizer
+) -> np.ndarray:
     """
-    DB Ïó∞Í≤∞Ïù¥ Ï†ïÏÉÅÏ†ÅÏù∏ÏßÄ ÌÖåÏä§Ìä∏
+    쿼리와 문서 청크 간의 코사인 유사도 스코어 계산
+    
+    Args:
+        query: 검색 쿼리
+        chunks: 문서 청크 임베딩 벡터 (텐서 또는 텐서 리스트)
+        embed_model: 임베딩 모델
+        embed_tokenizer: 임베딩 토크나이저
+        
+    Returns:
+        np.ndarray: 유사도 스코어 배열
     """
+    logger.info(f"유사도 계산 시작: 쿼리='{query}'")
+    
+    # 쿼리 임베딩
+    query_vector = embed(query, embed_model, embed_tokenizer)
+    
+    if len(query_vector.shape) == 1:
+        query_vector = query_vector.unsqueeze(0)
+    
+    # 각 청크와의 유사도 계산
+    score = []
+    for chunk in chunks:
+        if len(chunk.shape) == 1:
+            chunk = chunk.unsqueeze(0)
+        
+        # 정규화 및 코사인 유사도 계산
+        query_norm = query_vector / query_vector.norm(dim=1)[:, None]
+        chunk_norm = chunk / chunk.norm(dim=1)[:, None]
+        sim_score = torch.mm(query_norm, chunk_norm.transpose(0, 1)) * 100
+        score.append(sim_score.detach())
+    
+    return np.array(score)
+
+@time_tracker
+def cal_bm25_score(
+    query: str, 
+    indexes: List[str], 
+    embed_tokenizer
+) -> np.ndarray:
+    """
+    BM25 알고리즘을 사용하여 쿼리와 문서 간의 관련성 스코어 계산
+    
+    Args:
+        query: 검색 쿼리
+        indexes: 문서 텍스트 목록
+        embed_tokenizer: 토크나이저
+        
+    Returns:
+        np.ndarray: BM25 스코어 배열
+    """
+    logger.info(f"BM25 계산 시작: 쿼리='{query}', 문서 수={len(indexes)}")
+    
+    if not indexes:
+        logger.warning("BM25에 빈 문서 리스트가 제공됨")
+        return np.zeros(0)
+    
+    # 토큰화
+    tokenized_corpus = []
+    for i, text in enumerate(indexes):
+        try:
+            tokens = embed_tokenizer(
+                text,
+                return_token_type_ids=False,
+                return_attention_mask=False,
+                return_offsets_mapping=False,
+            )
+            tokens = embed_tokenizer.convert_ids_to_tokens(tokens["input_ids"])
+            
+            if len(tokens) == 0:
+                logger.warning(f"문서 {i}가 빈 토큰 리스트로 토큰화됨")
+                tokens = ["<empty>"]
+                
+            tokenized_corpus.append(tokens)
+            
+        except Exception as e:
+            logger.error(f"문서 {i} 토큰화 실패: {str(e)}")
+            tokenized_corpus.append(["<error>"])
+    
+    # BM25 계산
     try:
-        sql_query = "SELECT 1 FROM dual;\nEXIT;\n"
-        result = subprocess.run(
-            sqlplus_command,
-            input=sql_query,
-            capture_output=True,
-            text=True
+        bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
+        tokenized_query = embed_tokenizer.convert_ids_to_tokens(embed_tokenizer(query)["input_ids"])
+        scores = bm25.get_scores(tokenized_query)
+        
+        # NaN/Inf 값 처리
+        if np.isnan(scores).any() or np.isinf(scores).any():
+            logger.warning("BM25에서 NaN/Inf 스코어 발생 - 0으로 대체")
+            scores = np.nan_to_num(scores)
+        
+        logger.info(
+            f"BM25 스코어: min={scores.min():.4f}, max={scores.max():.4f}, mean={scores.mean():.4f}"
         )
-
-        if "1" in result.stdout:
-            print("  Successfully connected to the Namsung database!")
-        else:
-            print(" Connection to the database failed!")
-
-    except subprocess.CalledProcessError as e:
-        print(f" Error: {e.stderr}")
-
+        return scores
+        
+    except Exception as e:
+        logger.error(f"BM25 계산 실패: {str(e)}")
+        return np.zeros(len(indexes))
 
 @time_tracker
-def get_all_schema_tables():
+def embed(query: str, embed_model, embed_tokenizer) -> torch.Tensor:
     """
-    Î™®Îì† Ïä§ÌÇ§Îßà, ÌÖåÏù¥Î∏î Î™©Î°ù Ï°∞Ìöå
+    텍스트를 임베딩 벡터로 변환
+    
+    Args:
+        query: 임베딩할 텍스트
+        embed_model: 임베딩 모델
+        embed_tokenizer: 임베딩 토크나이저
+        
+    Returns:
+        torch.Tensor: 임베딩 벡터
     """
-    try:
-        sqlplus_cmd = [
-            'sqlplus', '-S', 'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR'
-        ]
-        sql_query = """SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF;
-        SELECT OWNER, TABLE_NAME FROM ALL_TABLES ORDER BY OWNER, TABLE_NAME;
-        EXIT;"""
-
-        result = subprocess.run(
-            sqlplus_cmd,
-            input=sql_query,
-            capture_output=True,
-            text=True
-        )
-
-        schema_tables = {}
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if line:
-                parts = line.split()
-                if len(parts) >= 2:
-                    schema, table = parts[0], parts[1]
-                    if schema not in schema_tables:
-                        schema_tables[schema] = []
-                    schema_tables[schema].append(table)
-
-        if schema_tables:
-            print("  Ïä§ÌÇ§ÎßàÎ≥Ñ ÌÖåÏù¥Î∏î Î™©Î°ù:")
-            for schema, tables in schema_tables.items():
-                print(f"\nüîπ Ïä§ÌÇ§Îßà: {schema}")
-                for t in tables:
-                    print(f"  - {t}")
-        else:
-            print(" ÌÖåÏù¥Î∏îÏù¥ Ï°¥Ïû¨ÌïòÏßÄ ÏïäÏäµÎãàÎã§.")
-
-        return schema_tables
-
-    except subprocess.CalledProcessError as e:
-        print(f" Error: {e.stderr}")
-        return {}
-
-
-def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
-    """
-    ÏòàÏãú Ìï®Ïàò: OPRAIMDG ÌÖåÏù¥Î∏îÎ°úÎ∂ÄÌÑ∞ UN, CLASS, DESCRIPTION Ï†ïÎ≥¥Î•º JSONÏúºÎ°ú ÎßåÎìúÎäî Ìï®Ïàò
-    """
-    sql_query = f"""
-    SET LINESIZE 2000;
-    SET PAGESIZE 0;
-    SET TRIMSPOOL ON;
-    COL IMDCOM FORMAT A200;
-    SELECT IMDUNM, IMDCLS, REPLACE(REPLACE(IMDCOM, CHR(10), ' '), CHR(13), ' ') AS IMDCOM 
-    FROM {schema_name}.{table_name};
-    EXIT;
-    """
-
-    try:
-        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
-        print(f"  RESULT: \n{str(result)[:1000]}")
-        output = result.stdout
-        print(f"  OUTPUT: \n{str(output)[:1000]}")
-
-        lines = output.strip().split("\n")
-        print(f"  LINE: \n{str(lines)[:1000]}")
-        metadata = []
-
-        for line in lines[:-1]:
-            values = line.split(None, 2)
-            if len(values) == 3:
-                imdunm = values[0].strip()
-                imdcls = values[1].strip()
-                imdcom = values[2].strip()
-                metadata.append({
-                    "UNNO": imdunm,
-                    "Class": imdcls,
-                    "Description": imdcom
-                })
-
-        json_filename = "/workspace/data/METADATA_OPRAIMDG.json"
-        with open(json_filename, "w", encoding="utf-8") as json_file:
-            json.dump(metadata, json_file, indent=4, ensure_ascii=False)
-
-        print(f"  Metadata saved to {json_filename}")
-
-    except subprocess.CalledProcessError as e:
-        print(f" SQL Execution Error: {e.stderr}")
-
+    logger.info(f"임베딩 시작: '{query}'")
+    
+    inputs = embed_tokenizer(query, padding=True, truncation=True, return_tensors="pt")
+    embeddings, _ = embed_model(**inputs, return_dict=False)
+    
+    logger.info("임베딩 완료")
+    return embeddings[0][0]
 
 @time_tracker
-def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
+def min_max_scaling(arr: np.ndarray) -> np.ndarray:
     """
-    ai_dg_check ÌÖåÏù¥Î∏îÏóêÏÑú CLS, UNNO, PORTÏóê ÎåÄÌïú DG ÏÑ†Ï†Å Í∞ÄÎä• Ïó¨Î∂Ä Ï°∞Ìöå
+    배열을 0-1 범위로 정규화
+    
+    Args:
+        arr: 정규화할 배열
+        
+    Returns:
+        np.ndarray: 정규화된 배열
     """
-    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
-    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
-
-    sql_query = f"""
-    SET LINESIZE 150;
-    SET PAGESIZE 1000;
-    SET TRIMSPOOL ON;
-
-    SELECT 
-        p.cls  AS CLS,
-        p.unno AS UNNO,
-        p.port AS POL_PORT,
-        d.port AS POD_PORT,
-        DECODE(p.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Landing_STATUS,
-        DECODE(d.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Departure_STATUS
-    FROM icon.ai_dg_check p
-    JOIN icon.ai_dg_check d 
-        ON p.unno = d.unno 
-        AND p.cls = d.cls
-    WHERE (p.cls={cls_val} OR {cls_val} IS NULL) AND (p.unno={unno_val} OR {unno_val} IS NULL) 
-      AND p.port LIKE '{pol_port}'
-      AND (p.cls={cls_val} OR {cls_val} IS NULL) AND (d.unno={unno_val} OR {unno_val} IS NULL) 
-      AND d.port LIKE '{pod_port}';
-    EXIT;
-    """
-
-    try:
-        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
-        print("  SQL Query Results:\n", result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f" Error: {e.stderr}")
-
-    return sql_query, result.stdout
-
+    arr_min = arr.min()
+    arr_max = arr.max()
+    
+    if arr_max == arr_min:
+        logger.warning("정규화 범위가 0 - 0으로 들어옴")
+        return np.zeros_like(arr)
+        
+    return (arr - arr_min) / (arr_max - arr_min)
 
 @time_tracker
-def run_sql_bl(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
+def sort_by_time(time_bound: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    B/L ÏÉÅÏÑ∏ Ï°∞Ìöå
+    시간 범위에 따라 데이터 필터링
+    
+    Args:
+        time_bound: 시간 범위 ("all" 또는 "시작일:종료일" 형식)
+        data: 원본 데이터
+        
+    Returns:
+        Dict[str, Any]: 필터링된 데이터
     """
-    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
-    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
+    original_count = len(data["times"])
+    logger.info(f"시간 필터링 전 문서 수: {original_count}")
+    
+    # 전체 기간 선택 시 원본 반환
+    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
+        logger.info("전체 기간 사용 - 모든 문서 포함")
+        return data
+    
+    # 시간 범위 파싱
+    date_format = "%Y-%m-%d"
+    target_date_start = datetime.strptime(time_bound.split(":")[0], date_format)
+    target_date_end = datetime.strptime(time_bound.split(":")[1], date_format)
+    
+    # 시간 범위에 맞는 인덱스 찾기
+    matching_indices = [
+        i
+        for i, date in enumerate(data["times"])
+        if (not isinstance(date, str)) and (target_date_start < date < target_date_end)
+    ]
+    
+    filtered_count = len(matching_indices)
+    logger.info(f"시간 필터링 후 문서 수: {filtered_count}, 기간: {time_bound}")
+    
+    # 필터링 결과가 너무 적은 경우 경고
+    if filtered_count < 50 and filtered_count < original_count * 0.1:
+        logger.warning(f"시간 필터로 인해 문서가 크게 줄었습니다: {original_count} → {filtered_count}")
+    
+    # 필터링된 데이터 구성
+    filtered_data = {}
+    filtered_data["file_names"] = [data["file_names"][i] for i in matching_indices]
+    filtered_data["titles"] = [data["titles"][i] for i in matching_indices]
+    filtered_data["times"] = [data["times"][i] for i in matching_indices]
+    filtered_data["chunk_ids"] = [data["chunk_ids"][i] for i in matching_indices]
+    
+    # 벡터 데이터 처리
+    if isinstance(data["vectors"], torch.Tensor):
+        filtered_data["vectors"] = data["vectors"][matching_indices]
+    else:
+        filtered_data["vectors"] = [data["vectors"][i] for i in matching_indices]
+    
+    # 텍스트 데이터 처리
+    filtered_data["texts"] = [data["texts"][i] for i in matching_indices]
+    filtered_data["texts_short"] = [data["texts_short"][i] for i in matching_indices]
+    filtered_data["texts_vis"] = [data["texts_vis"][i] for i in matching_indices]
+    
+    return filtered_data
 
-    sql_query = f"""
-    SELECT *
-    FROM (
-        SELECT
-            MST.FRTBNO AS "B/L No",
-            MST.FRTOBD AS onBoard_Date,
-            MST.FRTPOL AS POL,
-            MST.FRTPOD AS POD,
-            MST.FRTSBM AS ship_back,
-            CNT.KCTUNN AS UNNO,
-            CNT.KCTCLS AS CLASS,
-            COUNT(*) AS "DG_Container_Count"
-        FROM ICON.WSDAMST MST
-        JOIN ICON.WSDACNT CNT ON CNT.KCTBNO = MST.FRTBNO
-        WHERE MST.BUKRS = '1000'
-        AND CNT.BUKRS = '1000'
-        AND MST.FRTOBD BETWEEN TO_CHAR(SYSDATE-1095,'YYYYMMDD')+1 AND TO_CHAR(SYSDATE+1,'YYYYMMDD')
-        AND CNT.KCTUNN = {unno_val}
-        AND CNT.KCTCLS = {cls_val}
-        AND MST.FRTPOL = '{pol_port}'
-        AND MST.FRTPOD = '{pod_port}'
-        GROUP BY
-            MST.FRTBNO,
-            MST.FRTOBD,
-            MST.FRTPOL,
-            MST.FRTPOD,
-            MST.FRTSBM,
-            CNT.KCTUNN,
-            CNT.KCTCLS
-    )
-    WHERE ROWNUM <= 5;
-    EXIT;
+@time_tracker
+def expand_time_range_if_needed(
+    time_bound: str, 
+    data: Dict[str, Any], 
+    min_docs: int = 50
+) -> Dict[str, Any]:
     """
-
+    검색 결과가 너무 적은 경우 시간 범위를 자동으로 확장
+    
+    Args:
+        time_bound: 시간 범위
+        data: 원본 데이터
+        min_docs: 최소 필요 문서 수
+        
+    Returns:
+        Dict[str, Any]: 필터링된 데이터 (필요시 확장된 범위 적용)
+    """
+    # 전체 기간 선택 시 원본 반환
+    if time_bound == "all" or time_bound == "1900-01-01:2099-01-01":
+        logger.info("전체 기간 사용")
+        return data
+    
+    # 초기 필터링 시도
+    filtered_data = sort_by_time(time_bound, data)
+    filtered_count = len(filtered_data.get("times", []))
+    
+    # 충분한 문서가 있으면 그대로 반환
+    if filtered_count >= min_docs:
+        logger.info(f"원래 범위로 충분한 문서 확보: {filtered_count}개")
+        return filtered_data
+    
+    logger.info(f"문서 수 부족: {filtered_count}개 (최소 필요: {min_docs}개) - 범위 확장 시도")
+    
+    # 시간 범위 파싱
+    date_format = "%Y-%m-%d"
     try:
-        result = subprocess.run(sqlplus_command, input=sql_query, capture_output=True, text=True)
-        print("[SQL_NS] SQL Query run_sql_bl Results:\n", result.stdout)
-    except subprocess.CalledProcessError as e:
-        print(f"[SQL_NS] run_sql_bl Error: {e.stderr}")
-
-    return sql_query, result.stdout
-
-
-def get_metadata(config):
-    """
-    metadata_path (port Îç∞Ïù¥ÌÑ∞), metadata_unno (UN Î≤àÌò∏ Î¶¨Ïä§Ìä∏)Ïóê ÏûàÎäî ÎÇ¥Ïö©ÏùÑ Î∂àÎü¨ÏôÄ Î∞òÌôò
-    """
-    print("[SOOWAN] get_metadata ÏßÑÏûÖ")
-    if not config or not hasattr(config, "metadata_unno"):
-        raise ValueError("Config Í∞ùÏ≤¥Ïóê 'metadata_unno' ÏÜçÏÑ±Ïù¥ ÏóÜÏäµÎãàÎã§.")
-
-    unno_path = config.metadata_unno
-    port_path = config.metadata_path
-
-    with open(port_path, "r", encoding="utf-8") as f:
-        port_data = json.load(f)
-    location_codes = json.dumps(port_data.get("location_code"), ensure_ascii=False)
-
-    with open(unno_path, "r", encoding="utf-8") as f:
-        unno_data = json.load(f)
-    unno_list_as_string = json.dumps(unno_data, ensure_ascii=False)
-
-    return location_codes, unno_list_as_string
-
-
-if __name__ == "__main__":
-    # ÏïÑÎûòÎäî ÌÖåÏä§Ìä∏/ÎîîÎ≤ÑÍπÖÏö© ÏΩîÎìú
-    # ÌïÑÏöîÌïú Í≤ΩÏö∞ÏóêÎßå ÏÇ¨Ïö© Í∞ÄÎä•. Ïã§Ï†ú Ïö¥ÏòÅ ÏãúÏóî Ï†úÍ±∞Ìï† ÏàòÎèÑ ÏûàÏùå.
-
-    check_sqlplus()             # sqlplusÍ∞Ä Ïûò ÎèôÏûëÌïòÎäîÏßÄ ÌôïÏù∏
-    check_db_connection()       # Îç∞Ïù¥ÌÑ∞Î≤†Ïù¥Ïä§ Ï†ëÏÜç Ïó¨Î∂Ä ÌôïÏù∏
-    schema_info = get_all_schema_tables()
-    print("Schema info:", schema_info)
-    # make_metadata_from_table()  # ÌäπÏ†ï ÌÖåÏù¥Î∏îÎ°úÎ∂ÄÌÑ∞ Î©îÌÉÄÎç∞Ïù¥ÌÑ∞ ÏÉùÏÑ±ÌïòÎäî ÏòàÏãú
-    # ÏòàÏãú SQL Ïã§Ìñâ
-    sql_q, sql_res = run_sql_unno(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
-    print("[TEST] run_sql_unno result:", sql_q, sql_res)
-    sql_q2, sql_res2 = run_sql_bl(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
-    print("[TEST] run_sql_bl result:", sql_q2, sql_res2)
-
-```
-
-
---- prompt/prompt_rag.py
-
-```python
-
-# prompt/prompt_rag.py
-from datetime import datetime
-
-# Get today's date (this is computed when the module is loaded)
-TODAY = datetime.today()
-
-### 수정 : --- 3개 질문 유형에 대해서만 SQL로 넘어감 ---
-# New Prompt for query sorting
-QUERY_SORT_PROMPT = f"""
-<bos><start_of_turn>user
-너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. 
-query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. 
-keyword는 질문의 키워드를 뽑는거야. 
-table은 질문에 대한 답을 할때 정형 데이터가 필요한지 여부야, 현재는 선적 가능성 관련 질문만 가능하니 이때만 yes로 답해줘.
-time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는 {TODAY.year}년 {TODAY.month}월 {TODAY.day}일). 
-시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) 
-또한, '최근'이라는 말이 들어가면 2024-06-01:{TODAY.year}-{TODAY.month}-{TODAY.day}로 설정해줘.
-
-내가 먼저 예시를 줄게
-
-질문: UN 번호 1689 DG화물, 부산에서 미즈시마 선적 가능 여부를 확인해 주세요.
-답변:
-<query/>UN 번호 1689 화물의 부산항에서 미즈시마항 선적 가능 여부를 확인해 주세요.<query>
-<keyword/>UN번호 1689, 부산항, 미즈시마항, 선적가능성<keyword>
-<table/>yes<table>
-<time/>2024-08-01:2024-{TODAY.month}-{TODAY.day}<time>
-
-질문: 올해 3월에 중국 시장 전망에 대해 조사했던 내용을 정리해줘
-답변:
-<query/>2024년 3월 중국시장 전망에 대한 조사내용을 알려주고 정리해줘<query>
-<keyword/>2024년 3월 중국시장 전망<keyword>
-<table/>no<table>
-<time/>2024-02-01:2024-05-01<time>
-
-질문: 부산발 인도네시아착 경쟁사 서비스 및 항차수를 알려줘
-답변:
-<query/>부산 출발 인도네시아 도착 경쟁사 서비스 및 항차수<query>
-<keyword/>부산발 인도네시아착 경쟁사 서비스 항차수<keyword>
-<table/>no<table>
-<time/>all<time>
-
-질문: 남성해운의 인도 대리점 선정 과정은 어떻게 돼?
-답변:
-<query/>인도 대리점 선정과정을 보기 좋게 정리해줘<query>
-<keyword/>인도 대리점 선정과정<keyword>
-<table/>no<table>
-<time/>all<time>
-
-### 아래 구분자를 추가하여 실제 사용자 질문을 명확히 구분합니다.
-### 새로운 질문: {{user_query}}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-# Prompt for query sorting
-QUERY_SORT_PROMPT_OLD = f"""
-<bos><start_of_turn>user
-너는 질문의 유형을 파악하고 분류하는 역할이야. 질문에 대해 질문자의 의도를 파악하고, 내가 지시하는 대로 답변형태를 맞춰서 해줘. 
-query는 질문을 구체화 하는 거야, 그리고 만약 질문에 오타가 있다면 고쳐줘. 
-keyword는 질문의 키워드를 뽑는거야. 
-table은 질문에 대한 답을 할때 표형식 데이터가 필요한지 여부야, 현재는 매출액 관련 질문만 대응 가능하니 이때만 yes로 답해줘.
-time은 질문에 답하기 위해 필요한 데이터의 날짜 범위야(오늘 날짜는 {TODAY.year}년 {TODAY.month}월 {TODAY.day}일). 
-시간의 길이는 최소 3개월로 설정해야하고, 날짜는 1일로 설정해. (예시:2024년 10월에 대한 질문은 2024-08-01:2024-11-01) 
-또한, '최근'이라는 말이 들어가면 2024-06-01:{TODAY.year}-{TODAY.month}-{TODAY.day}로 설정해줘.
-
-내가 먼저 예시를 줄게
-
-질문: 최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?
-답변:
-<query/>최근 일본발 베트남착 매출면에서 우리사에 기여도가 높은 화주(고객)은 어떻게 돼?<query>
-<keyword/>일본발 베트남착 매출 기여도 화주 고객<keyword>
-<table/>yes<table>
-<time/>2024-08-01:2024-{TODAY.month}-{TODAY.day}<time>
-
-질문: 올해 3월에 중국 시장 전망에 대해 조사했던 내용을 정리해줘
-답변:
-<query/>2024년 3월 중국시장 전망에 대한 조사내용을 알려주고 정리해줘<query>
-<keyword/>2024년 3월 중국시장 전망<keyword>
-<table/>no<table>
-<time/>2024-02-01:2024-05-01<time>
-
-질문: 부산발 인도네시아착 경쟁사 서비스 및 항차수를 알려줘
-답변:
-<query/>부산 출발 인도네시아 도착 경쟁사 서비스 및 항차수<query>
-<keyword/>부산발 인도네시아착 경쟁사 서비스 항차수<keyword>
-<table/>no<table>
-<time/>all<time>
-
-질문: 남성해운의 인도 대리점 선정 과정은 어떻게 돼?
-답변:
-<query/>인도 대리점 선정과정을 보기 좋게 정리해줘<query>
-<keyword/>인도 대리점 선정과정<keyword>
-<table/>no<table>
-<time/>all<time>
-
-### 아래 구분자를 추가하여 실제 사용자 질문을 명확히 구분합니다.
-### 새로운 질문: {{user_query}}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-# Template for generating an answer based on internal documents
-GENERATE_PROMPT_TEMPLATE = """
-<bos><start_of_turn>user
-너는 남성해운의 도움을 주는 데이터 분석가야.
-
-주어진 **내부 자료**를 바탕으로 **내 질문**에 **상세하고 논리정연한** 답변을 작성해줘.
-**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**으로 작성해줘.
-
-1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 **한 줄 이상의 공백**을 넣어줘.
-2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
-3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
-4. **표**: SQL 표 결과가 답변에 포함될 경우, 반드시 표의 시작 부분에 "<<<TABLE>>>"와 끝 부분에 "<<<END_TABLE>>>"라는 구분자를 추가해서 출력해줘.
-5. **코드 블록**: 예시 코드나 특수한 데이터는 ``` ``` 언어명 ... ``` ``` 을 사용해 표시해줘.
-6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
-7. **각주(footnotes)**: 답변에 각주가 필요한 경우, 본문 중에 `[^1]`, `[^2]`와 같은 형태로 표시하고, 마크다운 형식과 같게 답변 마지막에 해당 각주 내용을 작성해줘.
-
-만약 **주어진 자료**에 질문에 해당하는 내용이 **없다면**, `"내부 자료에 해당 자료 없음"`이라고만 답변해줘.
-
-**주의**: 
-- 너무 짧거나 단답형이 아닌, 충분히 **길고 자세한 보고서 형태**로 답변해줘.
-- 가능하면 **논리적 근거**와 **예시**를 들어 설명해줘.
-- **문단**을 명확히 구분하여 **읽기 편하게** 작성해줘.
-
-아래는 **내부 자료**와 **질문**이 주어질 것이니, 꼭 이 지침을 따라 답변해줘.
-
-내부 자료: {docs}
-
-질문: {query}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-# Template for the streaming version of answer generation
-STREAM_PROMPT_TEMPLATE = """
-<bos><start_of_turn>user
-너는 남성해운의 도움을 주는 데이터 분석가야.
-
-주어진 **내부 자료**를 바탕으로 **내 질문**에 **상세하고 논리정연한** 답변을 작성해줘.
-**답변은 반드시 아래 규칙에 맞춰 Markdown 형식**으로 작성해줘.
-
-1. **문단/제목:** `#`, `##`, `###` 등의 헤더를 사용하고, 문단 사이에 **한 줄 이상의 공백**을 넣어줘.
-2. **강조**: 강조할 단어나 문구는 `**굵게**`(이중별표) 또는 `*기울임*`(단일별표)를 사용해줘.
-3. **목록**: 필요하다면 `-` 또는 `*` 기호를 사용해 **목록**을 만들어줘.
-4. **표**: SQL 표 결과가 답변에 포함될 경우, 반드시 표의 시작 부분에 "<<<TABLE>>>"와 끝 부분에 "<<<END_TABLE>>>"라는 구분자를 추가해서 출력해줘.
-5. **코드 블록**: 예시 코드나 특수한 데이터는 ``` ``` 언어명 ... ``` ``` 을 사용해 표시해줘.
-6. **출처**: 내부 자료를 참조했다면 **어디서 어떤 내용을 사용했는지**를 마지막에 간단히 표기해줘.
-7. **각주(footnotes)**: 답변에 각주가 필요한 경우, 본문 중에 `[^1]`, `[^2]`와 같은 형태로 표시하고, 마크다운 형식과 같게 답변 마지막에 해당 각주 내용을 작성해줘.
-
-만약 **주어진 자료**에 질문에 해당하는 내용이 **없다면**, `"내부 자료에 해당 자료 없음"`이라고만 답변해줘.
-
-**주의**: 
-- 너무 짧거나 단답형이 아닌, 충분히 **길고 자세한 보고서 형태**로 답변해줘.
-- 가능하면 **논리적 근거**와 **예시**를 들어 설명해줘.
-- **문단**을 명확히 구분하여 **읽기 편하게** 작성해줘.
-
-아래는 **내부 자료**와 **질문**이 주어질 것이니, 꼭 이 지침을 따라 답변해줘.
-
-내부 자료: {docs}
-
-질문: {query}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-IMAGE_DESCRIPTION_PROMPT = """
-<bos><start_of_turn>user
-너는 이미지 OCR 및 데이터 정제 전문가이다.
-주어진 이미지를 분석하여, 만약 이미지에 표, 그래프, 또는 기타 구조화된 데이터가 포함되어 있다면,
-모든 데이터를 누락 없이 OCR 처리하여 정돈된 전체 데이터를 출력하라.
-그렇지 않다면, 이미지의 주요 내용을 중요 정보가 누락되지 않도록 최대한 자세하게 요약하라.
-출력은 반드시 오직 JSON 형식으로만 출력해야 하며, 추가적인 설명이나 부가 문장은 없어야 한다.
-출력 형식:
-{{"is_structured": True, "description": "<이미지의 전체 OCR 결과>"}} 또는 {{"is_structured": False, "description": "<이미지 요약 내용>"}}
-아래 조건을 반드시 준수하라.
-
-이미지 정보: {image_info}<end_of_turn>
-<start_of_turn>model
-답변:
-"""
-
-```
-
-
---- prompt/prompt_sql.py
-
-```python
-
-# prompt/prompt_sql.py
-
-"""
-Prompt templates for SQL extraction tasks.
-"""
-
-SQL_EXTRACTION_PROMPT_TEMPLATE = """
-<bos>
-<system>
-"YourRole": "질문으로 부터 조건을 추출하는 역할",
-"YourJob": "아래 요구 사항에 맞추어 'unno', 'class', 'pol_port', 'pod_port' 정보를 추출하여, 예시처럼 답변을 구성해야 합니다.",
-"Requirements": [
-    unno: UNNO Number는 4개의 숫자로 이루어진 위험물 번호 코드야.
-    class : UN Class는 2.1, 6.0,,, 의 숫자로 이루어진 코드야.
-    pol_port, pod_port: 항구 코드는 5개의 알파벳 또는, 나라는 2개의 알파벳과 %로 이루어져 있어. 다음은 항구 코드에 대한 메타데이터야 {metadata_location}. 여기에서 매칭되는 코드만을 사용해야 해. 항구는 항구코드, 나라는 2개의 나라코드와 %를 사용해.
-    unknown : 질문에서 찾을 수 없는 정보는 NULL을 출력해줘.
-]
-"Examples": [
-    "질문": "UN 번호 1689 화물의 부산에서 미즈시마로의 선적 가능 여부를 확인해 주세요.",
-    "답변": "<unno/>1689<unno>\\n<class/>NULL<class>\\n<pol_port/>KRPUS<pol_port>\\n<pod_port/>JPMIZ<pod_port>",
-    "질문": "UN 클래스 2.1 화물의 한국에서 일본으로의 선적 가능 여부를 확인해 주세요.",
-    "답변": "<unno/>NULL<unno>\\n<class/>2.1<class>\\n<pol_port/>KR%<pol_port>\\n<pod_port/>JP%<pod_port>"
-]
-- 최종 출력은 반드시 다음 4가지 항목을 포함해야 합니다:
-    <unno/>...<unno>
-    <class/>...<class>
-    <pol_port/>...<pol_port>
-    <pod_port/>...<pod_port>
-</system>
-
-<user>
-질문: "{query}"
-</user>
-
-<assistant>
-답변:
-</assistant>
-"""
+        start_date = datetime.strptime(time_bound.split(":")[0], date_format)
+        end_date = datetime.strptime(time_bound.split(":")[1], date_format)
+    except Exception as e:
+        logger.error(f"날짜 형식 오류: {time_bound}, 오류: {e}")
+        return data
+    
+    # 단계적으로 범위 확장 시도
+    expansions = [
+        (3, "3개월"),
+        (6, "6개월"),
+        (12, "1년"),
+        (24, "2년"),
+        (60, "5년"),
+    ]
+    
+    for months, label in expansions:
+        # 확장된 범위 계산
+        new_start = start_date - timedelta(days=30 * months // 2)
+        new_end = end_date + timedelta(days=30 * months // 2)
+        
+        new_range = f"{new_start.strftime(date_format)}:{new_end.strftime(date_format)}"
+        logger.info(f"시간 범위 {label} 확장 시도: {new_range}")
+        
+        # 확장된 범위로 필터링
+        expanded_data = sort_by_time(new_range, data)
+        expanded_count = len(expanded_data.get("times", []))
+        
+        # 충분한 문서를 찾았으면 반환
+        if expanded_count >= min_docs:
+            logger.info(f"{label} 확장으로 {expanded_count}개 문서 확보")
+            return expanded_data
+    
+    # 모든 확장 시도 실패 시 전체 데이터 반환
+    logger.warning("모든 확장 시도 실패, 전체 데이터셋 사용")
+    return data
 
 ```
 

@@ -12,6 +12,7 @@ import logging
 import asyncio
 import concurrent.futures
 from typing import Dict, Any, List, Generator, AsyncGenerator
+import uuid
 
 from utils.tracking import time_tracker
 from prompt import GENERATE_PROMPT_TEMPLATE
@@ -62,7 +63,6 @@ async def generate(
         )
         
         # 요청 ID 생성
-        import uuid
         accepted_request_id = str(uuid.uuid4())
         
         # vLLM으로 텍스트 생성
@@ -162,13 +162,38 @@ async def collect_vllm_text_stream(
     """
     logger.info(f"vLLM 스트리밍 텍스트 생성 시작: request_id={request_id}")
     
+    # 토큰 카운터 초기화
+    from utils.debug_tracking import StreamingTokenCounter
+    token_counter = StreamingTokenCounter(request_id)
+    
+    accumulated_text = ""
+    
     try:
         async for request_output in engine.generate(prompt, request_id=request_id, sampling_params=sampling_params):
             if not request_output.outputs:
                 continue
                 
             for completion in request_output.outputs:
-                yield completion.text
+                new_text = completion.text
+                
+                # 새 텍스트가 생성된 경우에만 처리
+                if new_text != accumulated_text:
+                    # 새로 생성된 텍스트 부분만 추출
+                    new_portion = new_text[len(accumulated_text):]
+                    accumulated_text = new_text
+                    
+                    # vLLM 정보 추출 (가능한 경우)
+                    vllm_info = None
+                    if hasattr(completion, "token_ids"):
+                        vllm_info = {"token_ids": completion.token_ids}
+                    elif hasattr(completion, "logprobs") and completion.logprobs:
+                        # 로그 확률이 있는 경우 토큰 ID 추출 가능
+                        vllm_info = {"token_ids": [lp.token_id for lp in completion.logprobs if hasattr(lp, "token_id")]}
+                    
+                    # 토큰 카운터 업데이트
+                    token_counter.update(new_portion, vllm_info)
+                    
+                    yield new_text
     except Exception as e:
         logger.error(f"vLLM 스트리밍 생성 중 오류: {str(e)}")
         raise

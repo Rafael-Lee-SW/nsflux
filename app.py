@@ -40,8 +40,6 @@ os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 # --------- Ray ---------
 os.environ["RAY_DEDUP_LOGS"] = "0"
 
-print("[[TEST]]")
-
 from flask import (
     Flask,
     request,
@@ -63,11 +61,88 @@ from utils import random_seed, error_format, send_data_to_server, process_format
 import logging
 import threading
 
-# 로깅 설정: 요청 처리 시간과 현재 스레드 이름을 기록
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s %(levelname)s [%(threadName)s] %(message)s'
-)
+# Metrics logging configuration - 여기에 모든 로깅 설정 통합
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
+
+# 글로벌 로깅 설정
+# app.py 로깅 설정 수정
+def setup_logging():
+    """
+    통합 로깅 설정 - 중복 로그 방지
+    """
+    # 로그 포맷 설정
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - [%(threadName)s] %(message)s'
+    
+    # 루트 로거 설정
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # 기존 핸들러 제거 (중복 방지)
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # 콘솔 핸들러 추가
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(logging.Formatter(log_format))
+    root_logger.addHandler(console_handler)
+    
+    # 성능 전용 로거 설정 - 중복 로그 방지를 위한 추가 확인
+    perf_logger = logging.getLogger("performance")
+    # 기존 핸들러 모두 제거
+    for handler in perf_logger.handlers[:]:
+        perf_logger.removeHandler(handler)
+    
+    perf_logger.propagate = False  # 루트 로거로 전파하지 않음
+    perf_logger.setLevel(logging.INFO)
+    
+    # 성능 로거 핸들러 추가
+    perf_handler = logging.StreamHandler(sys.stdout)
+    perf_handler.setFormatter(logging.Formatter(log_format))
+    perf_logger.addHandler(perf_handler)
+    
+    # 파일 로깅 설정 (폴더 생성 후)
+    try:
+        os.makedirs("logs", exist_ok=True)
+        
+        # 일반 로그 파일 핸들러
+        file_handler = RotatingFileHandler(
+            "logs/server.log", 
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5
+        )
+        file_handler.setFormatter(logging.Formatter(log_format))
+        root_logger.addHandler(file_handler)
+        
+        # 성능 전용 로그 파일
+        perf_file_handler = RotatingFileHandler(
+            "logs/performance.log", 
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5
+        )
+        perf_file_handler.setFormatter(logging.Formatter(log_format))
+        perf_logger.addHandler(perf_file_handler)
+        
+    except (FileNotFoundError, PermissionError) as e:
+        logging.warning(f"로그 파일을 생성할 수 없습니다: {e}. 콘솔 로깅만 활성화됩니다.")
+    
+    # Ray 로거와 vLLM 로거 제어
+    ray_logger = logging.getLogger("ray")
+    ray_logger.setLevel(logging.WARNING)  # Ray 로그 축소
+    
+    vllm_logger = logging.getLogger("vllm")
+    vllm_logger.setLevel(logging.INFO)   # vLLM 로그는 INFO 유지
+    
+    # 스레드 이름으로 로깅되는 것 방지
+    thread_logger = logging.getLogger("Thread")
+    thread_logger.setLevel(logging.WARNING)  
+    
+    # 로깅 설정 확인
+    logging.info("로깅 시스템 초기화 완료 - 중복 로그 방지")
+
+# 로깅 설정 적용
+setup_logging()
 
 import ray
 from ray import serve

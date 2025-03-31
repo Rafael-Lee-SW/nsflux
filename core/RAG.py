@@ -44,13 +44,11 @@ from vllm import SamplingParams
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.model_executor.models.interfaces import SupportsMultiModal
 
+# Tracking
+from utils.debug_tracking import get_performance_monitor
+
 # 로깅 설정
 logger = logging.getLogger("RAG")
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
 
 # 글로벌 구분자
 SECTION_SEPARATOR = "-" * 100
@@ -300,6 +298,11 @@ async def generate_answer_stream(
     image_data = http_query.get("image_data")
     pil_image = None
     
+    # 요청 ID 추출 (성능 모니터링 용)
+    request_id = http_query.get("page_id") or http_query.get("qry_id")
+    if not request_id:
+        request_id = str(uuid.uuid4())
+    
     # 이미지 데이터가 있는 경우 처리
     if image_data:
         try:
@@ -319,7 +322,6 @@ async def generate_answer_stream(
             top_p=config.model.top_p,
             repetition_penalty=config.model.repetition_penalty,
         )
-        request_id = str(uuid.uuid4())
         
         # 멀티모달 요청 구성
         if pil_image:
@@ -329,8 +331,19 @@ async def generate_answer_stream(
         else:
             generate_request = prompt
         
+        # 성능 모니터링 위한 초기화
+        from utils.debug_tracking import get_performance_monitor
+        perf_monitor = get_performance_monitor()
+        if request_id:
+            perf_monitor.update_request(
+                request_id, 0, 
+                checkpoint="start_vllm_generation",
+                current_output=""
+            )
+        
         # 스트리밍 생성
         async for partial_chunk in collect_vllm_text_stream(generate_request, model, sampling_params, request_id):
+            # 성능 모니터링 업데이트는 collect_vllm_text_stream 내부에서 수행
             yield partial_chunk
     else:
         # HuggingFace 모델 사용 (비 vLLM)

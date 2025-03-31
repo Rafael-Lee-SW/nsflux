@@ -243,16 +243,20 @@ def load_model(config):
         engine_args.disable_mm_preprocessor_cache = vllm_conf.get("disable_mm_preprocessor_cache", False)
         engine_args.limit_mm_per_prompt = vllm_conf.get("limit_mm_per_prompt", {"image": 5})
         
-        # --- Metrics (Monitoring) 관련 설정 ---
-        from vllm.config import ObservabilityConfig
-        observability_config = ObservabilityConfig(
-            show_hidden_metrics=True,
-            otlp_traces_endpoint=None,  # 필요에 따라 OTLP endpoint 설정
-            collect_model_forward_time=True,
-            collect_model_execute_time=True
-        )
-        engine_args.observability_config = observability_config
-        
+        # # --- Metrics (Monitoring) 관련 설정 ---
+        # from vllm.config import ObservabilityConfig
+        # observability_config = ObservabilityConfig(
+        #     show_hidden_metrics=True,
+        #     otlp_traces_endpoint=None,
+        #     collect_model_forward_time=True,
+        #     collect_model_execute_time=True
+        # )
+
+        # # Ensure it's properly assigned to engine_args
+        # engine_args.observability_config = observability_config
+    
+        engine_args.show_hidden_metrics_for_version = "0.7"
+    
         print("EngineArgs setting be finished")
         
         try:
@@ -262,12 +266,12 @@ def load_model(config):
                 original_signal = signal.signal
                 signal.signal = lambda s, h: None  # signal 설정 무시
                 print("비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.")
-            # --- v1 구동 해결책: ------------------------------------------------------ ---
+            # --- v1 구동 해결책: -------------------------------------------------------------
             engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
-            # v1 구동 해결책: 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) ----------------- ---
+            # v1 구동 해결책: 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) -----------------
             if threading.current_thread() is not threading.main_thread():
                 signal.signal = original_signal
-            # --- v1 구동 해결책: ------------------------------------------------------ ---
+            # --- v1 구동 해결책: -------------------------------------------------------------
             print("DEBUG: vLLM engine successfully created.") # Original
             
         except Exception as e:
