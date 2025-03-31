@@ -35,6 +35,9 @@ FROM globeai/flux_ns:env
 
 WORKDIR /workspace
 
+# Solve the C compiler problem
+RUN apt-get update && apt-get install build-essential -y
+
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget bzip2 ca-certificates curl git vim libaio1 && \
