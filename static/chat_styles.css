@@ -909,7 +909,6 @@ body {
 .send-btn.stop-btn,
 .welcome-send-btn.stop-btn {
     background-color: #f44336;
-    position: relative;
     transition: background-color 0.3s;
 }
 
@@ -921,7 +920,7 @@ body {
 /* Stop button animation */
 .send-btn.stop-btn::before,
 .welcome-send-btn.stop-btn::before {
-    content: '';
+    content: "";
     position: absolute;
     top: 0;
     left: 0;
@@ -1107,7 +1106,6 @@ body {
     display: flex;
     align-items: center;
     position: relative;
-    /* 추가 */
 }
 
 /* Dropdown 메뉴 스타일 */
@@ -1152,7 +1150,8 @@ body {
     background-color: var(--primary-hover);
 }
 
-.uploaded-images {
+.uploaded-images,
+.welcome-uploaded-images {
     max-width: 600px;
     /* 원하는 최대 너비로 설정 */
     flex-wrap: wrap;
@@ -1164,7 +1163,8 @@ body {
     padding-top: 0.5rem;
 }
 
-.uploaded-images .no-images {
+.uploaded-images .no-images,
+.welcome-uploaded-images .no-images {
     font-size: 0.75rem;
     color: var(--text-secondary);
     text-align: center;

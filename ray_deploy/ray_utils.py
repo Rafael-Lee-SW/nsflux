@@ -517,6 +517,7 @@ class InferenceActor:
         # 요청 정보 추출
         http_query, request_id, is_streaming = self._get_request_info(http_query_or_stream_dict)
         
+        
         # 요청 ID가 없으면 생성 (성능 모니터링용)
         if not request_id:
             request_id = str(uuid.uuid4())

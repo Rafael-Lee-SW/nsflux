@@ -15,7 +15,7 @@ from typing import Dict, Any, List, Generator, AsyncGenerator
 import uuid
 
 from utils.tracking import time_tracker
-from prompt import GENERATE_PROMPT_TEMPLATE
+from prompt import GENERATE_PROMPT_TEMPLATE, NON_RAG_PROMPT_TEMPLATE, IMAGE_PROMPT_TEMPLATE, TABLE_PROMPT_TEMPLATE
 
 # vLLM 관련 임포트
 from vllm.engine.async_llm_engine import AsyncLLMEngine
