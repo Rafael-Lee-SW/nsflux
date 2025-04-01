@@ -185,7 +185,7 @@ async def query_sort(params: Dict[str, Any]) -> Tuple[str, str, str, str]:
         model = params["model"]
         tokenizer = params["tokenizer"]
         config = params["config"]
-        
+        request_id = params["request_id"]
         # 프롬프트 구성
         prompt = QUERY_SORT_PROMPT.format(user_query=query)
         logger.info("query_sort 시작 (시도 %d)", attempt + 1)
@@ -199,7 +199,7 @@ async def query_sort(params: Dict[str, Any]) -> Tuple[str, str, str, str]:
                 top_p=config.model.top_p,
                 repetition_penalty=config.model.repetition_penalty,
             )
-            request_id = str(uuid.uuid4())
+            # request_id = str(uuid.uuid4()) # 일관된 Request_id 사용
             answer = await collect_vllm_text(prompt, model, sampling_params, request_id)
         else:
             input_ids = tokenizer(

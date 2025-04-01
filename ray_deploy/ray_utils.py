@@ -74,21 +74,19 @@ class InferenceActor:
         self.process_pool = ProcessPoolExecutor(max_workers)
 
         # --- SSE Queue Manager --- 
-        # Key = request_id, Value = an asyncio.Queue of partial token strings
-        # A dictionary to store SSE queues for streaming requests
         self.queue_manager = ray.get_actor("SSEQueueManager")
-        self.active_sse_queues: Dict[str, asyncio.Queue] = {}
 
-        self.batch_counter = 0  # New counter to track batches
 
-        self.memory_map = {}
-        
+        # --- 기타 설정 ---
         # 활성 작업 추적을 위한 변수 추가
+        self.batch_counter = 0  # New counter to track batches
         self.active_tasks = set()
         self.max_concurrent_tasks = config.ray.max_batch_size
-        
         # Track active generations that can be stopped
         self.active_generations = set()
+        
+        # 메모리
+        self.memory_map = {}
         
         # 연속 배치 처리기 시작 (Continuous batch)
         asyncio.create_task(self.continuous_batch_processor())
@@ -125,16 +123,12 @@ class InferenceActor:
             
             if available_slots > 0:
                 try:
-                    # 새 요청 받기 (짧은 타임아웃으로 non-blocking 유지)
-                    request_tuple = await asyncio.wait_for(
-                        self.request_queue.get(), 
-                        timeout=0.01
-                    )
-                    
+                    # 새 요청 받기
+                    request_obj, fut = await asyncio.wait_for(self.request_queue.get(), timeout=0.01)
+
                     # 비동기 처리 작업 생성
-                    request_obj, fut, sse_queue = request_tuple
                     task = asyncio.create_task(
-                        self._process_single_query(request_obj, fut, sse_queue)
+                        self._process_single_query(request_obj, fut)
                     )
                     
                     # 작업 완료 시 활성 목록에서 제거하는 콜백 설정
@@ -305,7 +299,7 @@ class InferenceActor:
                 error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
                 await self.queue_manager.put_token.remote(request_id, error_token)
                 await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-                await self.close_sse_queue(request_id)
+                await self.queue_manager.delete_queue.remote(request_id)
             except Exception as e2:
                 logger.error(f"SSE 에러 전송 중 추가 오류: {str(e2)}")
                 
@@ -342,6 +336,7 @@ class InferenceActor:
                 "embed_tokenizer": self.embed_tokenizer,
                 "data": self.data,
                 "config": self.config,
+                "request_id": request_id,
             }
             
             # 질문 구체화
@@ -444,6 +439,7 @@ class InferenceActor:
                 "embed_tokenizer": self.embed_tokenizer,
                 "data": self.data,
                 "config": self.config,
+                "request_id": request_id,
             })
             
             # RAG 실행
@@ -509,7 +505,7 @@ class InferenceActor:
     # -------------------------------------------------------------------------
     # PROCESS SINGLE QUERY (분기 처리 단순화)
     # -------------------------------------------------------------------------
-    async def _process_single_query(self, http_query_or_stream_dict: dict, future: asyncio.Future, sse_queue) -> None:
+    async def _process_single_query(self, http_query_or_stream_dict: dict, future: asyncio.Future) -> None:
         """
         단일 쿼리 처리의 메인 함수 (개선된 버전)
         
@@ -563,7 +559,7 @@ class InferenceActor:
                     error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
                     await self.queue_manager.put_token.remote(request_id, error_token)
                     await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-                    await self.close_sse_queue(request_id)
+                    await self.queue_manager.delete_queue.remote(request_id)
                 except Exception as e2:
                     logger.error(f"SSE 에러 전송 중 추가 오류: {str(e2)}")
                     
@@ -571,13 +567,15 @@ class InferenceActor:
             future.set_result(error_format(err_msg, 500))
             
         finally:
+            # 요청 중지 시에 active_generation 정리
+            self.active_generations.discard(request_id)
             # 스트리밍 요청인 경우 정리 작업
             if is_streaming:
                 try:
                     await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
                 except Exception as ex:
                     logger.error(f"STREAM_DONE 토큰 전송 중 오류: {str(ex)}")
-                await self.close_sse_queue(request_id)
+                await self.queue_manager.delete_queue.remote(request_id)
 
     # -------------------------------------------------------------------------
     # STREAMING PARTIAL ANSWER - 스트리밍 응답 처리
@@ -717,6 +715,7 @@ class InferenceActor:
             self.active_generations.discard(request_id)
         except Exception as e:
             err_msg = f"스트리밍 응답 중 오류: {str(e)}"
+            
             # generation completes whatever it stopped
             self.active_generations.discard(request_id)
             logger.error(err_msg)
@@ -771,55 +770,16 @@ class InferenceActor:
         # 비동기 처리를 위한 Future 생성
         loop = asyncio.get_event_loop()
         final_future = loop.create_future()
-
-        # 처리 요청 큐에 추가
-        sse_queue = asyncio.Queue()
-        self.active_sse_queues[chat_id] = sse_queue
         
         queued_item = {
             "request_id": chat_id,
             "http_query": http_query,
         }
 
-        await self.request_queue.put((queued_item, final_future, sse_queue))
+        await self.request_queue.put((queued_item, final_future))
         logger.info(f"처리 큐에 추가됨: chat_id={chat_id}")
 
         return chat_id
-    
-    async def pop_sse_token(self, request_id: str) -> Optional[str]:
-        """
-        SSE 토큰 꺼내기 - 클라이언트에 전송할 부분 토큰 추출
-        
-        Args:
-            request_id: 요청 ID
-            
-        Returns:
-            Optional[str]: 다음 토큰 (없으면 None)
-        """
-        if request_id not in self.active_sse_queues:
-            logger.warning(f"SSE 큐 없음: request_id={request_id}")
-            return None
-
-        queue = self.active_sse_queues[request_id]
-        try:
-            token = await asyncio.wait_for(queue.get(), timeout=120.0)
-            return token
-        except asyncio.TimeoutError:
-            logger.warning(f"토큰 대기 시간 초과: request_id={request_id}")
-            return None
-    
-    async def close_sse_queue(self, request_id: str):
-        """
-        SSE 큐 종료 및 정리
-        
-        Args:
-            request_id: 요청 ID
-        """
-        if request_id in self.active_sse_queues:
-            logger.info(f"SSE 큐 종료: request_id={request_id}")
-            del self.active_sse_queues[request_id]
-        else:
-            logger.warning(f"종료할 SSE 큐 없음: request_id={request_id}")
     
     # -------------------------------------------------------------------------
     # 대화 기록 및 참조 관련 메서드들
@@ -934,12 +894,15 @@ class InferenceActor:
                 except Exception as e:
                     logger.error(f"Error sending stop tokens: {e}")
                 
-                # 3. Close the SSE queue
-                await self.close_sse_queue(request_id)
-                
-                # 4. Remove from active generations set
+                # 3) PerformanceMonitor에 “이 요청이 종료됨”을 알림
+                self.performance_monitor.complete_request(request_id, success=False)
+
+                # 4) SSE 큐 삭제
+                await self.queue_manager.delete_queue.remote(request_id)
+
+                # 5) active_generations에서 제거
                 self.active_generations.discard(request_id)
-                
+                    
                 return "Generation stopped successfully"
             else:
                 logger.warning(f"Request {request_id} not found in active generations")
@@ -948,7 +911,6 @@ class InferenceActor:
         except Exception as e:
             logger.error(f"Error stopping generation: {e}")
             return f"Error stopping generation: {str(e)}"
-
 
 # -------------------------------------------------------------------------
 # Ray Serve 배포를 위한 서비스 클래스
@@ -997,32 +959,6 @@ class InferenceService:
         """
         req_id = await self.actor.process_query_stream.remote(http_query)
         return req_id
-    
-    async def pop_sse_token(self, req_id: str) -> str:
-        """
-        SSE 토큰 조회 API
-        
-        Args:
-            req_id: 요청 ID
-            
-        Returns:
-            str: 다음 토큰
-        """
-        token = await self.actor.pop_sse_token.remote(req_id)
-        return token
-
-    async def close_sse_queue(self, req_id: str) -> str:
-        """
-        SSE 큐 종료 API
-        
-        Args:
-            req_id: 요청 ID
-            
-        Returns:
-            str: 종료 상태
-        """
-        await self.actor.close_sse_queue.remote(req_id)
-        return "closed"
     
     async def get_history(self, request_id: str, last_index: int = None):
         """

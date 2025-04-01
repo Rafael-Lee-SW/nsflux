@@ -227,7 +227,9 @@ def query_stream():
       - qry_id, user_id, page_id, auth_class, qry_contents, qry_time
     auth_class는 내부적으로 'admin'으로 통일합니다.
     """
+    # 요청에서 바로 body 받아오기
     body = request.json or {}
+    
     # 새로운 필드 추출
     qry_id = body.get("qry_id")
     user_id = body.get("user_id")
@@ -242,6 +244,10 @@ def query_stream():
     
     print(f"[DEBUG] /query_stream called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{qry_contents}', qry_time='{qry_time}'")
     
+    # SSE 큐 생성
+    chat_id = body.get("page_id") or str(uuid.uuid4()) # 뒤에서 다시 초기화됨
+    ray.get(sse_manager.create_queue.remote(chat_id))
+
     
     # 새로운 http_query 생성 – 내부 로직에서는 page_id를 채팅방 id로 사용
     http_query = {
@@ -288,8 +294,7 @@ def query_stream():
             yield f"data: {error_token}\n\n"
         finally:
             try:
-                obj_ref = inference_handle.close_sse_queue.remote(chat_id)._to_object_ref_sync()
-                ray.get(obj_ref)
+                ray.get(sse_manager.delete_queue.remote(chat_id))
             except Exception as ex:
                 print(f"[DEBUG] Error closing SSE queue for {chat_id}: {str(ex)}")
             print("[DEBUG] SSE closed.")
@@ -398,8 +403,7 @@ def query_stream_to_clt():
             print(f"[ERROR] sse_generator encountered an error: {e}")
         finally:
             try:
-                obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
-                ray.get(obj_ref)
+                ray.get(sse_manager.delete_queue.remote(request_id))
             except Exception as ex:
                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
             print("[DEBUG] SSE closed.")
