@@ -140,7 +140,9 @@
     let isProcessing = false; 
     let isMobileView = window.innerWidth <= 768;
     let currentlyViewingMsgIndex = null; 
-
+    // Global variable to track current generation request
+    let currentGenerationId = null;
+    
     // welcome 화면 HTML 템플릿
     const welcomeContentHTML = `
       <div class="welcome-screen">
@@ -885,6 +887,10 @@
       if (!textValue && !file) return;
 
       const originalRequestId = currentRequestId;
+      currentGenerationId = originalRequestId;
+      
+      // Update button to stop button
+      updateButtonToStopButton();
       
       // 이미지 데이터 처리
       let imageBase64 = null;
@@ -965,6 +971,10 @@
       } finally {
         welcomeImgInput.value = '';
         document.getElementById('welcomeImagePreview').innerHTML = '';
+        // When streaming completes naturally
+        resetButtonToSendButton();
+        isProcessing = false;
+        currentGenerationId = null;
       }
 
       // Welcome 화면 숨기고 값 넘기기
@@ -1009,6 +1019,12 @@
       
       clearReferenceData();
       const originalRequestId = currentRequestId;
+      // Retain the original request ID to track this generation
+      currentGenerationId = originalRequestId;
+
+      // Update button to stop button
+      updateButtonToStopButton();
+
       // 공통 payload 구성 (이미지가 있을 경우 image_data 필드 추가)
       const payload = {
         qry_id: Date.now().toString() + '-' + Math.floor(Math.random() * 10000),
@@ -1019,9 +1035,11 @@
         qry_time: new Date().toISOString(),
         rag: useRag // Include the RAG flag here
       };
+
       if (imageBase64) {
         payload.image_data = imageBase64;
       }
+
       try {
         const response = await fetch('/query_stream', {
           method: 'POST',
@@ -1079,8 +1097,13 @@
       } finally {
         imageInput.value = '';
         document.getElementById('imagePreview').innerHTML = '';
+        // When streaming completes naturally
+        resetButtonToSendButton();
+        isProcessing = false;
+        currentGenerationId = null;
       }
     }
+
     function storeMessageInRoom(requestId, sender, text) {
       const room = chatRooms.find(r => r.requestId === requestId);
       if (!room) return;
@@ -1467,6 +1490,95 @@
         imgContainer.appendChild(deleteBtn);
         uploadedContainer.appendChild(imgContainer);
       });
+    }
+
+    // Function to update send button to become stop button
+    function updateButtonToStopButton() {
+      const sendButton = document.getElementById("sendButton");
+      sendButton.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+            viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="6" y="6" width="12" height="12" rx="1"></rect>
+        </svg>
+      `;
+      sendButton.classList.add("stop-btn");
+      sendButton.disabled = false;
+      sendButton.onclick = stopGeneration;
+      
+      // Also update the welcome send button if it exists
+      const welcomeSendButton = document.getElementById("welcomeSendButton");
+      if (welcomeSendButton) {
+        welcomeSendButton.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="6" y="6" width="12" height="12" rx="1"></rect>
+          </svg>
+        `;
+        welcomeSendButton.classList.add("stop-btn");
+        welcomeSendButton.onclick = stopGeneration;
+      }
+    }
+
+    // Function to reset button back to send button
+    function resetButtonToSendButton() {
+      const sendButton = document.getElementById("sendButton");
+      sendButton.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+            viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+      `;
+      sendButton.classList.remove("stop-btn");
+      sendButton.disabled = false;
+      sendButton.onclick = sendMessage;
+      
+      // Reset welcome button too if it exists
+      const welcomeSendButton = document.getElementById("welcomeSendButton");
+      if (welcomeSendButton) {
+        welcomeSendButton.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" 
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" 
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+        `;
+        welcomeSendButton.classList.remove("stop-btn");
+        welcomeSendButton.onclick = sendWelcomeMessage;
+      }
+    }
+
+    // Function to stop ongoing generation
+    async function stopGeneration() {
+      if (!currentGenerationId) return;
+      
+      try {
+        // Send stop request to server
+        const response = await fetch('/stop_generation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            request_id: currentGenerationId 
+          })
+        });
+        
+        if (!response.ok) {
+          console.error("Failed to stop generation:", response.status);
+        } else {
+          console.log("Stop generation request sent successfully");
+        }
+      } catch (error) {
+        console.error("Error sending stop request:", error);
+      } finally {
+        // Reset button regardless of server response
+        resetButtonToSendButton();
+        isProcessing = false;
+        currentGenerationId = null;
+      }
     }
   </script>
 </body>

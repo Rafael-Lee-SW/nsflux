@@ -473,6 +473,38 @@ def get_reference():
         print(f"[ERROR /reference] {e}")
         error_resp = error_format(f"참조 조회 오류: {str(e)}", 500)
         return Response(error_resp, content_type="application/json; charset=utf-8")
+    
+# 새로 추가3: request_id로 해당 답변 생성을 중도에 멈출 수 있는 API
+@app.route("/stop_generation", methods=["POST"])
+def stop_generation():
+    """
+    Endpoint to stop an ongoing generation process
+    """
+    try:
+        body = request.json or {}
+        request_id = body.get("request_id")
+        
+        if not request_id:
+            error_resp = error_format("request_id parameter is required", 400)
+            return Response(error_resp, content_type="application/json; charset=utf-8")
+        
+        print(f"[DEBUG] Received stop generation request for request_id={request_id}")
+        
+        # Send the stop signal to the inference service
+        response = inference_handle.stop_generation.remote(request_id)
+        obj_ref = response._to_object_ref_sync()
+        result = ray.get(obj_ref)
+        
+        # Return success response
+        return jsonify({
+            "status": "success", 
+            "message": f"Stop request for {request_id} received", 
+            "detail": result
+        })
+        
+    except Exception as e:
+        error_resp = error_format(f"Error processing stop request: {str(e)}", 500)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
 
 # Flask app 실행
 if __name__ == "__main__":

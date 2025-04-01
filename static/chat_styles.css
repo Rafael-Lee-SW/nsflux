@@ -903,6 +903,60 @@ body {
     transform: none;
 }
 
+/* Add to chat_styles.css */
+
+/* Stop button styles */
+.send-btn.stop-btn,
+.welcome-send-btn.stop-btn {
+    background-color: #f44336;
+    position: relative;
+    transition: background-color 0.3s;
+}
+
+.send-btn.stop-btn:hover,
+.welcome-send-btn.stop-btn:hover {
+    background-color: #d32f2f;
+}
+
+/* Stop button animation */
+.send-btn.stop-btn::before,
+.welcome-send-btn.stop-btn::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background-color: rgba(255, 255, 255, 0.3);
+    transform: scale(0);
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        transform: scale(0.95);
+        opacity: 0.7;
+    }
+
+    50% {
+        transform: scale(1.05);
+        opacity: 0.3;
+    }
+
+    100% {
+        transform: scale(0.95);
+        opacity: 0.7;
+    }
+}
+
+/* When button is disabled during transition */
+.send-btn:disabled,
+.welcome-send-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
 /* Sidebar Opener Button */
 .sidebar-opener {
     display: none;
@@ -1041,6 +1095,7 @@ body {
         background-color: rgba(16, 163, 127, 0.2);
     }
 }
+
 /* Tool box */
 .tool-container {
     display: flex;
@@ -1098,8 +1153,10 @@ body {
 }
 
 .uploaded-images {
-    max-width: 600px; /* 원하는 최대 너비로 설정 */
-    flex-wrap: wrap;  /* 공간이 부족하면 다음 줄로 넘김 */
+    max-width: 600px;
+    /* 원하는 최대 너비로 설정 */
+    flex-wrap: wrap;
+    /* 공간이 부족하면 다음 줄로 넘김 */
     overflow-x: auto;
     display: flex;
     flex-direction: row;
@@ -1146,12 +1203,15 @@ body {
 .image-preview-container {
     max-width: 600px;
     margin-top: 10px;
-    display: none; /* .has-image 클래스가 추가될 때 flex로 변경됨 */
+    display: none;
+    /* .has-image 클래스가 추가될 때 flex로 변경됨 */
     flex-direction: row;
-    flex-wrap: wrap;  /* 아이템들이 한 줄에 다 들어가지 않으면 다음 줄로 넘겨줌 */
+    flex-wrap: wrap;
+    /* 아이템들이 한 줄에 다 들어가지 않으면 다음 줄로 넘겨줌 */
     gap: 0.5rem;
     border-radius: var(--radius-md);
-    overflow: auto;  /* 필요에 따라 스크롤도 허용 */
+    overflow: auto;
+    /* 필요에 따라 스크롤도 허용 */
     background-color: white;
     border: 1px solid var(--border-color);
     box-shadow: var(--shadow-sm);

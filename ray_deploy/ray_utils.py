@@ -87,6 +87,9 @@ class InferenceActor:
         self.active_tasks = set()
         self.max_concurrent_tasks = config.ray.max_batch_size
         
+        # Track active generations that can be stopped
+        self.active_generations = set()
+        
         # 연속 배치 처리기 시작 (Continuous batch)
         asyncio.create_task(self.continuous_batch_processor())
         
@@ -597,6 +600,9 @@ class InferenceActor:
         """
         logger.info(f"스트리밍 응답 시작: request_id={request_id}")
         
+        # Add to active generations set
+        self.active_generations.add(request_id)
+        
         # 성능 측정 초기화 - 시작 시간 기록
         stream_start_time = time.time()
         token_count = 0
@@ -706,9 +712,13 @@ class InferenceActor:
             self.performance_monitor.complete_request(request_id, success=True)
             
             logger.info(f"스트리밍 응답 완료: request_id={request_id}")
-        
+            
+            # At the end, when generation completes naturally
+            self.active_generations.discard(request_id)
         except Exception as e:
             err_msg = f"스트리밍 응답 중 오류: {str(e)}"
+            # generation completes whatever it stopped
+            self.active_generations.discard(request_id)
             logger.error(err_msg)
             future.set_result(error_format(err_msg, 500))
             await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
@@ -880,6 +890,64 @@ class InferenceActor:
         except Exception as e:
             logger.error(f"참조 데이터 조회 오류: {e}")
             return []
+        
+    # -------------------------------------------------------------------------
+    # 답변 생성 중도 정지
+    # -------------------------------------------------------------------------
+    async def stop_generation(self, request_id: str) -> str:
+        """
+        Stop an ongoing generation process for the specified request ID
+        
+        Args:
+            request_id: The request ID to stop
+            
+        Returns:
+            str: Status message
+        """
+        logger.info(f"Attempting to stop generation for request_id={request_id}")
+        
+        try:
+            # Check if the request is in active generations
+            if request_id in self.active_generations:
+                # 1. Send stop signal to vLLM if using vLLM
+                if hasattr(self.model, "is_vllm") and self.model.is_vllm:
+                    try:
+                        # vLLM has an abort method we can call
+                        await self.model.abort(request_id=request_id)
+                        logger.info(f"vLLM abort called for {request_id}")
+                    except Exception as e:
+                        logger.warning(f"Could not abort vLLM request: {e}")
+                        
+                # 2. Send final streaming token to client
+                try:
+                    # Send special token to indicate stopping
+                    await self.queue_manager.put_token.remote(
+                        request_id, 
+                        json.dumps({
+                            "type": "answer", 
+                            "answer": "\n\n[Generation stopped by user]",
+                            "continue": "E"  # Mark as final
+                        })
+                    )
+                    # Send stream done token
+                    await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                except Exception as e:
+                    logger.error(f"Error sending stop tokens: {e}")
+                
+                # 3. Close the SSE queue
+                await self.close_sse_queue(request_id)
+                
+                # 4. Remove from active generations set
+                self.active_generations.discard(request_id)
+                
+                return "Generation stopped successfully"
+            else:
+                logger.warning(f"Request {request_id} not found in active generations")
+                return "No active generation found for this request"
+                
+        except Exception as e:
+            logger.error(f"Error stopping generation: {e}")
+            return f"Error stopping generation: {str(e)}"
 
 
 # -------------------------------------------------------------------------
@@ -981,4 +1049,18 @@ class InferenceService:
             list: 참조 데이터 목록
         """
         result = await self.actor.get_reference_data.remote(chunk_ids)
+        return result
+    
+    # Finally, add this to the InferenceService class
+    async def stop_generation(self, request_id: str) -> str:
+        """
+        Stop generation API
+        
+        Args:
+            request_id: The request ID to stop
+            
+        Returns:
+            str: Status message
+        """
+        result = await self.actor.stop_generation.remote(request_id)
         return result
