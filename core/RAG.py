@@ -33,7 +33,11 @@ from core.SQL_NS import run_sql_unno, run_sql_bl, get_metadata
 from prompt import (
     QUERY_SORT_PROMPT, 
     GENERATE_PROMPT_TEMPLATE, 
-    STREAM_PROMPT_TEMPLATE
+    STREAM_PROMPT_TEMPLATE,
+    IMAGE_DESCRIPTION_PROMPT,
+    NON_RAG_PROMPT_TEMPLATE,
+    IMAGE_PROMPT_TEMPLATE,
+    TABLE_PROMPT_TEMPLATE,
 )
 
 # 유틸리티 임포트
@@ -290,20 +294,48 @@ async def generate_answer_stream(
     Yields:
         str: 생성된 부분 텍스트
     """
-    # 프롬프트 구성
-    prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
-    logger.info("스트리밍 답변 생성 시작: prompt_length=%d", len(prompt))
+    logger.info("[GENERATE_ANSWER_STREAM] ---------- 스트리밍 답변 생성 시작 ----------")
     
-    # 이미지 처리 관련 파라미터
+    # -------------------------------------------------------------------------
+    # 1) 분기 처리를 위한 파라미터 준비
+    # -------------------------------------------------------------------------
+    # 이미지가 있는지 여부
     image_data = http_query.get("image_data")
-    pil_image = None
+    is_image = bool(image_data)  # image_data가 None이 아니면 True
+
+    # RAG 사용 여부
+    use_rag = http_query.get("use_rag", True)
+
+    # -------------------------------------------------------------------------
+    # 2) 분기 로직에 따른 프롬프트 선택
+    # -------------------------------------------------------------------------
+    if is_image and not use_rag:
+        # 이미지 있음 + RAG 미사용
+        prompt = IMAGE_PROMPT_TEMPLATE.format(query=query)
+    elif is_image and use_rag:
+        # 이미지 있음 + RAG 사용
+        prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    elif (not is_image) and use_rag:
+        # 이미지 없음 + RAG 사용
+        prompt = STREAM_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    else:
+        # 이미지 없음 + RAG 미사용
+        prompt = NON_RAG_PROMPT_TEMPLATE.format(query=query)
+
+    logger.info(f"[PROMPT SELECTION] is_image={is_image}, use_rag={use_rag}")
+    logger.debug(f"[PROMPT CONTENT]\n{prompt}")
     
-    # 요청 ID 추출 (성능 모니터링 용)
+    # -------------------------------------------------------------------------
+    # 3) request_id 설정 (성능 모니터링 등 용도)
+    # -------------------------------------------------------------------------
     request_id = http_query.get("page_id") or http_query.get("qry_id")
     if not request_id:
         request_id = str(uuid.uuid4())
     
-    # 이미지 데이터가 있는 경우 처리
+    # -------------------------------------------------------------------------
+    # 4) 실제 이미지 처리가 필요한 경우, 이미지 로드 (core.image_processing 사용)
+    # -------------------------------------------------------------------------
+    pil_image = None
     if image_data:
         try:
             # 이미지 처리 로직은 image_processing 모듈로 이동
@@ -313,7 +345,9 @@ async def generate_answer_stream(
         except Exception as e:
             logger.error("이미지 로드 실패: %s", str(e))
     
-    # 스트리밍 방식으로 답변 생성
+    # -------------------------------------------------------------------------
+    # 5) 스트리밍 텍스트 생성 (vLLM 또는 HF) 
+    # -------------------------------------------------------------------------
     if config.use_vllm:
         sampling_params = SamplingParams(
             max_tokens=config.model.max_new_tokens,
@@ -346,7 +380,7 @@ async def generate_answer_stream(
             # 성능 모니터링 업데이트는 collect_vllm_text_stream 내부에서 수행
             yield partial_chunk
     else:
-        # HuggingFace 모델 사용 (비 vLLM)
+        # HuggingFace 모델 사용 (Not use vLLM)
         import torch
         from transformers import TextIteratorStreamer
         
