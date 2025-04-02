@@ -1,74 +1,74 @@
-# 베이스 이미지 선택
-FROM globeai/flux_ns:1.26
-# FROM nvidia/cuda:12.4.0-devel-ubuntu20.04
+# ===== Stage 1: Builder =====
+FROM nvidia/cuda:12.4.0-devel-ubuntu20.04 AS builder
 
-# 2. 대화형 입력 없이 진행하도록 환경 변수 설정
+# Set noninteractive mode and working directory
 ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /build
 
-# 작업 디렉토리 설정
+# Install build dependencies and Python 3.11 from deadsnakes PPA
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    build-essential cmake git wget curl && \
+    add-apt-repository ppa:deadsnakes/ppa -y && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-dev python3.11-distutils && \
+    rm -rf /var/lib/apt/lists/*
+
+# Update alternatives to use Python 3.11 as default for "python3"
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+
+# Install pip for Python 3.11
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+
+# Explicitly set CUDA_HOME and update PATH
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=$PATH:$CUDA_HOME/bin
+
+# Install required Python packages for building (using Python 3.11)
+RUN python3.11 -m pip install --no-cache-dir torch==2.4.1 setuptools wheel ninja packaging
+
+# Build wheel for flash-attn only (flashinfer is not on PyPI)
+RUN python3.11 -m pip wheel --no-deps flash-attn -w /wheels/
+
+# ===== Stage 2: Final Image =====
+FROM globeai/flux_ns:env
+
 WORKDIR /workspace
 
+# Solve the C compiler problem
+RUN apt-get update && apt-get install build-essential -y
 
-# Install necessary system packages and Python dependencies in one go (fewer layers)
-# combining apt-get calls for efficiency
-# Miniconda 설치에 필요한 시스템 패키지 설치
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget \
-    bzip2 \
-    ca-certificates \
-    curl \
-    git \
-    vim \
-    libaio1 \
-    && rm -rf /var/lib/apt/lists/*
+    wget bzip2 ca-certificates curl git vim libaio1 && \
+    rm -rf /var/lib/apt/lists/*
 
-# # Miniconda (Python 3.11 버전용) 설치
-# RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-py311_23.3.1-0-Linux-x86_64.sh -O /tmp/miniconda.sh && \
-#     bash /tmp/miniconda.sh -b -p /opt/conda && \
-#     rm /tmp/miniconda.sh
+# Copy the pre-built flash-attn wheel from the builder stage
+COPY --from=builder /wheels/*.whl /tmp/
 
-# # conda 설치 경로를 PATH에 추가
-# ENV PATH=/opt/conda/bin:$PATH
-
-# # Python 버전을 3.11.9로 업데이트하고, pip를 pip 24.0으로 업그레이드
-# RUN conda install python=3.11.9 -y && \
-#     pip install --upgrade pip==24.0
-
-# # 버전 확인 (빌드 시 로그에 표시됨)
-# RUN python --version && pip --version
-
-# (4) CUDA_HOME 환경변수 설정
-#     which nvcc 결과가 /usr/bin/nvcc 이고 실제 툴킷이 /usr/lib/nvidia-cuda-toolkit 내에 있으므로 해당 경로를 지정
-# ENV CUDA_HOME="/usr/lib/nvidia-cuda-toolkit"
-# ENV PATH="${CUDA_HOME}/bin:${PATH}"
-# ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
-
-# # Solve the C compier
-# RUN apt-get update && apt-get install build-essential -y
-
-# requirements.txt만 먼저 복사해서 종속성 설치 (캐시 활용)
+# Copy requirements.txt (ensure it does not redundantly list flash-attn/flashinfer)
 COPY requirements.txt .
 
-# pip 캐시 사용 안 함으로 설치 (임시 파일 최소화)
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies and then install flash-attn wheel
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir /tmp/*.whl && \
+    # Install flashinfer from its pre-built wheel URL.
+    pip install --no-cache-dir \
+      https://github.com/flashinfer-ai/flashinfer/releases/download/v0.2.1.post2/flashinfer_python-0.2.1.post2+cu124torch2.6-cp38-abi3-linux_x86_64.whl
 
-# gemma3.py 패치 파일 복사 (vLLM gemma3 파일 덮어쓰기)
-# COPY patches/vllm/gemma3.py /opt/conda/lib/python3.11/site-packages/vllm/model_executor/models/gemma3.py
+# Additional pip installations: ninja and latest transformers from GitHub
+RUN pip install --no-cache-dir ninja && \
+    pip install --no-cache-dir git+https://github.com/huggingface/transformers.git
 
-# Additional pip installations:
-# RUN pip install ninja \
-#     && pip install git+https://github.com/huggingface/transformers.git \
-#     && pip install git+https://github.com/vllm-project/vllm.git
-
-# 현재 디렉토리의 모든 파일을 컨테이너의 /app 폴더로 복사
+# Copy application source code
 COPY . /workspace
 
-# Flask 앱이 실행될 포트를 열어둠
-EXPOSE 5000
-# Ray Dashboard 포트 (8265)와 vLLM 관련 포트 필요 시 추가
-EXPOSE 8265
-# Expose port for the vLLM
-EXPOSE 8000
+# Expose necessary ports: Flask (5000), Ray Dashboard (8265), and vLLM (8000)
+EXPOSE 5000 8265 8000
 
-# Flask 앱 실행 명령어
+# Set environment variables so vLLM will attempt to use flash-attn and flashinfer
+ENV VLLM_USE_FLASH_ATTENTION=1
+ENV VLLM_USE_FLASHINFER=1
+
+# Start the Flask application
 CMD ["python", "app.py"]

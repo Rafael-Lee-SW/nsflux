@@ -159,7 +159,7 @@
               스트리밍 연속 테스트 (Streaming Test)
             </button>
           </div>
-          <!-- This container will first show individual streaming panels then a summary table -->
+          <!-- 이 컨테이너는 개별 스트리밍 패널과 요약 테이블을 표시합니다. -->
           <div class="output markdown-content" id="continuousTestResults"></div>
         </div>
       </div>
@@ -469,7 +469,7 @@
                   <th>쿼리<br>(Query)</th>
                   <th>전송 시간<br>(Send Time)</th>
                   <th>수신 시간<br>(Receive Time)</th>
-                  <th>소요 시간<br>(Elapsed ms)</th>
+                  <th>소요(ms)</th>
                   <th>상태<br>(Status)</th>
                 </tr>
               </thead>
@@ -501,9 +501,6 @@
             ? formatJsonOutput(result.data || {}, result.sendTime, result.receiveTime, result.elapsed, result.id)
             : `<pre style="color:var(--danger);">오류 (Error): ${result.error || '알 수 없는 오류 (Unknown error)'}</pre>`;
           let extraInfo = "";
-          if (result.result) {
-            extraInfo += `<p><strong>답변:</strong><br><pre>${result.result}</pre></p>`;
-          }
           if (result.firstChunkDelta) {
             extraInfo += `<p><strong>스트리밍 시작 시간:</strong> ${result.firstChunkDelta} ms</p>`;
           }
@@ -535,11 +532,6 @@
           alert("스트리밍이 이미 진행 중입니다. (Streaming is already in progress.)");
           return;
         }
-        const userQuery = document.getElementById('streamInput').value.trim();
-        if (!userQuery) {
-          alert('스트리밍 쿼리를 입력해주세요. (Please type a streaming query.)');
-          return;
-        }
         streamingInProgress = true;
         answerAccumulated = "";
         sseBuffer = "";
@@ -556,7 +548,13 @@
           const response = await fetch('/query_stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: userQuery })
+            body: JSON.stringify({
+              qry_id: "",
+              user_id: "",
+              page_id: "",
+              qry_contents: document.getElementById('streamInput').value.trim(),
+              qry_time: new Date().toISOString()
+            })
           });
           if (!response.ok) {
             const errTxt = await response.text();
@@ -599,7 +597,7 @@
             }
             if (sseData === "[[STREAM_DONE]]") {
               postStreamEndTime = performance.now();
-              updatePostStreamTiming();
+              updatePostStreamTiming(querySentTime);
               return;
             }
             try {
@@ -667,14 +665,14 @@
         let summaryTable = buildSimulSummaryTable(results);
         simulResultsContainer.innerHTML = summaryTable;
       }
-      async function startSimulStreamPOST(queryObj, containerId) {
+      async function startSimulStreamPOST(query, containerId) {
         const container = document.getElementById(containerId);
         container.innerHTML = `
-          <h4>${queryObj.id} - ${queryObj.text}</h4>
+          <h4>${query.id} - ${query.text}</h4>
           <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem; margin-bottom:0.5rem;"></div>
           <div class="stream-info-box"></div>
           <button class="btn btn-secondary btn-sm" onclick="toggleReferencesInContainer('${containerId}')">참조 데이터 보기 (Toggle References)</button>
-          <div class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
+          <div id="ref-${query.id}" class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
         `;
         let answerAccumulated = "";
         let sseBuffer = "";
@@ -688,13 +686,19 @@
           const response = await fetch('/query_stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: queryObj.text })
+            body: JSON.stringify({
+              qry_id: query.id,
+              user_id: "",
+              page_id: "",
+              qry_contents: query.text,
+              qry_time: new Date().toISOString()
+            })
           });
           if (!response.ok) {
             success = false;
             errorMessage = `응답 오류: ${response.status}`;
             container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">${errorMessage}</span>`;
-            return { id: queryObj.id, query: queryObj.text, sendTime: streamStartTime, firstChunkTime, endTime, duration: 0, success, error: errorMessage, chunkCount };
+            return { id: query.id, query: query.text, sendTime: streamStartTime, firstChunkTime, endTime, duration: 0, success, error: errorMessage, chunkCount };
           }
           container.querySelector(".stream-output").textContent = "스트리밍 응답 대기 중...";
           const reader = response.body.getReader();
@@ -704,43 +708,28 @@
             if (done) {
               endTime = performance.now();
               updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
-              break;
+              return { id: query.id, query: query.text, sendTime: streamStartTime, firstChunkTime, endTime, duration: (endTime - streamStartTime).toFixed(1), success, error: errorMessage, chunkCount };
             }
-            if (chunkCount === 0) {
-              container.querySelector(".stream-output").textContent = "";
+            chunkCount++;
+            if (!firstChunkTime) {
+              firstChunkTime = performance.now();
             }
-            const chunk = decoder.decode(value, { stream: true });
-            sseBuffer += chunk;
-            let lines = sseBuffer.split("\n");
+            sseBuffer += decoder.decode(value, { stream: true });
+            let lines = sseBuffer.split('\n');
             sseBuffer = lines.pop();
             for (let line of lines) {
               line = line.trim();
               if (!line) continue;
-              if (line.startsWith("data:")) {
+              if (line.startsWith('data:')) {
                 const sseData = line.slice(5).trim();
-                chunkCount++;
-                if (!firstChunkTime && !sseData.includes("[[STREAM_DONE]]")) {
-                  firstChunkTime = performance.now();
-                }
                 if (sseData === "[[STREAM_DONE]]") {
                   endTime = performance.now();
                   updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
-                  return {
-                    id: queryObj.id,
-                    query: queryObj.text,
-                    sendTime: streamStartTime,
-                    firstChunkTime,
-                    endTime,
-                    duration: (endTime - streamStartTime).toFixed(1),
-                    success,
-                    error: errorMessage,
-                    chunkCount
-                  };
+                  return { id: query.id, query: query.text, sendTime: streamStartTime, firstChunkTime, endTime, duration: (endTime - streamStartTime).toFixed(1), success, error: errorMessage, chunkCount };
                 }
                 try {
                   const jsonData = JSON.parse(sseData);
                   if (jsonData.type === "reference") {
-                    const refDiv = container.querySelector(".reference-output");
                     let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
                     if (Array.isArray(jsonData.data_list)) {
                       jsonData.data_list.forEach((ref, idx) => {
@@ -750,7 +739,7 @@
                       refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
                     }
                     refHTML += `</ul>`;
-                    refDiv.innerHTML = refHTML;
+                    container.querySelector(".reference-output").innerHTML = refHTML;
                   } else if (jsonData.type === "answer") {
                     answerAccumulated += jsonData.answer;
                     container.querySelector(".stream-output").innerHTML = renderMarkdown(answerAccumulated);
@@ -767,20 +756,8 @@
           success = false;
           errorMessage = err.message;
           container.querySelector(".stream-output").innerHTML = `<span style="color:var(--danger);">오류: ${err.message}</span>`;
+          return { id: query.id, query: query.text, sendTime: streamStartTime, firstChunkTime, endTime, duration: 0, success, error: errorMessage, chunkCount };
         }
-        endTime = endTime || performance.now();
-        updateContainerTiming(container, streamStartTime, firstChunkTime, endTime, chunkCount);
-        return {
-          id: queryObj.id,
-          query: queryObj.text,
-          sendTime: streamStartTime,
-          firstChunkTime,
-          endTime,
-          duration: (endTime - streamStartTime).toFixed(1),
-          success,
-          error: errorMessage,
-          chunkCount
-        };
       }
       function updateContainerTiming(container, start, first, end, chunkCount) {
         const infoBox = container.querySelector(".stream-info-box");
@@ -822,7 +799,6 @@
         const limit = Math.min(userInputCount, totalAvailable);
         const truncated = queries.slice(0, limit);
         if (mode === 'nonstream') {
-          // Sequential non-streaming test (unchanged)
           const results = [];
           const total = truncated.length;
           document.getElementById('continuousTestResults').innerHTML = `<div class="progress-indicator">일반 테스트 실행 중...</div>`;
@@ -843,50 +819,32 @@
           });
           html += "</ul>";
           document.getElementById('continuousTestResults').innerHTML = html;
-        }else {
-          // (중요) 스트리밍 모드를 "연속적으로" 실행하되,
-          // "쿼리 1개 끝날 때마다" 개별 카드 + 요약 테이블을 즉시 업데이트
+        } else {
           const parent = document.getElementById('continuousTestResults');
-          parent.innerHTML = ''; // 기존 내용 초기화
-        
+          parent.innerHTML = '';
           const total = truncated.length;
-        
-          // 1) 누적 요약 테이블을 계속 갱신하기 위한 컨테이너 생성
           const summaryContainer = document.createElement('div');
           summaryContainer.id = "continuous-summary";
           parent.appendChild(summaryContainer);
-
-          // 2) 부분결과(개별 카드)들을 표시할 컨테이너
           const partialsContainer = document.createElement('div');
           partialsContainer.id = "continuous-partials";
           parent.appendChild(partialsContainer);
-        
-        
           const results = [];
-        
-          // (중요) for 루프 + await = "연속" 스트리밍 실행
           for (let i = 0; i < total; i++) {
             const queryObj = truncated[i];
-        
-            // 각 쿼리에 대응되는 카드 DIV
             const containerId = `continuous-stream-${i}`;
             const cardDiv = document.createElement('div');
             cardDiv.id = containerId;
             cardDiv.className = "card";
             cardDiv.style.marginBottom = "1rem";
             partialsContainer.appendChild(cardDiv);
-        
-            // runStreamingQueryWithUI() 함수를 사용하여 스트리밍 쿼리를 연속적으로 실행
             const result = await runStreamingQueryWithUI(queryObj, cardDiv);
             results.push(result);
-        
-            // ★ 쿼리 한 건 끝날 때마다 요약 테이블을 즉시 업데이트
             summaryContainer.innerHTML = buildSimulSummaryTable(results);
           }
-          
-          // (선택) 모든 쿼리가 끝난 뒤에도 한 번 더 갱신 가능
           summaryContainer.innerHTML = buildSimulSummaryTable(results);
         }
+      }
       async function runNonStreamingQuery(qObj) {
         const sendTime = new Date();
         const startTs = Date.now();
@@ -910,155 +868,131 @@
           duration: duration.toString()
         };
       }
-    }
-    /* [수정 후: runStreamingQueryWithUI 함수 - SSE 청크 단위로 처리] */
-    function runStreamingQueryWithUI(qObj, container) {
-      return new Promise(async (resolve, reject) => {
-        const sendTime = new Date();
-        const startTs = performance.now();
-
-        // UI 초기화
-        container.innerHTML = `
-          <h4>${qObj.id} - ${qObj.text}</h4>
-          <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem;"></div>
-          <div class="stream-info-box"></div>
-          <button class="btn btn-secondary btn-sm" onclick="toggleHiddenDiv('ref-${qObj.id}')">
-            참조 데이터 보기 (Toggle References)
-          </button>
-          <div id="ref-${qObj.id}" class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
-        `;
-
-        const outputDiv = container.querySelector(".stream-output");
-        const infoBox = container.querySelector(".stream-info-box");
-        const refDiv = container.querySelector(".reference-output");
-
-        let sseBuffer = "";
-        let answerAccumulated = "";
-        let firstChunkTime = null;
-        let success = true;
-        let errorMessage = "";
-        let chunkCount = 0;
-
-        try {
-          const response = await fetch('/query_stream', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: qObj.text })
-          });
-
-          if (!response.ok) {
-            success = false;
-            errorMessage = `응답 오류: ${response.status}`;
-            outputDiv.innerHTML = `<span style="color:red;">${errorMessage}</span>`;
-            return resolve(makeResultObj(false));
-          }
-
-          // 스트리밍 읽기
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              // 끝
-              const endTime = performance.now();
-              return resolve(makeResultObj(true, endTime));
+      function runStreamingQueryWithUI(qObj, container) {
+        return new Promise(async (resolve, reject) => {
+          const sendTime = new Date();
+          const startTs = performance.now();
+          container.innerHTML = `
+            <h4>${qObj.id} - ${qObj.text}</h4>
+            <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem;"></div>
+            <div class="stream-info-box"></div>
+            <button class="btn btn-secondary btn-sm" onclick="toggleHiddenDiv('ref-${qObj.id}')">
+              참조 데이터 보기 (Toggle References)
+            </button>
+            <div id="ref-${qObj.id}" class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
+          `;
+          const outputDiv = container.querySelector(".stream-output");
+          const infoBox = container.querySelector(".stream-info-box");
+          const refDiv = container.querySelector(".reference-output");
+          let sseBuffer = "";
+          let answerAccumulated = "";
+          let firstChunkTime = null;
+          let success = true;
+          let errorMessage = "";
+          let chunkCount = 0;
+          try {
+            const response = await fetch('/query_stream', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                qry_id: qObj.id,
+                user_id: "",
+                page_id: "",
+                qry_contents: qObj.text,
+                qry_time: new Date().toISOString()
+              })
+            });
+            if (!response.ok) {
+              success = false;
+              errorMessage = `응답 오류: ${response.status}`;
+              outputDiv.innerHTML = `<span style="color:var(--danger);">${errorMessage}</span>`;
+              return resolve(makeResultObj(false));
             }
-
-            chunkCount++;
-            if (!firstChunkTime) {
-              firstChunkTime = performance.now();
-            }
-
-            // 청크 누적
-            sseBuffer += decoder.decode(value, { stream: true });
-            // \n 기준 분리
-            const lines = sseBuffer.split('\n');
-            // 마지막 라인은 아직 덜 잘린 청크일 수 있으므로 버퍼에 남김
-            sseBuffer = lines.pop();
-
-            for (let line of lines) {
-              line = line.trim();
-              if (!line) continue;
-
-              if (line.startsWith('data:')) {
-                const sseData = line.slice(5).trim();  // 'data:' 뒷부분
-                // 스트리밍 종료 신호
-                if (sseData === "[[STREAM_DONE]]") {
-                  const endTime = performance.now();
-                  return resolve(makeResultObj(true, endTime));
-                }
-                // JSON 파싱 시도
-                try {
-                  const json = JSON.parse(sseData);
-                  if (json.type === 'reference') {
-                    // 참조 데이터
-                    let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
-                    if (Array.isArray(json.data_list)) {
-                      json.data_list.forEach((ref, idx) => {
-                        refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
-                      });
-                    } else {
-                      refHTML += `<li>${JSON.stringify(json.data_list)}</li>`;
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                const endTime = performance.now();
+                return resolve(makeResultObj(true, endTime));
+              }
+              chunkCount++;
+              if (!firstChunkTime) {
+                firstChunkTime = performance.now();
+              }
+              sseBuffer += decoder.decode(value, { stream: true });
+              let lines = sseBuffer.split('\n');
+              sseBuffer = lines.pop();
+              for (let line of lines) {
+                line = line.trim();
+                if (!line) continue;
+                if (line.startsWith('data:')) {
+                  const sseData = line.slice(5).trim();
+                  if (sseData === "[[STREAM_DONE]]") {
+                    const endTime = performance.now();
+                    return resolve(makeResultObj(true, endTime));
+                  }
+                  try {
+                    const jsonData = JSON.parse(sseData);
+                    if (jsonData.type === 'reference') {
+                      let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
+                      if (Array.isArray(jsonData.data_list)) {
+                        jsonData.data_list.forEach((ref, idx) => {
+                          refHTML += `<li>${idx + 1}. ${JSON.stringify(ref)}</li>`;
+                        });
+                      } else {
+                        refHTML += `<li>${JSON.stringify(jsonData.data_list)}</li>`;
+                      }
+                      refHTML += `</ul>`;
+                      refDiv.innerHTML = refHTML;
+                    } else if (jsonData.type === 'answer') {
+                      answerAccumulated += jsonData.answer;
+                      outputDiv.innerHTML = renderMarkdown(answerAccumulated);
                     }
-                    refHTML += `</ul>`;
-                    refDiv.innerHTML = refHTML;
-                  } else if (json.type === 'answer') {
-                    // 답변 누적
-                    answerAccumulated += json.answer;
+                  } catch (e) {
+                    answerAccumulated += sseData;
                     outputDiv.innerHTML = renderMarkdown(answerAccumulated);
                   }
-                } catch (e) {
-                  // 그냥 텍스트로 처리
-                  answerAccumulated += sseData;
-                  outputDiv.innerHTML = renderMarkdown(answerAccumulated);
                 }
               }
+              infoBox.innerHTML = buildInfoBoxText();
             }
-
-            // 실시간 정보 갱신
-            infoBox.innerHTML = buildInfoBoxText();
+          } catch (err) {
+            success = false;
+            errorMessage = err.message;
+            outputDiv.innerHTML = `<span style="color:red;">오류: ${err.message}</span>`;
+            return resolve(makeResultObj(false));
           }
-        } catch (err) {
-          success = false;
-          errorMessage = err.message;
-          outputDiv.innerHTML = `<span style="color:red;">오류: ${err.message}</span>`;
-          return resolve(makeResultObj(false));
-        }
-
-        // 내부 편의 함수
-        function makeResultObj(successful, endTime) {
-          const endTs = endTime ? endTime : performance.now();
-          const duration = (endTs - startTs).toFixed(1);
-          const firstChunkDelta = firstChunkTime ? (firstChunkTime - startTs).toFixed(1) : null;
-          return {
-            id: qObj.id,
-            query: qObj.text,
-            sendTime: startTs,
-            endTime: formatTime(new Date()),
-            duration,
-            result: answerAccumulated,
-            firstChunkDelta,
-            firstChunkTime: firstChunkDelta,
-            success: successful,
-            error: errorMessage,
-            chunkCount
-          };
-        }
-
-        function buildInfoBoxText() {
-          let html = "";
-          if (firstChunkTime) {
-            html += `<strong>첫 응답 도착(TTFT):</strong> ${(firstChunkTime - startTs).toFixed(1)} ms<br>`;
-          } else {
-            html += `<strong>첫 응답 도착:</strong> 대기 중...<br>`;
+          function makeResultObj(successful, endTime) {
+            const endTs = endTime ? endTime : performance.now();
+            const duration = (endTs - startTs).toFixed(1);
+            const firstChunkDelta = firstChunkTime ? (firstChunkTime - startTs).toFixed(1) : null;
+            return {
+              id: qObj.id,
+              query: qObj.text,
+              sendTime: formatTime(sendTime),
+              endTime: formatTime(new Date()),
+              duration,
+              result: answerAccumulated,
+              firstChunkDelta,
+              success: successful,
+              error: errorMessage,
+              chunkCount
+            };
           }
-          html += `<strong>청크 수:</strong> ${chunkCount}`;
-          return html;
-        }
-      });
-    }
-
+          function buildInfoBoxText() {
+            let html = "";
+            if (firstChunkTime) {
+              html += `<strong>첫 응답 도착(TTFT):</strong> ${(firstChunkTime - startTs).toFixed(1)} ms<br>`;
+            } else {
+              html += `<strong>첫 응답 도착:</strong> 대기 중...<br>`;
+            }
+            html += `<strong>청크 수:</strong> ${chunkCount}`;
+            return html;
+          }
+        });
+      }
+      
       /************************************************************
        * (6) Continuous Chat Test - All queries share the same request_id.
        * For streaming mode, similar to (5) but using chat-specific streaming functions.
@@ -1070,10 +1004,8 @@
         const userInputCount = parseInt(countInput.value, 10) || 1;
         const limit = Math.min(userInputCount, totalAvailable);
         const truncated = queries.slice(0, limit);
-
-        const sharedRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000); // 이번 테스트에 사용될 랜덤 Requrest_id
+        const sharedRequestId = Date.now().toString() + '-' + Math.floor(Math.random() * 10000);
         console.log("현재 사용된 sharedRequestId : ", sharedRequestId);
-
         if (mode === 'nonstream') {
           const results = [];
           const total = truncated.length;
@@ -1096,55 +1028,32 @@
           html += "</ul>";
           document.getElementById('chatTestResults').innerHTML = html;
         } else {
-          // (중요) 채팅 모드도 "연속" 스트리밍 실행 중
-          // 각 쿼리가 끝날 때마다 결과 + 요약 테이블 실시간 업데이트
-          console.log('[DEBUG] Starting streaming chat test...');
           const parent = document.getElementById('chatTestResults');
-          parent.innerHTML = ''; // 기존 내용 초기화
-        
+          parent.innerHTML = '';
           const total = truncated.length;
-        
-          // 1) 누적 요약 테이블을 계속 갱신하기 위한 컨테이너 생성
           const summaryContainer = document.createElement('div');
           summaryContainer.id = "chat-summary";
           parent.appendChild(summaryContainer);
-
-          // 2) 개별 카드 표시할 컨테이너
           const partialsContainer = document.createElement('div');
           partialsContainer.id = "chat-panels";
           parent.appendChild(partialsContainer);
-        
-        
           const results = [];
-        
-          // "연속" 스트리밍 실행
           for (let i = 0; i < total; i++) {
             const queryObj = truncated[i];
-            console.log(`[DEBUG] [chatTest] Starting iteration i=${i}, query=${queryObj.text}`);
-
             const containerId = `chat-stream-${i}`;
             const cardDiv = document.createElement('div');
             cardDiv.id = containerId;
             cardDiv.className = "card";
             cardDiv.style.marginBottom = "1rem";
             partialsContainer.appendChild(cardDiv);
-        
             try {
-              // 스트리밍 함수 호출 전후로 로그
-              console.log(`[DEBUG] [chatTest] About to call runChatStreamingQueryWithUI() =>`, queryObj);
               const result = await runChatStreamingQueryWithUI(queryObj, cardDiv, sharedRequestId);
-              console.log(`[DEBUG] [chatTest] Finished iteration i=${i}, got result=`, result);
-
               results.push(result);
               summaryContainer.innerHTML = buildSimulSummaryTable(results);
             } catch (err) {
               console.error(`[ERROR] iteration i=${i} failed =>`, err);
             }
-
           }
-
-          console.log('[DEBUG] All chat streaming queries completed. Final results=', results);
-          // (선택) 모든 쿼리가 끝난 뒤 한번 더 갱신 가능
           summaryContainer.innerHTML = buildSimulSummaryTable(results);
         }
       }
@@ -1155,7 +1064,13 @@
           const resp = await fetch('/query', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ qry_contents: qObj.text, request_id: requestId })
+            body: JSON.stringify({
+              qry_id: qObj.id,
+              user_id: "",
+              page_id: "",
+              qry_contents: qObj.text,
+              qry_time: new Date().toISOString()
+            })
           });
           await resp.json();
         } catch (e) {
@@ -1171,16 +1086,11 @@
           duration: duration.toString()
         };
       }
-      
-
-      /* [수정 후: runChatStreamingQueryWithUI 함수 - SSE 청크 단위로 처리] */
-      function runChatStreamingQueryWithUI(qObj, container, req_id) {
+      async function runChatStreamingQueryWithUI(qObj, container, req_id) {
         return new Promise(async (resolve, reject) => {
           console.log('[DEBUG] runChatStreamingQueryWithUI() start =>', qObj);
-
           const sendTime = new Date();
           const startTs = performance.now();
-
           container.innerHTML = `
             <h4>${qObj.id} - ${qObj.text}</h4>
             <div class="stream-output markdown-content" style="background:var(--gray-100); padding:1rem; border-radius:0.375rem;"></div>
@@ -1190,40 +1100,35 @@
             </button>
             <div id="ref-chat-${qObj.id}" class="reference-output" style="display:none; border:1px solid var(--gray-300); padding:1rem; margin-top:0.5rem; border-radius:0.375rem;"></div>
           `;
-
           const outputDiv = container.querySelector(".stream-output");
           const infoBox = container.querySelector(".stream-info-box");
           const refDiv = container.querySelector(".reference-output");
-
           let sseBuffer = "";
           let answerAccumulated = "";
           let firstChunkTime = null;
           let success = true;
           let errorMessage = "";
           let chunkCount = 0;
-
           try {
-            console.log('[DEBUG] runChatStreamingQueryWithUI() => sending fetch /query_stream');
             const response = await fetch('/query_stream', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              // (중요) request_id 공유 시, 여기서 동일한 request_id를 넣어줄 수도 있음
               body: JSON.stringify({
-                input: qObj.text,
-                request_id: req_id
+                qry_id: qObj.id,
+                user_id: "",
+                page_id: "",
+                qry_contents: qObj.text,
+                qry_time: new Date().toISOString()
               })
             });
-
             if (!response.ok) {
               success = false;
               errorMessage = `응답 오류: ${response.status}`;
               outputDiv.innerHTML = `<span style="color:red;">${errorMessage}</span>`;
               return resolve(makeResultObj(false));
             }
-
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
-
             while (true) {
               const { done, value } = await reader.read();
               if (done) {
@@ -1231,21 +1136,16 @@
                 const endTime = performance.now();
                 return resolve(makeResultObj(true, endTime));
               }
-
               chunkCount++;
               if (!firstChunkTime) {
                 firstChunkTime = performance.now();
               }
-
-              // 청크 누적
               sseBuffer += decoder.decode(value, { stream: true });
               const lines = sseBuffer.split('\n');
               sseBuffer = lines.pop();
-
               for (let line of lines) {
                 line = line.trim();
                 if (!line) continue;
-
                 if (line.startsWith('data:')) {
                   const sseData = line.slice(5).trim();
                   if (sseData === "[[STREAM_DONE]]") {
@@ -1275,7 +1175,6 @@
                   }
                 }
               }
-              // 실시간 정보 갱신
               infoBox.innerHTML = buildInfoBoxText();
             }
           } catch (err) {
@@ -1285,7 +1184,6 @@
             outputDiv.innerHTML = `<span style="color:red;">오류: ${err.message}</span>`;
             return resolve(makeResultObj(false));
           }
-
           function makeResultObj(successful, endTime) {
             const endTs = endTime ? endTime : performance.now();
             const duration = (endTs - startTs).toFixed(1);
@@ -1304,7 +1202,6 @@
               chunkCount
             };
           }
-
           function buildInfoBoxText() {
             let html = "";
             if (firstChunkTime) {
@@ -1318,7 +1215,16 @@
         });
       }
       
-      // 전역 적으로 요약 테이블 작성에 도움을 주는 함수
+      async function buildTestQueries() {
+        // 테스트 셋 로직; 실제 테스트 셋 데이터를 반환하는 함수의 예시입니다.
+        // 각 쿼리는 { id: string, text: string } 형태로 구성합니다.
+        return [
+          { id: "Q1", text: "첫 번째 테스트 질문입니다." },
+          { id: "Q2", text: "두 번째 테스트 질문입니다." },
+          { id: "Q3", text: "세 번째 테스트 질문입니다." }
+        ];
+      }
+
       function buildSimulSummaryTable(results) {
         let successCount = 0;
         let failCount = 0;
@@ -1353,8 +1259,6 @@
           const statusClass = r.success ? "badge-success" : "badge-danger";
           const errorText = r.error || "";
     
-          // 만약 sendTime, endTime이 "오전 11:36:58.637" 같은 문자열이면 그대로 표시
-          // number면 toFixed(1) 등 해도 됨
           const sendTimeCell = (typeof r.sendTime === 'number')
             ? r.sendTime.toFixed(1)
             : (r.sendTime || '');
@@ -1367,7 +1271,6 @@
             ? r.endTime.toFixed(1)
             : (r.endTime || '');
     
-          // duration은 string/number일 수 있음
           const durationStr = (typeof r.duration === 'number')
             ? r.duration.toFixed(1)
             : (r.duration || '');
@@ -1394,7 +1297,7 @@
         `;
         return html;
       }
-
+      
       window.addEventListener('DOMContentLoaded', () => {
         updateContinuousCountMax();
       });

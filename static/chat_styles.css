@@ -231,6 +231,39 @@ body {
     overflow-y: auto;
 }
 
+.reference-container-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.reference-container-header h3 {
+    font-size: 1rem;
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.close-ref-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem;
+    border-radius: var(--radius-sm);
+    transition: var(--transition-normal);
+}
+
+.close-ref-btn:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+    color: var(--primary);
+}
+
 .reference-item {
     margin-bottom: 1rem;
     padding: 1rem;
@@ -450,25 +483,37 @@ body {
     margin-bottom: 0.5rem;
 }
 
+/* ChatGPT 스타일의 welcome 입력 영역 */
 .welcome-input-box {
-    position: relative;
+    display: flex;
+    align-items: center;
+    background-color: white;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 0.75rem 1rem;
+    box-shadow: var(--shadow-md);
+    width: 100%;
+    max-width: 768px;
+    margin: 0 auto;
+}
+
+.welcome-tools {
     width: 100%;
 }
 
 .welcome-message-input {
     width: 100%;
-    padding: 0.75rem 3rem 0.75rem 1rem;
-    font-size: 0.9375rem;
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-lg);
+    flex: 1;
+    border: none;
     resize: none;
-    min-height: 2.5rem;
-    max-height: 150px;
-    overflow-y: auto;
-    transition: var(--transition-normal);
-    font-family: inherit;
-    box-shadow: var(--shadow-md);
-    background-color: white;
+    font-size: 1rem;
+    padding: 0.5rem;
+    outline: none;
+    background-color: transparent;
+}
+
+.welcome-message-input::placeholder {
+    color: var(--text-secondary);
 }
 
 .welcome-message-input:focus {
@@ -478,25 +523,19 @@ body {
 }
 
 .welcome-send-btn {
-    position: absolute;
-    right: 0.5rem;
-    bottom: 0.5rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 2rem;
-    height: 2rem;
-    border: none;
-    border-radius: 50%;
     background-color: var(--primary);
+    border: none;
     color: white;
+    padding: 0.5rem 1rem;
+    border-radius: var(--radius-md);
     cursor: pointer;
     transition: var(--transition-normal);
+    font-size: 1rem;
+    margin-left: 0.75rem;
 }
 
 .welcome-send-btn:hover {
     background-color: var(--primary-hover);
-    transform: scale(1.05);
 }
 
 .empty-chat-prompt {
@@ -579,9 +618,82 @@ body {
     margin-right: 0.5rem;
 }
 
+/* Reference button in message header */
+.message-ref-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: auto;
+    padding: 0.25rem 0.5rem;
+    background-color: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition-normal);
+}
+
+.message-ref-btn svg {
+    color: var(--primary);
+    margin-right: 0;
+}
+
+.message-ref-btn:hover {
+    background-color: var(--primary-light);
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
 .message-content {
     font-size: 0.9375rem;
     overflow-wrap: break-word;
+}
+
+/* Typing indicator */
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    margin-left: 0.5rem;
+}
+
+.typing-indicator span {
+    height: 0.5rem;
+    width: 0.5rem;
+    margin: 0 0.1rem;
+    background-color: var(--primary);
+    border-radius: 50%;
+    display: inline-block;
+    opacity: 0.6;
+}
+
+.typing-indicator span:nth-child(1) {
+    animation: pulse 1s infinite 0.1s;
+}
+
+.typing-indicator span:nth-child(2) {
+    animation: pulse 1s infinite 0.3s;
+}
+
+.typing-indicator span:nth-child(3) {
+    animation: pulse 1s infinite 0.5s;
+}
+
+@keyframes pulse {
+    0% {
+        transform: scale(1);
+        opacity: 0.6;
+    }
+
+    50% {
+        transform: scale(1.2);
+        opacity: 1;
+    }
+
+    100% {
+        transform: scale(1);
+        opacity: 0.6;
+    }
 }
 
 /* Markdown Styling */
@@ -693,6 +805,32 @@ body {
     font-size: 0.85rem;
 }
 
+/* Table styles */
+.message-content table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    overflow-x: auto;
+    display: block;
+}
+
+.message-content table th,
+.message-content table td {
+    padding: 0.5rem;
+    border: 1px solid var(--border-color);
+    text-align: left;
+}
+
+.message-content table th {
+    background-color: var(--primary-light);
+    font-weight: 600;
+    color: var(--primary);
+}
+
+.message-content table tr:nth-child(even) {
+    background-color: rgba(0, 0, 0, 0.02);
+}
+
 /* Input Container Styles */
 .input-container {
     background-color: white;
@@ -765,6 +903,59 @@ body {
     transform: none;
 }
 
+/* Add to chat_styles.css */
+
+/* Stop button styles */
+.send-btn.stop-btn,
+.welcome-send-btn.stop-btn {
+    background-color: #f44336;
+    transition: background-color 0.3s;
+}
+
+.send-btn.stop-btn:hover,
+.welcome-send-btn.stop-btn:hover {
+    background-color: #d32f2f;
+}
+
+/* Stop button animation */
+.send-btn.stop-btn::before,
+.welcome-send-btn.stop-btn::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background-color: rgba(255, 255, 255, 0.3);
+    transform: scale(0);
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        transform: scale(0.95);
+        opacity: 0.7;
+    }
+
+    50% {
+        transform: scale(1.05);
+        opacity: 0.3;
+    }
+
+    100% {
+        transform: scale(0.95);
+        opacity: 0.7;
+    }
+}
+
+/* When button is disabled during transition */
+.send-btn:disabled,
+.welcome-send-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
 /* Sidebar Opener Button */
 .sidebar-opener {
     display: none;
@@ -832,6 +1023,14 @@ body {
     .welcome-subtitle {
         font-size: 1rem;
     }
+
+    .message-ref-btn span {
+        display: none;
+    }
+
+    .message-ref-btn {
+        padding: 0.25rem;
+    }
 }
 
 /* Dark mode support (optional) */
@@ -883,6 +1082,237 @@ body {
 
     .toggle-ref-btn {
         background-color: #1f2937;
+        color: #d1d5db;
+    }
+
+    .message-ref-btn {
+        background-color: transparent;
+        border-color: #374151;
+    }
+
+    .message-ref-btn:hover {
+        background-color: rgba(16, 163, 127, 0.2);
+    }
+}
+
+/* Tool box */
+.tool-container {
+    display: flex;
+}
+
+/* Image Upload Styles */
+.image-upload-container {
+    margin-right: 0.75rem;
+    display: flex;
+    align-items: center;
+    position: relative;
+}
+
+/* Dropdown 메뉴 스타일 */
+.image-dropdown-menu {
+    display: none;
+    position: absolute;
+    top: -350%;
+    /* 버튼 아래에 위치 */
+    left: 0%;
+    background-color: white;
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-md);
+    border-radius: var(--radius-md);
+    padding: 0.5rem;
+    z-index: 10;
+    max-width: 600px;
+    min-width: 150px;
+}
+
+.image-dropdown-menu.active {
+    display: block;
+}
+
+.image-dropdown-menu .dropdown-header {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+}
+
+.dropdown-upload-btn {
+    width: 100%;
+    padding: 0.5rem;
+    background-color: var(--primary);
+    color: white;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    margin-bottom: 0.5rem;
+}
+
+.dropdown-upload-btn:hover {
+    background-color: var(--primary-hover);
+}
+
+.uploaded-images,
+.welcome-uploaded-images {
+    max-width: 600px;
+    /* 원하는 최대 너비로 설정 */
+    flex-wrap: wrap;
+    /* 공간이 부족하면 다음 줄로 넘김 */
+    overflow-x: auto;
+    display: flex;
+    flex-direction: row;
+    border-top: 1px solid var(--border-color);
+    padding-top: 0.5rem;
+}
+
+.uploaded-images .no-images,
+.welcome-uploaded-images .no-images {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.image-upload-btn {
+    background-color: transparent;
+    border: none;
+    border-radius: 12%;
+    cursor: pointer;
+    margin-top: 8px;
+    padding: 0.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.image-upload-btn:hover {
+    background-color: rgb(243, 243, 243);
+    /* color: white; */
+}
+
+.image-upload-btn svg {
+    width: 20px;
+    height: 20px;
+    color: var(--primary);
+}
+
+/* 이미지 버튼 active 상태 (이미지 업로드된 경우) */
+.image-upload-btn.active {
+    background-color: var(--primary-hover);
+    color: white;
+}
+
+/* Image Preview Styles */
+.image-preview-container {
+    max-width: 600px;
+    margin-top: 10px;
+    display: none;
+    /* .has-image 클래스가 추가될 때 flex로 변경됨 */
+    flex-direction: row;
+    flex-wrap: wrap;
+    /* 아이템들이 한 줄에 다 들어가지 않으면 다음 줄로 넘겨줌 */
+    gap: 0.5rem;
+    border-radius: var(--radius-md);
+    overflow: auto;
+    /* 필요에 따라 스크롤도 허용 */
+    background-color: white;
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+}
+
+.image-preview-container.has-image {
+    display: flex;
+}
+
+.preview-image-wrapper {
+    position: relative;
+    width: 65px;
+    /* fixed width */
+    height: 65px;
+    /* fixed height */
+    margin: 0.5rem;
+    border: 1px solid #ddd;
+    overflow: hidden;
+    border-radius: 4px;
+}
+
+.preview-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /* crop or scale the image to fill the container */
+}
+
+.remove-image-btn {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    background: rgba(0, 0, 0, 0.5);
+    border: none;
+    color: #fff;
+    border-radius: 50%;
+    cursor: pointer;
+    padding: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.remove-image-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+.remove-image-btn:hover {
+    background-color: rgba(0, 0, 0, 0.8);
+    transform: scale(1.1);
+}
+
+.file-info {
+    padding: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    background-color: var(--chat-bg);
+    border-top: 1px solid var(--border-color);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Message Image Styles */
+.message-image-container {
+    margin-top: 0.75rem;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    background-color: white;
+    max-width: 300px;
+}
+
+.message-image {
+    width: 100%;
+    max-height: 200px;
+    object-fit: contain;
+    display: block;
+}
+
+/* Dark mode support for image components */
+@media (prefers-color-scheme: dark) {
+    .image-upload-btn {
+        background-color: #2d3748;
+        color: var(--primary);
+    }
+
+    .image-upload-btn:hover {
+        background-color: var(--primary);
+        color: white;
+    }
+
+    .image-preview-container,
+    .message-image-container {
+        background-color: #1f2937;
+        border-color: #374151;
+    }
+
+    .file-info {
+        background-color: #111827;
         color: #d1d5db;
     }
 }

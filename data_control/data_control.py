@@ -5,20 +5,15 @@ import json
 import datetime
 import torch
 import numpy as np
-from umap import UMAP
 from flask import Blueprint, request, jsonify, render_template
 from transformers import AutoModel, AutoTokenizer
-from utils.utils import vectorize_content, normalize_text_vis  # Assumes you have defined vectorize_content in utils.py
+from utils import vectorize_content, normalize_text_vis  # Assumes you have defined vectorize_content in utils.py
 
 # For PPTX extraction
 from pptx import Presentation
 
 # For PDF extraction
 import PyPDF2
-
-# For visualization we use Plotly
-import plotly.express as px
-import pandas as pd
 
 # Configuration
 import yaml
@@ -421,92 +416,3 @@ def search_data():
             })
     
     return jsonify(results)
-
-
-@data_control_bp.route("/api/umap_data", methods=["GET"])
-def get_umap_data():
-    """
-    UMAP으로 2차원 임베딩한 뒤,
-    nodes, edges 형태로 반환하여 시각화를 지원합니다.
-    """
-    try:
-        if os.path.exists(DATA_PATH):
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                data_entries = json.load(f)
-        else:
-            return jsonify({"error": "데이터 파일을 찾을 수 없습니다."}), 404
-        
-        vectors = []
-        metadata = []
-        for entry in data_entries:
-            for chunk in entry.get("chunks", []):
-                if "vector" in chunk and chunk["vector"]:
-                    vectors.append(chunk["vector"])
-                    metadata.append({
-                        "id": f"{entry.get('file_name', 'unknown')}_{chunk.get('chunk_id', '0')}",
-                        "file_name": entry.get("file_name", "Unknown"),
-                        "title": chunk.get("title", ""),
-                        "date": chunk.get("date", ""),
-                        "text_short": chunk.get("text_short", "")[:100] + "..."
-                    })
-        
-        if not vectors:
-            return jsonify({"error": "벡터 데이터가 없습니다."}), 404
-
-        # 너무 많은 벡터를 처리하면 성능 문제가 있을 수 있음 -> downsample
-        MAX_VECTORS = 10000
-        if len(vectors) > MAX_VECTORS:
-            indices = np.random.choice(len(vectors), MAX_VECTORS, replace=False)
-            vectors = [vectors[i] for i in indices]
-            metadata = [metadata[i] for i in indices]
-
-        vectors_array = np.array(vectors)
-        vectors_array = np.squeeze(vectors_array)
-        
-        # UMAP
-        n_neighbors = min(15, len(vectors) - 1)
-        umap_model = UMAP(
-            n_components=2,
-            n_neighbors=n_neighbors,
-            min_dist=0.1,
-            metric='cosine',
-            random_state=42
-        )
-        embedding = umap_model.fit_transform(vectors_array)
-        
-        nodes = []
-        for i, (x, y) in enumerate(embedding):
-            nodes.append({
-                "id": metadata[i]["id"],
-                "x": float(x),
-                "y": float(y),
-                "file_name": metadata[i]["file_name"],
-                "title": metadata[i]["title"],
-                "date": metadata[i]["date"],
-                "text_short": metadata[i]["text_short"]
-            })
-        
-        # (Optional) edges 계산 -> 큰 데이터셋에서는 비추천(매우 느림)
-        edges = []
-        if len(vectors) > 1:
-            from sklearn.metrics.pairwise import cosine_similarity
-            similarity = cosine_similarity(vectors_array)
-            threshold = 0.7
-            for i in range(len(vectors)):
-                for j in range(i+1, len(vectors)):
-                    if similarity[i, j] > threshold:
-                        edges.append({
-                            "source": metadata[i]["id"],
-                            "target": metadata[j]["id"],
-                            "value": float(similarity[i, j])
-                        })
-        
-        return jsonify({
-            "nodes": nodes,
-            "edges": edges
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": f"UMAP 시각화 처리 중 오류 발생: {str(e)}"}), 500
