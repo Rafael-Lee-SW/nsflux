@@ -3,43 +3,73 @@ core 패키지 초기화 파일
 
 Exports:
   [RAG.py]
-    - execute_rag, execute_sql, generate_answer, query_sort, specific_question,
-      sort_by_time, retrieve, expand_time_range_if_needed, cal_sim_score,
-      cal_bm25_score, embed, min_max_scaling, generate, collect_vllm_text,
-      generate_answer_stream, collect_vllm_text_stream
-
+    - execute_rag, generate_answer, query_sort, specific_question, generate_answer_stream
+  
+  [retrieval.py]
+    - retrieve, sort_by_time, expand_time_range_if_needed, cal_sim_score, cal_bm25_score, 
+      embed, min_max_scaling
+  
+  [generation.py]
+    - generate, collect_vllm_text, collect_vllm_text_stream
+    
+  [image_processing.py]
+    - image_query, image_streaming_query, prepare_image, prepare_multimodal_request
+    
+  [sql_processing.py]
+    - generate_sql
+    
   [sql.py]
-    - generate_sql (SQL 모듈 버전), first_llm, extract_relevant_metadata,
-      parse_and_augment_filter_conditions, search_location_db, second_llm,
-      execute_sql_query, create_table_json, create_chart_json
+    - first_llm, extract_relevant_metadata, parse_and_augment_filter_conditions,
+      search_location_db, second_llm, execute_sql_query, create_table_json,
+      create_chart_json
 
   [SQL_NS.py]
-    - initialze, check_sqlplus, check_db_connection, get_all_schema_tables,
-      make_metadata_from_table, run_sql_unno, get_metadata,
-      generate_sql (SQL_NS 버전)
+    - check_sqlplus, check_db_connection, get_all_schema_tables,
+      make_metadata_from_table, run_sql_unno, get_metadata
 """
 
+# RAG 모듈 - 코어 기능
 from .RAG import (
     execute_rag,
-    execute_sql,
     generate_answer,
     query_sort,
     specific_question,
-    sort_by_time,
+    generate_answer_stream,
+)
+
+# Retrieval 모듈 - 검색 관련
+from .retrieval import (
     retrieve,
+    sort_by_time,
     expand_time_range_if_needed,
     cal_sim_score,
     cal_bm25_score,
     embed,
     min_max_scaling,
+)
+
+# Generation 모듈 - 생성 관련
+from .generation import (
     generate,
     collect_vllm_text,
-    generate_answer_stream,
     collect_vllm_text_stream,
 )
 
+# Image Processing 모듈 - 이미지 처리 관련
+from .image_processing import (
+    image_query,
+    image_streaming_query,
+    prepare_image,
+    prepare_multimodal_request,
+)
+
+# SQL Processing 모듈 - SQL 관련
+from .sql_processing import (
+    generate_sql,
+)
+
+# SQL 모듈 (원본 파일)
 from .sql import (
-    generate_sql as generate_sql_sql,
     first_llm,
     extract_relevant_metadata,
     parse_and_augment_filter_conditions,
@@ -50,37 +80,48 @@ from .sql import (
     create_chart_json,
 )
 
+# SQL_NS 모듈 (원본 파일)
 from .SQL_NS import (
-    initialze,
     check_sqlplus,
     check_db_connection,
     get_all_schema_tables,
     make_metadata_from_table,
     run_sql_unno,
     get_metadata,
-    generate_sql as generate_sql_ns,
 )
 
 __all__ = [
     # RAG 모듈 관련 함수들
     "execute_rag",
-    "execute_sql",
     "generate_answer",
     "query_sort",
     "specific_question",
-    "sort_by_time",
+    "generate_answer_stream",
+
+    # Retrieval 모듈 관련 함수들
     "retrieve",
+    "sort_by_time",
     "expand_time_range_if_needed",
     "cal_sim_score",
     "cal_bm25_score",
     "embed",
     "min_max_scaling",
+
+    # Generation 모듈 관련 함수들
     "generate",
     "collect_vllm_text",
-    "generate_answer_stream",
     "collect_vllm_text_stream",
+
+    # Image Processing 모듈 관련 함수들
+    "image_query",
+    "image_streaming_query",
+    "prepare_image",
+    "prepare_multimodal_request",
+
+    # SQL Processing 모듈 관련 함수들
+    "generate_sql",
+
     # sql 모듈 관련 함수들 (sql.py)
-    "generate_sql_sql",
     "first_llm",
     "extract_relevant_metadata",
     "parse_and_augment_filter_conditions",
@@ -89,13 +130,12 @@ __all__ = [
     "execute_sql_query",
     "create_table_json",
     "create_chart_json",
+
     # SQL_NS 모듈 관련 함수들
-    "initialze",
     "check_sqlplus",
     "check_db_connection",
     "get_all_schema_tables",
     "make_metadata_from_table",
     "run_sql_unno",
     "get_metadata",
-    "generate_sql_ns",
 ]

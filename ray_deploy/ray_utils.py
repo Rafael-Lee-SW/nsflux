@@ -1,867 +1,800 @@
-# ray_utils.py
+# ray_deploy/ray_utils.py
 import ray  # Ray library
 from ray import serve
 import json
 import asyncio  # async I/O process module
 from concurrent.futures import ProcessPoolExecutor  # 스레드 컨트롤
-import uuid  # --- NEW OR MODIFIED ---
+import uuid
 import time
-from typing import Dict, Optional  # --- NEW OR MODIFIED ---
+from typing import Dict, Optional, List, Any, Tuple, Union
 import threading  # To find out the usage of thread
 import datetime
+import logging
 
-from core.RAG import (
+from core import (
     query_sort,
     specific_question,
     execute_rag,
     generate_answer,
     generate_answer_stream,
-)  # hypothetically
-from utils.utils import (
+    image_query,
+)
+from utils import (
     load_model,
     load_data,
     process_format_to_response,
     process_to_format,
     error_format,
 )
-# from summarizer import summarize_conversation
 from utils.summarizer import summarize_conversation
-from utils.debug_tracking import log_batch_info, log_system_info
+# Langchain Memory system
+from ray_deploy.langchain import CustomConversationBufferMemory, serialize_message
 
-# 랭체인 도입
-from langchain.memory import ConversationBufferMemory
-from langchain.schema import HumanMessage, AIMessage
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('RAY_UTILS')
 
-# =============================================================================
-# Custom Conversation Memory to store extra metadata (e.g., chunk_ids)
-# =============================================================================
-class CustomConversationBufferMemory(ConversationBufferMemory):
-    """대화 저장 시 추가 메타데이터를 함께 기록"""
-    def save_context(self, inputs: dict, outputs: dict) -> None:
-        """
-        inputs, outputs 예시:
-            inputs = {
-                "qry_contents": "사용자 질문",
-                "qry_id": "...",
-                "user_id": "...",
-                "auth_class": "...",
-                "qry_time": "..."
-            }
-            outputs = {
-                "output": "AI의 최종 답변",
-                "chunk_ids": [...참조 chunk_id 리스트...]
-            }
-        """
-        try:
-            user_content = inputs.get("qry_contents", "")
-            human_msg = HumanMessage(
-                content=user_content,
-                additional_kwargs={
-                    "qry_id": inputs.get("qry_id"),
-                    "user_id": inputs.get("user_id"),
-                    "auth_class": inputs.get("auth_class"),
-                    "qry_time": inputs.get("qry_time")
-                }
-            )
-            ai_content = outputs.get("output", "")
-            ai_msg = AIMessage(
-                content=ai_content,
-                additional_kwargs={
-                    "chunk_ids": outputs.get("chunk_ids", []),
-                    "qry_id": inputs.get("qry_id"),
-                    "user_id": inputs.get("user_id"),
-                    "auth_class": inputs.get("auth_class"),
-                    "qry_time": inputs.get("qry_time")
-                }
-            )
-
-            self.chat_memory.messages.append(human_msg)
-            self.chat_memory.messages.append(ai_msg)
-        except Exception as e:
-            print(f"[ERROR in save_context] {e}")
-        
-    def load_memory_variables(self, inputs: dict) -> dict:
-        """
-        랭체인 규약에 의해 {"history": [메시지 리스트]} 형태 리턴
-        """
-        try:
-            return {"history": self.chat_memory.messages}
-        except Exception as e:
-            print(f"[ERROR in load_memory_variables] {e}")
-            return {"history": []}
-
-# Serialization function for messages
-def serialize_message(msg):
-    """
-    HumanMessage -> {"role": "human", "content": ...}
-    AIMessage    -> {"role": "ai", "content": ..., "references": [...]}
-    """
-    try:
-        if isinstance(msg, HumanMessage):
-            return {"role": "human", "content": msg.content}
-        elif isinstance(msg, AIMessage):
-            refs = msg.additional_kwargs.get("chunk_ids", [])
-            # 디버그 출력
-            print(f"[DEBUG serialize_message] AI refs: {refs}")
-            return {"role": "ai", "content": msg.content, "references": refs}
-        else:
-            return {
-                "role": "unknown",
-                "content": getattr(msg, "content", str(msg))
-            }
-    except Exception as e:
-        print(f"[ERROR in serialize_message] {e}")
-        return {"role": "error", "content": str(e)}
-    
-# =============================================================================
-# =============================================================================
+# Configuration
+import yaml
+from box import Box
+with open("./config.yaml", "r") as f:
+    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
+    config = Box(config_yaml)
 
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
-    async def __init__(self, config):
+    def __init__(self, config):
+        """
+        InferenceActor 초기화: 모델, 토크나이저, 데이터 로드 및 배치 처리 설정
+        """
         self.config = config
+        
+        # 성능 모니터 초기화 (Ray 액터 내부에서)
+        from utils.debug_tracking import get_performance_monitor, print_memory_usage
+        self.performance_monitor = get_performance_monitor()
+        
+        # 초기 메모리 사용량 로깅
+        print_memory_usage("InferenceActor 초기화 시작")
+        
         # 액터 내부에서 모델 및 토크나이저를 새로 로드 (GPU에 한 번만 로드)
         self.model, self.tokenizer, self.embed_model, self.embed_tokenizer = load_model(
             config
         )
         # 데이터는 캐시 파일을 통해 로드
         self.data = load_data(config.data_path)
-        # 비동기 큐와 배치 처리 설정 (마이크로 배칭)
+        
+        # 비동기 큐와 배치 처리 설정
         self.request_queue = asyncio.Queue()
         self.max_batch_size = config.ray.max_batch_size  # 최대 배치 수
-        self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간
+        self.batch_wait_timeout = config.ray.batch_wait_timeout  # 배치당 처리 시간 - 이제 사용하지 아니함(연속 배치이기에 배치당 처리 시간이 무의미)
 
         # Actor 내부에서 ProcessPoolExecutor 생성 (직렬화 문제 회피)
         max_workers = int(min(config.ray.num_cpus * 0.8, (26*config.ray.actor_count)-4))
         self.process_pool = ProcessPoolExecutor(max_workers)
 
-        # --- SSE Queue Manager ---
-        # A dictionary to store SSE queues for streaming requests
-        # Key = request_id, Value = an asyncio.Queue of partial token strings
+        # --- SSE Queue Manager --- 
         self.queue_manager = ray.get_actor("SSEQueueManager")
-        self.active_sse_queues: Dict[str, asyncio.Queue] = {}
 
+
+        # --- 기타 설정 ---
+        # 활성 작업 추적을 위한 변수 추가
         self.batch_counter = 0  # New counter to track batches
-
+        self.active_tasks = set()
+        self.max_concurrent_tasks = config.ray.max_batch_size
+        # Track active generations that can be stopped
+        self.active_generations = set()
         
+        # 메모리
         self.memory_map = {}
-
-        # Micro-batching로 바꾸기(아래 주석 해체)
-        # asyncio.create_task(self._batch_processor())
         
-        # In-flight batching까지 추가 적용(Micro 사용할 경우 주석)
-        asyncio.create_task(self._in_flight_batch_processor())
-
-
+        # 연속 배치 처리기 시작 (Continuous batch)
+        asyncio.create_task(self.continuous_batch_processor())
+        
+    # -------------------------------------------------------------------------
+    # GET MEMORY FOR SESSION - 세션별 메모리 관리
+    # -------------------------------------------------------------------------
     def get_memory_for_session(self, request_id: str) -> CustomConversationBufferMemory:
         """
         세션별 Memory를 안전하게 가져오는 헬퍼 메서드.
         만약 memory_map에 request_id가 없으면 새로 생성해 저장 후 반환.
+        
+        Args:
+            request_id: 세션(대화) ID
+            
+        Returns:
+            CustomConversationBufferMemory: 대화 기록을 저장하는 메모리 객체
         """
         if request_id not in self.memory_map:
-            print(f"[DEBUG] Creating new CustomConversationBufferMemory for session={request_id}")
+            logger.info(f"Creating new ConversationBufferMemory for session={request_id}")
             self.memory_map[request_id] = CustomConversationBufferMemory(return_messages=True)
         return self.memory_map[request_id]
 
     # -------------------------------------------------------------------------
-    # Micro_batch_processor - OLD METHOD
+    # CONTINUOUOS BATCH PROCESSOR - 연속 배치 처리
     # -------------------------------------------------------------------------
-    async def _batch_processor(self):
+    async def continuous_batch_processor(self):
         """
-        Continuously processes queued requests in batches (micro-batching).
-        We add new logic for streaming partial tokens if a request has an SSE queue.
+        연속적인 배치 처리 - 최대 max_batch_size개의 요청이 항상 동시에 처리되도록 함
         """
         while True:
-            batch = []
-            batch_start_time = time.time()
-            # 1) get first request from the queue
-            print("=== _batch_processor waiting for request_queue item... ===")
-            item = await self.request_queue.get()
-            print(
-                f"[DEBUG] 첫 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: 1)"
-            )
-            batch.append(item)
-
-            print(f"[DEBUG] Received first request at {time.strftime('%H:%M:%S')}")
-
-            # 2) try to fill the batch up to batch_size or until timeout
-            try:
-                while len(batch) < self.max_batch_size:
-                    print("현재 배치 사이즈 : ", len(batch))
-                    print("최대 배치 사이즈 : ", self.max_batch_size)
-                    item = await asyncio.wait_for(
-                        self.request_queue.get(), timeout=self.batch_wait_timeout
-                    )
-
-                    batch.append(item)
-                    print(
-                        f"[DEBUG] 추가 요청 도착: {time.strftime('%H:%M:%S')} (현재 배치 크기: {len(batch)})"
-                    )
-            except asyncio.TimeoutError:
-                elapsed = time.time() - batch_start_time
-                print(
-                    f"[DEBUG] 타임아웃 도달: {elapsed:.2f}초 후 (최종 배치 크기: {len(batch)})"
-                )
-                pass
-
-            print(
-                f"=== _batch_processor: 배치 사이즈 {len(batch)} 처리 시작 ({time.strftime('%H:%M:%S')}) ==="
-            )
-
-            # 각 요청 처리 전후에 로그 추가
-            start_proc = time.time()
-            await asyncio.gather(
-                *(
-                    self._process_single_query(req, fut, sse_queue)
-                    for (req, fut, sse_queue) in batch
-                )
-            )
-            proc_time = time.time() - start_proc
-            print(f"[DEBUG] 해당 배치 처리 완료 (처리시간: {proc_time:.2f}초)")
+            # 사용 가능한 슬롯 확인
+            available_slots = self.max_concurrent_tasks - len(self.active_tasks)
             
-    # -------------------------------------------------------------------------
-    # In-flight BATCH PROCESSOR
-    # -------------------------------------------------------------------------
-    async def _in_flight_batch_processor(self):
-        while True:
-            # Wait for the first item (blocking until at least one is available)
-            print(
-                "=== [In-Flight Batching] Waiting for first item in request_queue... ==="
-            )
-            first_item = await self.request_queue.get()
-            batch = [first_item]
-            batch_start_time = time.time()
-
-            print(
-                "[In-Flight Batching] Got the first request. Attempting to fill a batch..."
-            )
-
-            # Attempt to fill up the batch until we hit max_batch_size or batch_wait_timeout
-            while len(batch) < self.max_batch_size:
+            if available_slots > 0:
                 try:
-                    remain_time = self.batch_wait_timeout - (
-                        time.time() - batch_start_time
-                    )
-                    if remain_time <= 0:
-                        print(
-                            "[In-Flight Batching] Timed out waiting for more requests; proceeding with current batch."
-                        )
-                        break
-                    item = await asyncio.wait_for(
-                        self.request_queue.get(), timeout=remain_time
-                    )
-                    batch.append(item)
-                    print(
-                        f"[In-Flight Batching] +1 request => batch size now {len(batch)} <<< {self.max_batch_size}"
-                    )
-                except asyncio.TimeoutError:
-                    print(
-                        "[In-Flight Batching] Timeout reached => proceeding with the batch."
-                    )
-                    break
-            self.batch_counter += 1
-            
-            # 현재 배치 정보 로깅
-            log_batch_info(batch)
-            log_system_info("배치 처리 전 상태")
+                    # 새 요청 받기
+                    request_obj, fut = await asyncio.wait_for(self.request_queue.get(), timeout=0.01)
 
-            # We have a batch of items: each item is ( http_query_or_stream_dict, future, sse_queue )
-            # We'll process them concurrently.
-            tasks = []
-            for request_tuple in batch:
-                request_obj, fut, sse_queue = request_tuple
-                tasks.append(self._process_single_query(request_obj, fut, sse_queue))
-
-            # Actually run them all concurrently
-            await asyncio.gather(*tasks)
-            log_system_info("배치 처리 후 상태")
-
-    async def _process_single_query(self, http_query_or_stream_dict, future, sse_queue):
-        """
-        Process a single query from the micro-batch. If 'sse_queue' is given,
-        we do partial-token streaming. Otherwise, normal final result.
-        """
-        # 스트리밍 요청인 경우 request_id를 미리 초기화
-        request_id = None
-        print(
-            f"[DEBUG] _process_single_query 시작: {time.strftime('%H:%M:%S')}, 요청 내용: {http_query_or_stream_dict}, 현재 스레드: {threading.current_thread().name}"
-        )
-        try:
-            # 1) 스트리밍 구분
-            if (isinstance(http_query_or_stream_dict, dict)
-                and "request_id" in http_query_or_stream_dict):
-                # 스트리밍
-                request_id = http_query_or_stream_dict["request_id"]
-                http_query = http_query_or_stream_dict["http_query"]
-                is_streaming = True
-                print(f"[STREAM] _process_single_query: request_id={request_id}")
-            else:
-                # Non-스트리밍
-                request_id = None
-                http_query = http_query_or_stream_dict
-                is_streaming = False
-                print("[NORMAL] _process_single_query started...")
+                    # 비동기 처리 작업 생성
+                    task = asyncio.create_task(
+                        self._process_single_query(request_obj, fut)
+                    )
+                    
+                    # 작업 완료 시 활성 목록에서 제거하는 콜백 설정
+                    task.add_done_callback(
+                        lambda t, task_ref=task: self.active_tasks.discard(task_ref)
+                    )
+                    
+                    # 활성 작업 목록에 추가
+                    self.active_tasks.add(task)
+                    
+                    logger.info(f"[Continuous Batching] +1 request => active tasks now {len(self.active_tasks)}/{self.max_concurrent_tasks}")
                 
-            # 2) Memory 객체 가져오기 (없으면 새로 생성)
-            page_id = http_query.get("page_id", request_id)
-            memory = self.get_memory_for_session(page_id)
+                except asyncio.TimeoutError:
+                    # 새 요청이 없으면 잠시 대기
+                    await asyncio.sleep(0.01)
+            else:
+                # 모든 슬롯이 사용 중이면 작업 완료될 때까지 대기
+                if self.active_tasks:
+                    # 작업 중 하나라도 완료될 때까지 대기
+                    done, pending = await asyncio.wait(
+                        self.active_tasks, 
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    
+                    # 완료된 작업 확인
+                    for task in done:
+                        try:
+                            await task
+                        except Exception as e:
+                            logger.error(f"Task failed: {e}")
+                    
+                    logger.info(f"[Continuous Batching] Tasks completed: {len(done)} => active tasks now {len(self.active_tasks)}/{self.max_concurrent_tasks}")
+                else:
+                    await asyncio.sleep(0.01)
 
-            # 3) 유저가 현재 입력한 쿼리 가져오기
-            user_input = http_query.get("qry_contents", "")
+    # -------------------------------------------------------------------------
+    # 유틸리티 함수들: 코드 중복 제거 및 재사용성 향상
+    # -------------------------------------------------------------------------
+    def _get_request_info(self, http_query_or_stream_dict: dict) -> Tuple[dict, str, bool]:
+        """
+        요청 정보를 추출하는 유틸리티 함수
+        
+        Args:
+            http_query_or_stream_dict: 원본 요청 데이터
             
-            # 4) LangChain Memory에서 이전 대화 이력(history) 추출
+        Returns:
+            Tuple[dict, str, bool]: (http_query, request_id, is_streaming) 형태의 튜플
+        """
+        # 스트리밍 여부 및 request_id 확인
+        if isinstance(http_query_or_stream_dict, dict) and "request_id" in http_query_or_stream_dict:
+            request_id = http_query_or_stream_dict["request_id"]
+            http_query = http_query_or_stream_dict["http_query"]
+            is_streaming = True
+            logger.info(f"[STREAM] request_id={request_id}")
+        else:
+            request_id = None
+            http_query = http_query_or_stream_dict
+            is_streaming = False
+            logger.info("[NORMAL] Non-streaming request")
+            
+        return http_query, request_id, is_streaming
+    
+    async def _load_conversation_history(self, page_id: str) -> str:
+        """
+        대화 기록 로드하는 유틸리티 함수
+        
+        Args:
+            page_id: 세션(대화) ID
+            
+        Returns:
+            str: 포맷팅된 대화 이력 텍스트
+        """
+        memory = self.get_memory_for_session(page_id)
+        
+        try:
             past_context = memory.load_memory_variables({}).get("history", [])
             # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
             if isinstance(past_context, list):
                 recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
-                past_context = "\n\n".join(recent_messages)
+                return "\n\n".join(recent_messages)
             else:
                 # 문자열인 경우, 메시지 구분자를 "\n\n"으로 가정하여 분리
                 messages = str(past_context).split("\n\n")
                 recent_messages = messages[-5:]
-                past_context = "\n\n".join(recent_messages)
+                return "\n\n".join(recent_messages)
+        except Exception as e:
+            logger.error(f"대화 기록 로드 중 오류: {e}")
+            return ""
+        
+    async def _process_image_if_exists(self, http_query: dict) -> dict:
+        """
+        이미지 데이터가 있는 경우 이미지 처리 수행
+        
+        Args:
+            http_query: 요청 데이터
             
-            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
-            # past_tokens = self.tokenizer.tokenize(str(past_context))
-            # if len(past_tokens) > 4000:
-            #     past_tokens = past_tokens[-4000:]
-            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
+        Returns:
+            dict: 이미지 설명 정보
+        """
+        image_data = http_query.get("image_data")
+        if image_data is not None:
+            logger.info("이미지 데이터 감지, 이미지 처리 시작")
+            return await image_query(http_query, self.model, self.config)
+        return {"is_structured": False, "description": "이미지는 입력되지 않았습니다."}
+    
+    async def _store_conversation(self, memory: CustomConversationBufferMemory, 
+                                user_input: str, output: str, 
+                                chunk_ids: List[str], http_query: dict) -> None:
+        """
+        대화 내용을 메모리에 저장하는 유틸리티 함수
+        
+        Args:
+            memory: 대화 메모리 객체
+            user_input: 사용자 입력
+            output: AI 응답
+            chunk_ids: 참조된 청크 ID 목록
+            http_query: 원본 요청 데이터
+        """
+        try:
+            memory.save_context(
+                {
+                    "qry_contents": user_input,
+                    "qry_id": http_query.get("qry_id", ""),
+                    "user_id": http_query.get("user_id", ""),
+                    "auth_class": http_query.get("auth_class", ""),
+                    "qry_time": http_query.get("qry_time", "")
+                },
+                {
+                    "output": output,
+                    "chunk_ids": chunk_ids
+                }
+            )
+            logger.debug(f"대화 저장 완료: 청크 ID {chunk_ids}")
+        except Exception as e:
+            logger.error(f"대화 저장 중 오류: {e}")
+    
+    def _extract_chunk_ids(self, retrieval: dict) -> List[str]:
+        """
+        검색 결과에서 청크 ID 추출하는 유틸리티 함수
+        
+        Args:
+            retrieval: 검색 결과 데이터
             
-            # ★ 토큰 수 계산 코드 추가 ★
-            # retrieval 자료는 dict나 리스트일 수 있으므로 문자열로 변환하여 토큰화합니다.
-            # 각 입력값을 명시적으로 str()로 변환합니다.
-            past_tokens = self.tokenizer.tokenize(str(past_context))
-            query_tokens = self.tokenizer.tokenize(str(user_input))
-            total_tokens = len(past_tokens) + len(query_tokens)
-            print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, 사용자 입력 질문: {len(query_tokens)}, 총합: {total_tokens}")
+        Returns:
+            List[str]: 청크 ID 목록
+        """
+        chunk_ids = []
+        for doc in retrieval.get("rsp_data", []):
+            if "chunk_id" in doc:
+                chunk_ids.append(doc["chunk_id"])
+        return chunk_ids
+    
+    async def _handle_error(self, e: Exception, request_id: str, future: asyncio.Future) -> None:
+        """
+        오류 처리를 위한 유틸리티 함수
+        
+        Args:
+            e: 발생한 예외
+            request_id: 요청 ID
+            future: 결과를 설정할 Future 객체
+        """
+        err_msg = f"처리 중 오류 발생: {str(e)}"
+        logger.error(err_msg)
+        
+        # 스트리밍인 경우 에러 토큰 전송
+        if request_id:
+            try:
+                error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                await self.queue_manager.put_token.remote(request_id, error_token)
+                await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                await self.queue_manager.delete_queue.remote(request_id)
+            except Exception as e2:
+                logger.error(f"SSE 에러 전송 중 추가 오류: {str(e2)}")
+                
+        # Future에 에러 결과 설정
+        future.set_result(error_format(err_msg, 500))
+    
+    # -------------------------------------------------------------------------
+    # 메인 처리 함수: RAG 활용 쿼리 처리
+    # -------------------------------------------------------------------------
+    async def _process_rag_query(self, http_query: dict, user_input: str, 
+                               image_description: dict, request_id: str, 
+                               is_streaming: bool, future: asyncio.Future) -> None:
+        """
+        RAG를 사용하는 쿼리 처리 로직
+        
+        Args:
+            http_query: 요청 데이터
+            user_input: 사용자 입력
+            image_description: 이미지 설명 데이터
+            request_id: 요청 ID
+            is_streaming: 스트리밍 여부
+            future: 결과를 설정할 Future 객체
+        """
+        try:
+            # 데이터 다시 로드 (항상 최신 데이터 사용)
+            self.data = load_data(self.config.data_path)
             
-            # # To Calculate the token
-            # tokens = self.tokenizer(user_input, add_special_tokens=True)["input_ids"]
-            # print(f"[DEBUG] Processing query: '{user_input}' with {len(tokens)} tokens")
-
-            # 5) 필요하다면 데이터를 다시 로드(1.16version 유지)
-            self.data = load_data(
-                self.config.data_path
-            )  # if you want always-latest, else skip
-
-            # 6) 현재 사용중인 Thread 확인
-            print("   ... calling query_sort() ...")
-            # print(
-            #     f"[DEBUG] query_sort 시작 (offload) - 스레드: {threading.current_thread().name}"
-            # )
-            # 7) “대화 이력 + 현재 사용자 질문”을 Prompt에 합쳐서 RAG 수행
-            #    방법 1) query_sort() 전에 past_context를 참조해 query를 확장
-            #    방법 2) generate_answer()에서 Prompt 앞부분에 붙임
-            # 여기서는 예시로 “query_sort”에 past_context를 넘겨
-            # 호출부 수정 "user_input": f"{past_context}\n사용자 질문: {user_input}",
+            # 질문 분류 및 RAG 파라미터 준비
             params = {
-                "user_input": f"사용자 질문: {user_input}",
+                "user_input": f"사용자 질문: {user_input} [이미지 설명: {image_description.get('description')}]",
                 "model": self.model,
                 "tokenizer": self.tokenizer,
                 "embed_model": self.embed_model,
                 "embed_tokenizer": self.embed_tokenizer,
                 "data": self.data,
                 "config": self.config,
+                "request_id": request_id,
             }
+            
+            # 질문 구체화
             QU, KE, TA, TI = await query_sort(params)
-            print(f"   ... query_sort => QU={QU}, KE={KE}, TA={TA}, TI={TI}")
-
-            # 4) RAG
+            logger.info(f"질문 구체화 결과: QU={QU}, KE={KE}, TA={TA}, TI={TI}")
+            
+            # 테이블 데이터가 필요한 경우 (SQL 기반 RAG)
             if TA == "yes":
-                try:
-                    print("[SOOWAN] config 설정 : ", self.config)
-                    docs, docs_list = await execute_rag(
-                        QU,
-                        KE,
-                        TA,
-                        TI,
-                        model=self.model,
-                        tokenizer=self.tokenizer,
-                        embed_model=self.embed_model,
-                        embed_tokenizer=self.embed_tokenizer,
-                        data=self.data,
-                        config=self.config,
-                    )
-                    try:
-                                                # 기존 방식
-                        retrieval, chart = process_to_format(docs_list, type="SQL")
-                        # 수정된 방식 - Talbe,Chart 없이 Answer Part에 SQL 결과 전송.
-                        # retrieval_sql = process_to_format(docs, type="Answer")
-                        # await self.queue_manager.put_token.remote(request_id, retrieval_sql)
-                    except Exception as e:
-                        print("[ERROR] process_to_format (SQL) failed:", str(e))
-                        retrieval, chart = [], None
-
-                    # If streaming => partial tokens
-                    if is_streaming:
-                        print(
-                            f"[STREAM] Starting partial generation for request_id={request_id}"
-                        )
-                        await self._stream_partial_answer(
-                            QU, docs, retrieval, chart, request_id, future, user_input
-                        )
-                    else:
-                        # normal final result
-                        output = await generate_answer(
-                            QU,
-                            docs,
-                            model=self.model,
-                            tokenizer=self.tokenizer,
-                            config=self.config,
-                        )
-                        answer = process_to_format([output, chart], type="Answer")
-                        final_data = [retrieval, answer]
-                        outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
-                        
-                        # >>> Record used chunk IDs
-                        # 변경 후: retrieval 결과에서 추출
-                        chunk_ids_used = []
-                        print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
-                        for doc in retrieval.get("rsp_data", []):
-                            if "chunk_id" in doc:
-                                chunk_ids_used.append(doc["chunk_id"])
-                                                        
-                        # >>> CHANGED: summarize the conversation
-                        # loop = asyncio.get_event_loop()
-                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
-                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
-                        # updated_conversation = prev_summary + "\n" + new_entry
-                        # # Summarized CPU 사용
-                        # # import concurrent.futures
-
-                        # # Create a dedicated pool with more workers (e.g., 4)
-                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-
-                        # # Later, when calling the summarization function:
-                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
-                        # # # After obtaining 'summarized' in _process_single_query:
-                        # # if not summarized:
-                        # #     print("[ERROR] Summarization returned an empty string.")
-                        # # else:
-                        # #     print(f"[CHECK] Summarized conversation: {summarized}")
-                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
-                                            # 메모리에 저장
-                        try:
-                            memory.save_context(
-                                {
-                                    "qry_contents": user_input,
-                                    "qry_id": http_query.get("qry_id"),
-                                    "user_id": http_query.get("user_id"),
-                                    "auth_class": http_query.get("auth_class"),
-                                    "qry_time": http_query.get("qry_time")
-                                },
-                                {
-                                    "output": output,
-                                    "chunk_ids": chunk_ids_used
-                                }
-                            )
-                        except Exception as e:
-                            print(f"[ERROR memory.save_context] {e}")
-                        # >>> CHANGED -----------------------------------------------------
-                        future.set_result(outputs)
-
-                except Exception as e:
-                    outputs = error_format("내부 Excel 에 해당 자료가 없습니다.", 551)
-                    future.set_result(outputs)
-
+                await self._process_table_query(QU, KE, TA, TI, user_input, request_id, is_streaming, future, http_query)
             else:
-                try:
-                    print("[SOOWAN] TA is No, before make a retrieval")
-                    QU, KE, TA, TI = await specific_question(params) # TA == no, so that have to remake the question based on history
-                    
-                    docs, docs_list = await execute_rag(
-                        QU,
-                        KE,
-                        TA,
-                        TI,
-                        model=self.model,
-                        tokenizer=self.tokenizer,
-                        embed_model=self.embed_model,
-                        embed_tokenizer=self.embed_tokenizer,
-                        data=self.data,
-                        config=self.config,
-                    )
-                    retrieval = process_to_format(docs_list, type="Retrieval")
-                    print("[SOOWAN] TA is No, and make a retrieval is successed")
-                    if is_streaming:
-                        print(
-                            f"[STREAM] Starting partial generation for request_id={request_id}"
-                        )
-                        await self._stream_partial_answer(
-                            QU, docs, retrieval, None, request_id, future, user_input
-                        )
-                    else:
-                        output = await generate_answer(
-                            QU,
-                            docs,
-                            model=self.model,
-                            tokenizer=self.tokenizer,
-                            config=self.config,
-                        )
-                        print("process_to_format 이후에 OUTPUT 생성 완료")
-                        answer = process_to_format([output], type="Answer")
-                        print("process_to_format 이후에 ANSWER까지 생성 완료")
-                        final_data = [retrieval, answer]
-                        outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
-                        
-                        # >>> CHANGED: Record used chunk ID
-                        chunk_ids_used = []
-                        print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
-                        for doc in retrieval.get("rsp_data", []):
-                            if "chunk_id" in doc:
-                                chunk_ids_used.append(doc["chunk_id"])
-                                
-                        
-                        # loop = asyncio.get_event_loop()
-                        # prev_summary = memory.load_memory_variables({}).get("summary", "")
-                        # new_entry = f"User: {user_input}\nAssistant: {output}\nUsed Chunks: {chunk_ids_used}\n"
-                        # updated_conversation = prev_summary + "\n" + new_entry
-                        # # # Summarized CPU 사용
-                        # # import concurrent.futures
-                        
-                        # # # Create a dedicated pool with more workers (e.g., 4)
-                        # # summary_pool = concurrent.futures.ProcessPoolExecutor(max_workers=4)
-                        
-                        # # Later, when calling the summarization function:
-                        # summarized = loop.run_in_executor(None, summarize_conversation, updated_conversation)
-                        
-                        # memory.save_context({"input": user_input}, {"output": output, "chunk_ids": chunk_ids_used})
-                                            # 메모리 저장
-                        try:
-                            memory.save_context(
-                                {
-                                    "qry_contents": user_input,
-                                    "qry_id": http_query.get("qry_id"),
-                                    "user_id": http_query.get("user_id"),
-                                    "auth_class": http_query.get("auth_class"),
-                                    "qry_time": http_query.get("qry_time")
-                                },
-                                {
-                                    "output": output,
-                                    "chunk_ids": chunk_ids_used
-                                }
-                            )
-                        except Exception as e:
-                            print(f"[ERROR memory.save_context] {e}")
-                        # --------------------------------------------------------------------
-                        
-                        future.set_result(outputs)
-
-                except Exception as e:
-                    # ====== 이 부분에서 SSE를 즉시 닫고 스트리밍 종료 ======
-                    err_msg = f"[ERROR] 처리 중 오류 발생: {str(e)}"
-                    print(err_msg)
-
-                    # SSE 전송 (error 이벤트)
-                    if request_id:
-                        try:
-                            error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
-                            await self.queue_manager.put_token.remote(request_id, error_token)
-                            # 스트리밍 종료
-                            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-                        except Exception as e2:
-                            print(f"[ERROR] SSE 전송 중 추가 예외 발생: {str(e2)}")
-                        finally:
-                            # SSEQueue 정리
-                            await self.close_sse_queue(request_id)
-
-                    # Future 응답도 에러로
-                    future.set_result(error_format(str(e), 500))
-                    return
+                # 일반 RAG 처리
+                await self._process_standard_rag(QU, KE, TA, TI, user_input, request_id, is_streaming, future, http_query)
                 
         except Exception as e:
-            err_msg = f"[ERROR] 처리 중 오류 발생: {str(e)}"
-            print("[ERROR]", err_msg)
-            # SSE 스트리밍인 경우 error 토큰과 종료 토큰 전송
-            if request_id:
+            await self._handle_error(e, request_id, future)
+    
+    # -------------------------------------------------------------------------
+    # SQL 테이블 기반 처리 함수
+    # -------------------------------------------------------------------------
+    async def _process_table_query(self, QU: str, KE: str, TA: str, TI: str,
+                                 user_input: str, request_id: str,
+                                 is_streaming: bool, future: asyncio.Future, 
+                                 http_query: dict) -> None:
+        """
+        테이블 데이터가 필요한 쿼리 처리 (SQL 기반)
+        
+        Args:
+            QU, KE, TA, TI: 질문 분류 결과
+            user_input: 사용자 입력
+            request_id: 요청 ID
+            is_streaming: 스트리밍 여부
+            future: 결과를 설정할 Future 객체
+            http_query: 원본 요청 데이터
+        """
+        try:
+            # SQL 실행 및 데이터 추출
+            docs, docs_list = await execute_rag(
+                QU, KE, TA, TI,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                embed_model=self.embed_model,
+                embed_tokenizer=self.embed_tokenizer,
+                data=self.data,
+                config=self.config,
+            )
+            
+            # 포맷 변환
+            try:
+                retrieval, chart = process_to_format(docs_list, type="SQL")
+            except Exception as e:
+                logger.error(f"SQL 결과 포맷 변환 실패: {str(e)}")
+                retrieval, chart = [], None
+                
+            # 스트리밍 또는 일반 응답 처리
+            if is_streaming:
+                await self._stream_partial_answer(QU, docs, retrieval, chart, request_id, future, user_input, http_query)
+            else:
+                # 일반 최종 결과 생성
+                output = await generate_answer(QU, docs, model=self.model, tokenizer=self.tokenizer, config=self.config)
+                answer = process_to_format([output, chart], type="Answer")
+                final_data = [retrieval, answer]
+                outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                
+                # 청크 ID 추출 및 대화 저장
+                chunk_ids = self._extract_chunk_ids(retrieval)
+                memory = self.get_memory_for_session(http_query.get("page_id", request_id))
+                await self._store_conversation(memory, user_input, output, chunk_ids, http_query)
+                
+                # 최종 결과 반환
+                future.set_result(outputs)
+                
+        except Exception as e:
+            await self._handle_error(e, request_id, future)
+            
+    # -------------------------------------------------------------------------
+    # 표준 RAG 처리 함수
+    # -------------------------------------------------------------------------
+    async def _process_standard_rag(self, QU: str, KE: str, TA: str, TI: str,
+                                  user_input: str, request_id: str,
+                                  is_streaming: bool, future: asyncio.Future, 
+                                  http_query: dict) -> None:
+        """
+        일반 RAG 처리 로직
+        
+        Args:
+            QU, KE, TA, TI: 질문 분류 결과
+            user_input: 사용자 입력
+            request_id: 요청 ID
+            is_streaming: 스트리밍 여부
+            future: 결과를 설정할 Future 객체
+            http_query: 원본 요청 데이터
+        """
+        try:
+            # 대화 이력 기반 질문 구체화
+            QU, KE, TA, TI = await specific_question({
+                "user_input": user_input,
+                "model": self.model,
+                "tokenizer": self.tokenizer,
+                "embed_model": self.embed_model,
+                "embed_tokenizer": self.embed_tokenizer,
+                "data": self.data,
+                "config": self.config,
+                "request_id": request_id,
+            })
+            
+            # RAG 실행
+            docs, docs_list = await execute_rag(
+                QU, KE, TA, TI,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                embed_model=self.embed_model,
+                embed_tokenizer=self.embed_tokenizer,
+                data=self.data,
+                config=self.config,
+            )
+            
+            # 검색 결과 포맷 변환
+            retrieval = process_to_format(docs_list, type="Retrieval")
+            
+            # 스트리밍 또는 일반 응답 처리
+            if is_streaming:
+                await self._stream_partial_answer(QU, docs, retrieval, None, request_id, future, user_input, http_query)
+            else:
+                # 최종 답변 생성
+                output = await generate_answer(QU, docs, model=self.model, tokenizer=self.tokenizer, config=self.config)
+                answer = process_to_format([output], type="Answer")
+                final_data = [retrieval, answer]
+                outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
+                
+                # 청크 ID 추출 및 대화 저장
+                chunk_ids = self._extract_chunk_ids(retrieval)
+                memory = self.get_memory_for_session(http_query.get("page_id", request_id))
+                await self._store_conversation(memory, user_input, output, chunk_ids, http_query)
+                
+                # 최종 결과 반환
+                future.set_result(outputs)
+                
+        except Exception as e:
+            await self._handle_error(e, request_id, future)
+            
+    # -------------------------------------------------------------------------
+    # RAG 없이 직접 응답 생성 함수
+    # -------------------------------------------------------------------------
+    async def _process_direct_query(self, user_input: str, request_id: str, 
+                                  future: asyncio.Future, http_query: dict) -> None:
+        """
+        RAG를 사용하지 않고 직접 응답을 생성하는 로직
+        
+        Args:
+            user_input: 사용자 입력
+            request_id: 요청 ID
+            future: 결과를 설정할 Future 객체
+            http_query: 원본 요청 데이터
+        """
+        try:
+            # 이 함수는 RAG를 사용하지 않고 직접 응답을 생성합니다
+            docs = None
+            retrieval = None
+            chart = None
+            
+            # 스트리밍 방식으로 응답 생성
+            await self._stream_partial_answer(user_input, docs, retrieval, chart, request_id, future, user_input, http_query)
+        except Exception as e:
+            await self._handle_error(e, request_id, future)
+    
+    # -------------------------------------------------------------------------
+    # PROCESS SINGLE QUERY (분기 처리 단순화)
+    # -------------------------------------------------------------------------
+    async def _process_single_query(self, http_query_or_stream_dict: dict, future: asyncio.Future) -> None:
+        """
+        단일 쿼리 처리의 메인 함수 (개선된 버전)
+        
+        Args:
+            http_query_or_stream_dict: 원본 요청 데이터
+            future: 결과를 설정할 Future 객체
+            sse_queue: 스트리밍을 위한 SSE 큐
+        """
+        # 요청 정보 추출
+        http_query, request_id, is_streaming = self._get_request_info(http_query_or_stream_dict)
+        
+        
+        # 요청 ID가 없으면 생성 (성능 모니터링용)
+        if not request_id:
+            request_id = str(uuid.uuid4())
+        
+        # 사용자 입력 추출
+        user_input = http_query.get("qry_contents", "")
+        logger.info(f"사용자 입력: {user_input}")
+        
+        # 성능 모니터링 시작 - 요청별 트래킹 시작
+        self.performance_monitor.start_request(request_id, input_text=user_input, tokenizer=self.tokenizer)
+        self.performance_monitor.update_request(request_id, 0, checkpoint="query_received")
+        
+        try:
+            # RAG 사용 여부 확인
+            use_rag = http_query.get("use_rag", True)
+            
+            if use_rag is False:
+                logger.info("RAG 비활성화 모드로 실행")
+                self.performance_monitor.update_request(request_id, 0, checkpoint="rag_disabled")
+                await self._process_direct_query(user_input, request_id, future, http_query)
+            else:
+                # 이미지 처리 (있는 경우)
+                image_description = await self._process_image_if_exists(http_query)
+                self.performance_monitor.update_request(request_id, 0, checkpoint="image_processed")
+                
+                # RAG 활용 응답 생성
+                await self._process_rag_query(http_query, user_input, image_description, 
+                                        request_id, is_streaming, future)
+        except Exception as e:
+            err_msg = f"처리 중 오류 발생: {str(e)}"
+            logger.error(err_msg)
+            
+            # 성능 모니터에 오류 기록
+            self.performance_monitor.update_request(request_id, 0, checkpoint=f"error: {str(e)[:50]}")
+            self.performance_monitor.complete_request(request_id, success=False)
+            
+            # 스트리밍인 경우 에러 토큰 전송
+            if is_streaming:
                 try:
                     error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
                     await self.queue_manager.put_token.remote(request_id, error_token)
+                    await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                    await self.queue_manager.delete_queue.remote(request_id)
                 except Exception as e2:
-                    print(f"[ERROR] SSE 전송 중 추가 예외 발생: {str(e2)}")
+                    logger.error(f"SSE 에러 전송 중 추가 오류: {str(e2)}")
+                    
+            # Future에 에러 결과 설정
             future.set_result(error_format(err_msg, 500))
+            
         finally:
-            # 스트리밍 요청인 경우 반드시 SSE 큐에 종료 토큰을 넣고 큐를 정리한다.
-            if request_id:
+            # 요청 중지 시에 active_generation 정리
+            self.active_generations.discard(request_id)
+            # 스트리밍 요청인 경우 정리 작업
+            if is_streaming:
                 try:
                     await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
                 except Exception as ex:
-                    print(f"[DEBUG] Error putting STREAM_DONE: {str(ex)}")
-                await self.close_sse_queue(request_id)
+                    logger.error(f"STREAM_DONE 토큰 전송 중 오류: {str(ex)}")
+                await self.queue_manager.delete_queue.remote(request_id)
 
-    # ------------------------------------------------------------
-    # HELPER FOR STREAMING PARTIAL ANSWERS (Modified to send reference)
-    # ------------------------------------------------------------
-    async def _stream_partial_answer(
-        self, QU, docs, retrieval, chart, request_id, future, user_input
-    ):
+    # -------------------------------------------------------------------------
+    # STREAMING PARTIAL ANSWER - 스트리밍 응답 처리
+    # -------------------------------------------------------------------------
+    async def _stream_partial_answer(self, QU: str, docs, retrieval, chart, 
+                                request_id: str, future: asyncio.Future, 
+                                user_input: str, http_query: dict) -> None:
         """
-        Instead of returning a final string, we generate partial tokens
-        and push them to the SSE queue in real time.
-        We'll do a "delta" approach so each chunk is only what's newly added.
+        스트리밍 방식의 부분 응답 생성 및 전송
+        
+        Args:
+            QU: 구체화된 질문
+            docs: RAG 검색 문서 내용
+            retrieval: 검색 결과 포맷
+            chart: 차트 데이터 (있는 경우)
+            request_id: 요청 ID
+            future: 결과를 설정할 Future 객체
+            user_input: 원본 사용자 입력
+            http_query: 원본 요청 데이터
         """
-        print(
-            f"[STREAM] _stream_partial_answer => request_id={request_id}, chart={chart}"
-        )
+        logger.info(f"스트리밍 응답 시작: request_id={request_id}")
+        
+        # Add to active generations set
+        self.active_generations.add(request_id)
+        
+        # 성능 측정 초기화 - 시작 시간 기록
+        stream_start_time = time.time()
+        token_count = 0
+        first_token_received = False
+        self.performance_monitor.update_request(request_id, 0, checkpoint="stream_start")
 
-        # 단일
-        # queue = self.active_sse_queues.get(request_id)
-        # if not queue:
-        #     print(f"[STREAM] SSE queue not found => fallback to normal final (request_id={request_id})")
-        #     # fallback...
-        #     return
+        try:
+            # 1. 참조 데이터 전송
+            if retrieval:
+                reference_json = json.dumps({
+                    "type": "reference",
+                    "status_code": 200,
+                    "result": "OK",
+                    "detail": "Reference data",
+                    "evt_time": datetime.datetime.now().isoformat(),
+                    "data_list": [retrieval]
+                }, ensure_ascii=False)
+                await self.queue_manager.put_token.remote(request_id, reference_json)
+                logger.info(f"참조 데이터 전송 완료: request_id={request_id}")
+                self.performance_monitor.update_request(request_id, 0, checkpoint="reference_sent")
 
-        # This will hold the entire text so far. We'll yield only new pieces.
-        
-        # 먼저, 참조 데이터 전송: type을 "reference"로 명시
-        reference_json = json.dumps({
-            "type": "reference",
-            "status_code": 200,
-            "result": "OK",
-            "detail": "Reference data",
-            "evt_time": datetime.datetime.now().isoformat(),
-            "data_list": [retrieval]
-        }, ensure_ascii=False)
-        # Debug: print the reference JSON before sending
-        print(f"[DEBUG] Prepared reference data: {reference_json}")
-        await self.queue_manager.put_token.remote(request_id, reference_json)
-        
-        print(f"[STREAM] Sent reference data for request_id={request_id}")
-             
-        # 1) 메모리 가져오기 (없으면 생성)
-        try:
-            memory = self.get_memory_for_session(request_id)
-        except Exception as e:
-            msg = f"[STREAM] Error retrieving memory for {request_id}: {str(e)}"
-            print(msg)
-            # 에러 응답을 SSE로 전송하고 종료
-            error_token = json.dumps({"type":"error","message":msg}, ensure_ascii=False)
-            await self.queue_manager.put_token.remote(request_id, error_token)
-            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-            future.set_result(error_format(msg, 500))
-            return
-        
-        # 2) 과거 대화 이력 로드
-        try:
-            past_context = memory.load_memory_variables({})["history"]
-            # history가 리스트 형식인 경우 (각 메시지가 별도 항목으로 저장되어 있다면)
-            if isinstance(past_context, list):
-                recent_messages = [msg if isinstance(msg, str) else msg.content for msg in past_context[-5:]]
-                past_context = "\n\n".join(recent_messages)
-            else:
-                # 문자열인 경우, 메시지 구분자를 "\n\n"으로 가정하여 분리
-                messages = str(past_context).split("\n\n")
-                recent_messages = messages[-5:]
-                past_context = "\n\n".join(recent_messages)
             
-            # # 2) 추가: 전체 토큰 수가 4000개를 초과하면 마지막 4000 토큰만 유지
-            # past_tokens = self.tokenizer.tokenize(str(past_context))
-            # if len(past_tokens) > 4000:
-            #     past_tokens = past_tokens[-4000:]
-            #     past_context = self.tokenizer.convert_tokens_to_string(past_tokens)
-        except KeyError:
-            # 만약 "history" 키가 없으면 빈 문자열로 처리
-            print(f"[STREAM] No 'history' in memory for {request_id}, using empty.")
-            past_context = ""
-        except Exception as e:
-            msg = f"[STREAM] load_memory_variables error for {request_id}: {str(e)}"
-            print(msg)
-            error_token = json.dumps({"type":"error","message":msg}, ensure_ascii=False)
-            await self.queue_manager.put_token.remote(request_id, error_token)
-            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-            future.set_result(error_format(msg, 500))
-            return
-
-        # 3) 최종 프롬프트 구성
-        final_query = f"{past_context}\n\n[사용자 질문]\n{QU}"
-        print(f"[STREAM] final_query = \n{final_query}")
-        
-        # ★ 토큰 수 계산 코드 추가 ★
-        # retrieval 자료는 dict나 리스트일 수 있으므로 문자열로 변환하여 토큰화합니다.
-        retrieval_str = str(retrieval)
-        # 각 입력값을 명시적으로 str()로 변환합니다.
-        past_tokens = self.tokenizer.tokenize(str(past_context))
-        query_tokens = self.tokenizer.tokenize(str(QU))
-        retrieval_tokens = self.tokenizer.tokenize(retrieval_str)
-        total_tokens = len(self.tokenizer.tokenize(str(final_query))) + len(retrieval_tokens)
-        print(f"[DEBUG] Token counts - 이전 대화: {len(past_tokens)}, RAG 검색 자료: {len(retrieval_tokens)}, 사용자 구체화 질문: {len(query_tokens)}, 총합: {total_tokens}")
-        
-        partial_accumulator = ""
-
-        try:
-            print(
-                f"[STREAM] SSE: calling generate_answer_stream for request_id={request_id}"
+            # 2. 메모리 가져오기
+            memory = self.get_memory_for_session(request_id)
+            
+            # 3. 대화 이력 불러오기
+            past_context = await self._load_conversation_history(request_id)
+            
+            # 4. 최종 프롬프트 구성
+            final_query = f"{past_context}\n\n[사용자 질문]\n{QU}"
+            
+            # 토큰 수 계산
+            retrieval_str = str(retrieval) if retrieval else ""
+            past_tokens = self.tokenizer.tokenize(str(past_context))
+            query_tokens = self.tokenizer.tokenize(str(QU))
+            retrieval_tokens = self.tokenizer.tokenize(retrieval_str)
+            total_tokens = len(self.tokenizer.tokenize(str(final_query))) + len(retrieval_tokens)
+            logger.info(f"토큰 수: 이전 대화={len(past_tokens)}, 검색 자료={len(retrieval_tokens)}, 질문={len(query_tokens)}, 총={total_tokens}")
+            
+            self.performance_monitor.update_request(
+                request_id, 0, 
+                checkpoint=f"prompt_ready (total_tokens={total_tokens})"
             )
+                
+            # 5. 스트리밍 응답 생성 및 전송
+            partial_accumulator = ""
+            
+            # HTTP 쿼리에 request_id 추가하여 전달 - vLLM 토큰 추적용
+            http_query.update({"page_id": request_id})
+            
             async for partial_text in generate_answer_stream(
-                final_query, docs, self.model, self.tokenizer, self.config
+                final_query, docs, self.model, self.tokenizer, self.config, http_query
             ):
-                # print(f"[STREAM] Received partial_text: {partial_text}")
-                new_text = partial_text[len(partial_accumulator) :]
+                new_text = partial_text[len(partial_accumulator):]
                 partial_accumulator = partial_text
-                if not new_text.strip():
+                
+                if new_text == "":
                     continue
-                    # Wrap answer tokens in a JSON object with type "answer"
+                
+                # 토큰 수는 이제 StreamingTokenCounter에서 직접 추적되므로 여기서는 간단히 갱신
+                current_tokens = len(partial_accumulator.split())
+                token_count = current_tokens
+                
+                # 첫 토큰 도착 확인 (StreamingTokenCounter에서 성능 모니터에 이미 기록했을 수 있음)
+                current_time = time.time()
+                if not first_token_received and token_count > 0:
+                    first_token_latency = current_time - stream_start_time
+                    first_token_received = True
+                    logger.info(f"첫 토큰 생성: {request_id} (latency: {first_token_latency:.3f}s)")
+                
+                # 응답 토큰 JSON 형식으로 포장하여 전송
                 answer_json = json.dumps({
                     "type": "answer",
                     "answer": new_text
                 }, ensure_ascii=False)
-                # Use the central SSEQueueManager to put tokens
-                # print(f"[STREAM] Sending token: {answer_json}")
                 await self.queue_manager.put_token.remote(request_id, answer_json)
+            
+            # 생성 완료 시간 계산
+            generation_time = time.time() - stream_start_time
+            tokens_per_second = token_count / generation_time if generation_time > 0 else 0
+            
+            # 최종 성능 지표 업데이트
+            self.performance_monitor.update_request(
+                request_id, token_count,
+                current_output=partial_accumulator,
+                checkpoint=f"generation_complete ({generation_time:.2f}s, {tokens_per_second:.2f} tokens/s, {token_count} tokens)"
+            )
+            
+            # 6. 최종 축적된 텍스트
             final_text = partial_accumulator
-            # # 이제 memory에 저장 (이미 request_id를 알고 있다고 가정) # 랭체인
-            # try:
-            #     memory.save_context({"input": user_input}, {"output": final_text})
-            # except Exception as e:
-            #     msg = f"[STREAM] memory.save_context failed: {str(e)}"
-            #     print(msg)
-                
-                
-            # >>> CHANGED: Update conversation summary in streaming branch as well
-            chunk_ids_used = []
-            print("---------------- chunk_id 찾기 : ", retrieval.get("rsp_data", []))
-            for doc in retrieval.get("rsp_data", []):
-                if "chunk_id" in doc:
-                    chunk_ids_used.append(doc["chunk_id"])
-                    
-            # memory.save_context({"input": user_input}, {"output": final_text, "chunk_ids": chunk_ids_used})
             
-            # 메모리 저장
-            try:
-                memory.save_context(
-                    {
-                        "qry_contents": user_input,
-                        "qry_id": "",  # 필요한 경우 http_query에 있는 값을 넣음
-                    },
-                    {
-                        "output": final_text,
-                        "chunk_ids": chunk_ids_used
-                    }
-                )
-            except Exception as e:
-                print(f"[ERROR memory.save_context in stream] {e}")
+            # 7. 대화 저장
+            chunk_ids = self._extract_chunk_ids(retrieval) if retrieval else []
+            await self._store_conversation(memory, user_input, final_text, chunk_ids, http_query)
             
-            print("메시지 저장 직후 chunk_id 확인 : ", memory)
-            # >>> CHANGED: -------------------------------------------------------
-            
-            # 최종 응답 구조
+            # 8. 최종 응답 구조 생성
             if chart is not None:
                 ans = process_to_format([final_text, chart], type="Answer")
-                final_res = process_format_to_response(retrieval, ans)
             else:
                 ans = process_to_format([final_text], type="Answer")
-                final_res = process_format_to_response(retrieval, ans)
                 
-            # 담아서 보내기
+            # 9. 결과 설정 및 스트리밍 종료 신호 전송
+            final_res = process_format_to_response([retrieval, ans] if retrieval else [ans], qry_id=http_query.get("qry_id", ""), continue_="E")
             future.set_result(final_res)
-            await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
-            print(
-                f"[STREAM] done => placed [[STREAM_DONE]] for request_id={request_id}"
-            )
+            
+            # 요청 완료 처리 - 성공
+            self.performance_monitor.complete_request(request_id, success=True)
+            
+            logger.info(f"스트리밍 응답 완료: request_id={request_id}")
+            
+            # At the end, when generation completes naturally
+            self.active_generations.discard(request_id)
         except Exception as e:
-            msg = f"[STREAM] error in partial streaming => {str(e)}"
-            print(msg)
-            future.set_result(error_format(msg, 500))
+            err_msg = f"스트리밍 응답 중 오류: {str(e)}"
+            
+            # generation completes whatever it stopped
+            self.active_generations.discard(request_id)
+            logger.error(err_msg)
+            future.set_result(error_format(err_msg, 500))
             await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
 
-    # --------------------------------------------------------
-    # EXISTING METHODS FOR NORMAL QUERIES (unchanged)
-    # --------------------------------------------------------
-    async def process_query(self, http_query):
+    # -------------------------------------------------------------------------
+    # API 인터페이스 메서드들
+    # -------------------------------------------------------------------------
+    async def process_query(self, http_query: dict):
         """
-        Existing synchronous method. Returns final string/dict once done.
+        일반 쿼리 처리 메서드 - 최종 결과를 한 번에 반환
+        
+        Args:
+            http_query: 요청 데이터
+            
+        Returns:
+            dict: 처리 결과
         """
         loop = asyncio.get_event_loop()
         future = loop.create_future()
-        # There's no SSE queue for normal queries
-        sse_queue = None
-        await self.request_queue.put((http_query, future, sse_queue))
-        # print("self.request_queue : ", self.request_queue)
+        # 스트리밍 아님 - sse_queue는 None
+        await self.request_queue.put((http_query, future, None))
         return await future
-    # ----------------------
-    # 1) Streaming Entrypoint
-    # ----------------------
+    
     async def process_query_stream(self, http_query: dict) -> str:
         """
-        /query_stream 호출 시 page_id(채팅방 id)를 기반으로 SSE queue 생성하고,
-        대화 저장에 활용할 수 있도록 합니다.
+        스트리밍 쿼리 처리 메서드 - SSE 큐를 생성하고 request_id 반환
+        
+        Args:
+            http_query: 요청 데이터
+            
+        Returns:
+            str: 생성된 채팅/요청 ID
         """
         # page_id를 채팅방 id로 사용 (없으면 생성)
         chat_id = http_query.get("page_id")
         if not chat_id:
             chat_id = str(uuid.uuid4())
         http_query["page_id"] = chat_id  # 강제 할당
+        
+        # SSE 큐 생성
         await self.queue_manager.create_queue.remote(chat_id)
-        print(f"[STREAM] process_query_stream => chat_id={chat_id}, http_query={http_query}")
+        logger.info(f"스트리밍 처리 시작: chat_id={chat_id}")
+        
+        # 이미지 데이터 로그 출력 시 내용 생략
+        http_query_print = http_query.copy()
+        if "image_data" in http_query_print:
+            http_query_print["image_data"] = "<omitted>"
+        logger.debug(f"요청 데이터: {http_query_print}")
 
+        # 비동기 처리를 위한 Future 생성
         loop = asyncio.get_event_loop()
         final_future = loop.create_future()
-
-        sse_queue = asyncio.Queue()
-        self.active_sse_queues[chat_id] = sse_queue
-        print(f"[STREAM] Created SSE queue for chat_id={chat_id}")
-
-        # 기존과 동일하게 micro-batch queue에 푸시 (http_query에 새 필드들이 포함됨)
+        
         queued_item = {
-            "request_id": chat_id,   # 내부적으로 page_id를 request_id처럼 사용
+            "request_id": chat_id,
             "http_query": http_query,
         }
 
-        print(f"[STREAM] Putting item into request_queue for chat_id={chat_id}")
-        await self.request_queue.put((queued_item, final_future, sse_queue))
-        print(f"[STREAM] Done putting item in queue => chat_id={chat_id}")
+        await self.request_queue.put((queued_item, final_future))
+        logger.info(f"처리 큐에 추가됨: chat_id={chat_id}")
 
         return chat_id
-
-
-    # ----------------------
-    # 2) SSE token popping
-    # ----------------------
-    async def pop_sse_token(self, request_id: str) -> Optional[str]:
-        """
-        The SSE route calls this repeatedly to get partial tokens.
-        If no token is available, we block up to 120s, else return None.
-        """
-        if request_id not in self.active_sse_queues:
-            print(
-                f"[STREAM] pop_sse_token => no SSE queue found for request_id={request_id}"
-            )
-            return None
-
-        queue = self.active_sse_queues[request_id]
-        try:
-            token = await asyncio.wait_for(queue.get(), timeout=120.0)
-            # print(f"[STREAM] pop_sse_token => got token from queue: {token}")
-            return token
-        except asyncio.TimeoutError:
-            print(
-                f"[STREAM] pop_sse_token => timed out waiting for token, request_id={request_id}"
-            )
-            return None
-
-    # ----------------------
-    # 3) SSE queue cleanup
-    # ----------------------
-    async def close_sse_queue(self, request_id: str):
-        """
-        Called by the SSE route after finishing.
-        Remove the queue from memory.
-        """
-        if request_id in self.active_sse_queues:
-            print(
-                f"[STREAM] close_sse_queue => removing SSE queue for request_id={request_id}"
-            )
-            del self.active_sse_queues[request_id]
-        else:
-            print(f"[STREAM] close_sse_queue => no SSE queue found for {request_id}")
     
-    # ----------------------
-    # /history | 대화 기록 가져오기
-    # ----------------------
-    async def get_conversation_history(self, request_id: str) -> dict:
+    # -------------------------------------------------------------------------
+    # 대화 기록 및 참조 관련 메서드들
+    # -------------------------------------------------------------------------
+    async def get_conversation_history(self, request_id: str, last_index: int = None) -> dict:
         """
-        Returns the conversation history for the given request_id.
-        The messages are serialized into a JSON-friendly format.
+        요청 ID에 해당하는 대화 기록 조회
+        
+        Args:
+            request_id: 요청 ID
+            last_index: 마지막으로 받은 메시지 인덱스 (이후 메시지만 반환)
+            
+        Returns:
+            dict: 직렬화된 대화 기록
         """
         try:
             if request_id in self.memory_map:
@@ -870,24 +803,38 @@ class InferenceActor:
                 if "history" in history_obj and isinstance(history_obj["history"], list):
                     # 직렬화
                     serialized = [serialize_message(msg) for msg in history_obj["history"]]
-                    print("[HISTORY] 대화 기록 반환(직렬화) : ", serialized)
+                    logger.info(f"대화 기록 반환: 메시지 {len(serialized)}개")
+                    
+                    # last_index 이후의 메시지만 반환
+                    if last_index is not None and isinstance(last_index, int):
+                        serialized = serialized[last_index+1:]
+                        
                     return {"history": serialized}
                 else:
-                    print("[HISTORY] 대화 기록 반환(직렬화X) : ", history_obj)
+                    logger.warning("대화 기록이 리스트 형식이 아님")
                     return {"history": []}
             else:
+                logger.info(f"해당 ID의 대화 기록 없음: {request_id}")
                 return {"history": []}
         except Exception as e:
-            print(f"[ERROR get_conversation_history] {e}")
+            logger.error(f"대화 기록 조회 오류: {e}")
             return {"history": []}
         
-    # ----------------------
-    # /reference | 해당 답변의 출처 가져오기
-    # ----------------------
-    async def get_reference_data(self, chunk_ids: list):
+    async def get_reference_data(self, chunk_ids: list) -> list:
+        """
+        청크 ID 목록에 해당하는 참조 데이터 조회
+        
+        Args:
+            chunk_ids: 청크 ID 목록
+            
+        Returns:
+            list: 참조 데이터 목록
+        """
         try:
             result = []
             data = self.data
+            
+            # 주어진 청크 ID에 해당하는 데이터 찾기
             for cid in chunk_ids:
                 if cid in data["chunk_ids"]:
                     idx = data["chunk_ids"].index(cid)
@@ -898,15 +845,90 @@ class InferenceActor:
                         "date": str(data["times"][idx])
                     }
                     result.append(record)
+            
+            logger.info(f"참조 데이터 조회: {len(result)}/{len(chunk_ids)} 항목 찾음")
             return result
         except Exception as e:
-            print(f"[ERROR get_reference_data] {e}")
+            logger.error(f"참조 데이터 조회 오류: {e}")
             return []
+        
+    # -------------------------------------------------------------------------
+    # 답변 생성 중도 정지
+    # -------------------------------------------------------------------------
+    async def stop_generation(self, request_id: str) -> str:
+        """
+        Stop an ongoing generation process for the specified request ID
+        
+        Args:
+            request_id: The request ID to stop
+            
+        Returns:
+            str: Status message
+        """
+        logger.info(f"Attempting to stop generation for request_id={request_id}")
+        
+        try:
+            # Check if the request is in active generations
+            if request_id in self.active_generations:
+                # 1. Send stop signal to vLLM if using vLLM
+                if hasattr(self.model, "is_vllm") and self.model.is_vllm:
+                    try:
+                        # vLLM has an abort method we can call
+                        await self.model.abort(request_id=request_id)
+                        logger.info(f"vLLM abort called for {request_id}")
+                    except Exception as e:
+                        logger.warning(f"Could not abort vLLM request: {e}")
+                        
+                # 2. Send final streaming token to client
+                try:
+                    # Send special token to indicate stopping
+                    await self.queue_manager.put_token.remote(
+                        request_id, 
+                        json.dumps({
+                            "type": "answer", 
+                            "answer": "\n\n[Generation stopped by user]",
+                            "continue": "E"  # Mark as final
+                        })
+                    )
+                    # Send stream done token
+                    await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                except Exception as e:
+                    logger.error(f"Error sending stop tokens: {e}")
+                
+                # 3) PerformanceMonitor에 “이 요청이 종료됨”을 알림
+                self.performance_monitor.complete_request(request_id, success=False)
 
-# Ray Serve를 통한 배포
+                # 4) SSE 큐 삭제
+                await self.queue_manager.delete_queue.remote(request_id)
+
+                # 5) active_generations에서 제거
+                self.active_generations.discard(request_id)
+                    
+                return "Generation stopped successfully"
+            else:
+                logger.warning(f"Request {request_id} not found in active generations")
+                return "No active generation found for this request"
+                
+        except Exception as e:
+            logger.error(f"Error stopping generation: {e}")
+            return f"Error stopping generation: {str(e)}"
+
+# -------------------------------------------------------------------------
+# Ray Serve 배포를 위한 서비스 클래스
+# -------------------------------------------------------------------------
 @serve.deployment(name="inference", max_ongoing_requests=100)
 class InferenceService:
+    """
+    Ray Serve를 통한 배포를 위한 서비스 클래스
+    각 요청을 InferenceActor로 전달하고 결과를 반환함
+    """
     def __init__(self, config):
+        """
+        InferenceService 초기화
+        
+        Args:
+            config: 설정 객체
+        """
         self.config = config
         self.actor = InferenceActor.options(
             num_gpus=config.ray.num_gpus, 
@@ -914,69 +936,68 @@ class InferenceService:
         ).remote(config)
 
     async def query(self, http_query: dict):
+        """
+        일반 쿼리 처리 API
+        
+        Args:
+            http_query: 요청 데이터
+            
+        Returns:
+            dict: 처리 결과
+        """
         result = await self.actor.process_query.remote(http_query)
         return result
-
+    
     async def process_query_stream(self, http_query: dict) -> str:
+        """
+        스트리밍 쿼리 처리 API
+        
+        Args:
+            http_query: 요청 데이터
+            
+        Returns:
+            str: 생성된 채팅/요청 ID
+        """
         req_id = await self.actor.process_query_stream.remote(http_query)
         return req_id
-
-    async def pop_sse_token(self, req_id: str) -> str:
-        token = await self.actor.pop_sse_token.remote(req_id)
-        return token
-
-    async def close_sse_queue(self, req_id: str) -> str:
-        await self.actor.close_sse_queue.remote(req_id)
-        return "closed"
     
-    # /history
     async def get_history(self, request_id: str, last_index: int = None):
-        result = await self.actor.get_conversation_history.remote(request_id)
-        if last_index is not None and isinstance(result.get("history"), list):
-            result["history"] = result["history"][last_index+1:]
+        """
+        대화 기록 조회 API
+        
+        Args:
+            request_id: 요청 ID
+            last_index: 마지막으로 받은 메시지 인덱스
+            
+        Returns:
+            dict: 대화 기록
+        """
+        result = await self.actor.get_conversation_history.remote(request_id, last_index)
         return result
 
-    # /reference
     async def get_reference_data(self, chunk_ids: list):
+        """
+        참조 데이터 조회 API
+        
+        Args:
+            chunk_ids: 청크 ID 목록
+            
+        Returns:
+            list: 참조 데이터 목록
+        """
         result = await self.actor.get_reference_data.remote(chunk_ids)
         return result
-
-
-# Ray의 요청을 비동기적으로 관리하기 위해 도입하는 큐-매니저
-@ray.remote
-class SSEQueueManager:
-    def __init__(self):
-        self.active_queues = {}
-        self.lock = asyncio.Lock()
-
-    async def create_queue(self, request_id):
-        async with self.lock:
-            self.active_queues[request_id] = asyncio.Queue()
-            return True
-
-    async def get_queue(self, request_id):
-        return self.active_queues.get(request_id)
-
-    async def get_token(self, request_id, timeout: float):
-        queue = self.active_queues.get(request_id)
-        if queue:
-            try:
-                token = await asyncio.wait_for(queue.get(), timeout=timeout)
-                return token
-            except asyncio.TimeoutError:
-                return None
-        return None
-
-    async def put_token(self, request_id, token):
-        async with self.lock:
-            if request_id in self.active_queues:
-                await self.active_queues[request_id].put(token)
-                return True
-            return False
-
-    async def delete_queue(self, request_id):
-        async with self.lock:
-            if request_id in self.active_queues:
-                del self.active_queues[request_id]
-                return True
-            return False
+    
+    # Finally, add this to the InferenceService class
+    async def stop_generation(self, request_id: str) -> str:
+        """
+        Stop generation API
+        
+        Args:
+            request_id: The request ID to stop
+            
+        Returns:
+            str: Status message
+        """
+        result = await self.actor.stop_generation.remote(request_id)
+        return result

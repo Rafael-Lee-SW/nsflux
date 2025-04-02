@@ -1,9 +1,6 @@
-# tracking.py
+# utils/tracking.py
 import time
 import logging
-
-# Configure logging however you like
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 def time_tracker(func):
     def wrapper(*args, **kwargs):

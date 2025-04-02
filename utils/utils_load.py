@@ -14,7 +14,6 @@ from transformers import (
 )
 
 import os
-import requests
 
 # 전역 캐시 변수 - 데이터의 변화를 감지하기 위한
 _cached_data = None
@@ -32,10 +31,6 @@ from utils.tracking import time_tracker
 
 # Logging
 import logging
-
-logging.basicConfig(level=logging.DEBUG)
-
-
 # -------------------------------------------------
 # Function: find_weight_directory - 허깅페이스 권한 문제 해결 후에 잘 사용되지 아니함
 # -------------------------------------------------
@@ -161,27 +156,34 @@ def load_model(config):
                 print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다.")
                 hf_config.vocab_size = getattr(embed_tokenizer, "vocab_size", 32000)
             config_dict = hf_config.to_dict()
+            # 패치: architectures 속성이 없으면 Gemma2로 기본 설정
             if not config_dict.get("architectures"):
                 print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
+            # 확인
+            print(f"[DEBUG] => Saving HF Config with architectures={config_dict['architectures']}")
+                
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f)
         else:
             # 이미 config_file이 존재하는 경우
             with open(config_file, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
-
+            
+            # 패치: vocab_size 속성이 없으면 embed_tokenizer의 값을 사용하여 추가
             if "vocab_size" not in config_dict:
                 # embed_tokenizer의 vocab_size가 존재하면 사용하고, 없으면 기본값 30522로 설정
                 config_dict["vocab_size"] = getattr(embed_tokenizer, "vocab_size", 30522)
                 print("[MODEL-LOADING] 'vocab_size' 속성이 없어서 기본값으로 추가합니다:", config_dict["vocab_size"])
-                with open(config_file, "w", encoding="utf-8") as f:
-                    json.dump(config_dict, f)
+            # 패치: architectures 속성이 없으면 Gemma2로 기본 설정
             if not config_dict.get("architectures"):
                 print("[MODEL-LOADING] Config file의 architectures 정보 없음, Default Gemma2 아키텍처 설정")
                 config_dict["architectures"] = ["Gemma2ForCausalLM"]
-                with open(config_file, "w", encoding="utf-8") as f:
-                    json.dump(config_dict, f)
+            # 확인
+            print(f"[DEBUG] => Saving HF Config with architectures={config_dict['architectures']}")
+
+            with open(config_file, "w", encoding="utf-8") as f:
+                json.dump(config_dict, f)
 
         weight_dir, weight_format = find_weight_directory(local_model_path)
         if weight_dir is None:
@@ -219,50 +221,42 @@ def load_model(config):
         
         vllm_conf = config.get("vllm", {})
         
+        # --- 기존 엔진 설정들
         engine_args.enable_prefix_caching = True
-        engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
+        # engine_args.scheduler_delay_factor = vllm_conf.get("scheduler_delay_factor", 0.1)
         engine_args.enable_chunked_prefill = True
-        engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # Using Multi-GPU at once.
-        # engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
+        engine_args.tensor_parallel_size = vllm_conf.get("tensor_parallel_size", 1) # How many use the parllel Multi-GPU
+        engine_args.max_num_seqs = vllm_conf.get("max_num_seqs")
         engine_args.max_num_batched_tokens = vllm_conf.get("max_num_batched_tokens", 8192)
         # engine_args.block_size = vllm_conf.get("block_size", 128)
         engine_args.gpu_memory_utilization = vllm_conf.get("gpu_memory_utilization")
         
+        # --- 다중 GPU 사용 관련 설정 ---
         if vllm_conf.get("disable_custom_all_reduce", False):
             engine_args.disable_custom_all_reduce = True # For Fixing the Multi GPU problem
-            
-        engine_args.model_max_len = vllm_conf.get("model_max_len")
         
-        # # 새로 추가: disable_sliding_window 옵션 확인
-        # if vllm_conf.get("disable_sliding_window", False):
-        #     engine_args.sliding_window = (-1, -1)
-        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
+        # --- 모델의 Context Length ---
+        engine_args.max_model_len = vllm_conf.get("max_model_len")
         
-        # engine_args.enable_memory_defrag = True # v1 새로운 기능
-        # engine_args.max_model_len = vllm_conf.get("max_model_len") # Context Length
+        # --- 멀티모달 (Image) 관련 설정 ---
+        engine_args.mm_processor_kwargs = vllm_conf.get("mm_processor_kwargs", {"do_pan_and_scan": True})
+        engine_args.disable_mm_preprocessor_cache = vllm_conf.get("disable_mm_preprocessor_cache", False)
+        engine_args.limit_mm_per_prompt = vllm_conf.get("limit_mm_per_prompt", {"image": 5})
         
-        # # ★★ 추가: 슬라이딩 윈도우 비활성화 옵션 적용 ★★
-        # if vllm_conf.get("disable_sliding_window", False):
-        #     # cascade attention에서는 슬라이딩 윈도우가 (-1, -1)이어야 함
-        #     engine_args.sliding_window = (-1, -1)
-        #     print("Sliding window disabled: engine_args.sliding_window set to (-1, -1)")
-        
-        # print("Final EngineArgs:", engine_args)
-        
-        #         # ── 여기서 unified_attention 호출 추적을 위한 monkey-patch ──
-        # try:
-        #     if hasattr(torch.ops.vllm, "unified_attention_with_output"):
-        #         orig_unified_attention = torch.ops.vllm.unified_attention_with_output
-        #         def tracking_unified_attention(*args, **kwargs):
-        #             logging.info("Called unified_attention_with_output with args: %s, kwargs: %s", args, kwargs)
-        #             return orig_unified_attention(*args, **kwargs)
-        #         torch.ops.vllm.unified_attention_with_output = tracking_unified_attention
-        #         logging.info("Monkey-patched unified_attention_with_output for tracking.")
-        # except Exception as e:
-        #     logging.warning("Failed to monkey-patch unified_attention_with_output: %s", e)
-        
-        # # ── 끝 ──
+        # # --- Metrics (Monitoring) 관련 설정 ---
+        # from vllm.config import ObservabilityConfig
+        # observability_config = ObservabilityConfig(
+        #     show_hidden_metrics=True,
+        #     otlp_traces_endpoint=None,
+        #     collect_model_forward_time=True,
+        #     collect_model_execute_time=True
+        # )
 
+        # # Ensure it's properly assigned to engine_args
+        # engine_args.observability_config = observability_config
+    
+        # engine_args.show_hidden_metrics_for_version = "0.7"
+    
         print("EngineArgs setting be finished")
         
         try:
@@ -272,12 +266,13 @@ def load_model(config):
                 original_signal = signal.signal
                 signal.signal = lambda s, h: None  # signal 설정 무시
                 print("비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.")
-            # --- v1 구동 해결책: ------------------------------------------------------ ---
-            engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
-            # v1 구동 해결책: 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) ----------------- ---
+            # --- v1 구동 해결책: -------------------------------------------------------------
+            # engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
+            engine = AsyncLLMEngine.from_engine_args(engine_args) # TEST
+            # v1 구동 해결책: 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) -----------------
             if threading.current_thread() is not threading.main_thread():
                 signal.signal = original_signal
-            # --- v1 구동 해결책: ------------------------------------------------------ ---
+            # --- v1 구동 해결책: -------------------------------------------------------------
             print("DEBUG: vLLM engine successfully created.") # Original
             
         except Exception as e:
@@ -490,4 +485,3 @@ def random_seed(seed):
     # Enable deterministic algorithms
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    

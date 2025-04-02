@@ -1,29 +1,52 @@
 # app.py
-import os
+
+########## Setting the Thread to main ##########
+import multiprocessing
+multiprocessing.set_start_method("spawn", force=True)
+
 # Setting environment variable
-# os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
-os.environ["HF_HOME"] = "/workspace/huggingface"
-# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import os
+# --------- Huggingface setting ---------
 # For the Huggingface Token setting
+os.environ["HF_HOME"] = "/workspace/huggingface"
 os.environ["HF_TOKEN_PATH"] = "/root/.cache/huggingface/token"
-# Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA),
-# and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
-# OpenMP: Open-Multi-Processing API
-os.environ["MKL_THREADING_LAYER"] = "GNU"
 # Increase download timeout (in seconds)
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "60"
+# --------- OpenMP: Open-Multi-Processing API setting ---------
+# Change to GNU to using OpenMP. Because this is more friendly with CUDA(NVIDIA), and Some library(Pytorch, Numpy, vLLM etc) use the OpenMP so that set the GNU is better.
+os.environ["MKL_THREADING_LAYER"] = "GNU"
+# --------- vLLM ---------
 # Use the vLLM as v1 version
 os.environ["VLLM_USE_V1"] = "1"
-os.environ["VLLM_STANDBY_MEM"] = "0"
-os.environ["VLLM_METRICS_LEVEL"] = "1"
-os.environ["VLLM_PROFILE_MEMORY"]= "1"
-# GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU)
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # GPU1 사용
+
+# ---------------------- Weird configuration of them ----------------------
+# os.environ["VLLM_STANDBY_MEM"] = "0"
+# Metrics logging configuration 
+# os.environ["VLLM_METRICS_LEVEL"] = "2"  # Increase to max level
+# os.environ["VLLM_LOG_STATS_INTERVAL"] = "5"  # Report every 5 seconds
+# os.environ["VLLM_SHOW_PROGRESS"] = "1"  # Show progress bars
+# os.environ["VLLM_LOG_LEVEL"] = "DEBUG"  # Set log level to DEBUG
+# os.environ["VLLM_PROFILE_MEMORY"]= "1"
+# ------------------------------------------------------------------------
+# TEST env
+# os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"         # 로그 레벨을 DEBUG로 변경 - configuration 단계에서만 다 보여주고 engine 구동 중에 토큰 관련한 내용은 여전히 안보임
+# os.environ["VLLM_TRACE_FUNCTION"] = "1"            # 함수 호출 추적 활성화 
+# os.environ["VERBOSE"] = "1"                        # 설치 및 디버깅 로그 활성화
+os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
+
+# GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU - 2GPU 시에 해당 설정을 없애주어야 함)
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-print("[[TEST]]")
+# VLLM FLASH ATTENTION SETTING
+os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+# VLLM 
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+# --------- Ray ---------
+os.environ["RAY_DEDUP_LOGS"] = "0"
 
 from flask import (
     Flask,
@@ -35,33 +58,109 @@ from flask import (
     stream_with_context,
 )
 import json
-import yaml
-from box import Box
-from utils.utils import random_seed, error_format, send_data_to_server, process_format_to_response
 from datetime import datetime
 
 # Import the Ray modules
-from ray_deploy.ray_setup import init_ray
-from ray import serve
-from ray_deploy.ray_utils import InferenceActor
-from ray_deploy.ray_utils import InferenceService, SSEQueueManager
+from ray_deploy import init_ray, InferenceService, SSEQueueManager
+# Import utils
+from utils import random_seed, error_format, send_data_to_server, process_format_to_response
 
 # ------ checking process of the thread level
 import logging
 import threading
 
-# 로깅 설정: 요청 처리 시간과 현재 스레드 이름을 기록
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s %(levelname)s [%(threadName)s] %(message)s'
-)
+# Metrics logging configuration - 여기에 모든 로깅 설정 통합
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
+
+# 글로벌 로깅 설정
+# app.py 로깅 설정 수정
+def setup_logging():
+    """
+    통합 로깅 설정 - 중복 로그 방지
+    """
+    # 로그 포맷 설정
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - [%(threadName)s] %(message)s'
+    
+    # 루트 로거 설정
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # 기존 핸들러 제거 (중복 방지)
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # 콘솔 핸들러 추가
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(logging.Formatter(log_format))
+    root_logger.addHandler(console_handler)
+    
+    # 성능 전용 로거 설정 - 중복 로그 방지를 위한 추가 확인
+    perf_logger = logging.getLogger("performance")
+    # 기존 핸들러 모두 제거
+    for handler in perf_logger.handlers[:]:
+        perf_logger.removeHandler(handler)
+    
+    perf_logger.propagate = False  # 루트 로거로 전파하지 않음
+    perf_logger.setLevel(logging.INFO)
+    
+    # 성능 로거 핸들러 추가
+    perf_handler = logging.StreamHandler(sys.stdout)
+    perf_handler.setFormatter(logging.Formatter(log_format))
+    perf_logger.addHandler(perf_handler)
+    
+    # 파일 로깅 설정 (폴더 생성 후)
+    try:
+        os.makedirs("logs", exist_ok=True)
+        
+        # 일반 로그 파일 핸들러
+        file_handler = RotatingFileHandler(
+            "logs/server.log", 
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5
+        )
+        file_handler.setFormatter(logging.Formatter(log_format))
+        root_logger.addHandler(file_handler)
+        
+        # 성능 전용 로그 파일
+        perf_file_handler = RotatingFileHandler(
+            "logs/performance.log", 
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5
+        )
+        perf_file_handler.setFormatter(logging.Formatter(log_format))
+        perf_logger.addHandler(perf_file_handler)
+        
+    except (FileNotFoundError, PermissionError) as e:
+        logging.warning(f"로그 파일을 생성할 수 없습니다: {e}. 콘솔 로깅만 활성화됩니다.")
+    
+    # Ray 로거와 vLLM 로거 제어
+    ray_logger = logging.getLogger("ray")
+    ray_logger.setLevel(logging.WARNING)  # Ray 로그 축소
+    
+    vllm_logger = logging.getLogger("vllm")
+    vllm_logger.setLevel(logging.INFO)   # vLLM 로그는 INFO 유지
+    
+    # 스레드 이름으로 로깅되는 것 방지
+    thread_logger = logging.getLogger("Thread")
+    thread_logger.setLevel(logging.WARNING)  
+    
+    # 로깅 설정 확인
+    logging.info("로깅 시스템 초기화 완료 - 중복 로그 방지")
+
+# 로깅 설정 적용
+setup_logging()
 
 import ray
+from ray import serve
 import uuid
 import asyncio
 import time
 
 # Configuration
+import yaml
+from box import Box
 with open("./config.yaml", "r") as f:
     config_yaml = yaml.load(f, Loader=yaml.FullLoader)
     config = Box(config_yaml)
@@ -103,7 +202,7 @@ def chat_page():
 from data_control.data_control import data_control_bp
 app.register_blueprint(data_control_bp, url_prefix="/data")
 
-# Query Endpoint (Non-streaming)
+# --------------------- Non Streaming part ----------------------------
 @app.route("/query", methods=["POST"])
 async def query():
     try:
@@ -128,56 +227,6 @@ async def query():
         return Response(error_resp, content_type=content_type)
 
 # --------------------- Streaming part ----------------------------
-
-# # Streaming Endpoint (POST 방식 SSE) → 동기식 뷰 함수로 변경
-# @app.route("/query_stream", methods=["POST"])
-# def query_stream():
-#     """
-#     POST 방식 SSE 스트리밍 엔드포인트.
-#     클라이언트가 {"input": "..."} 형태의 JSON을 보내면, SSE 스타일의 청크를 반환합니다.
-#     """
-#     body = request.json or {}
-#     user_input = body.get("input", "")
-#     # request_id 파트 추가
-#     client_request_id = body.get("request_id")
-#     print(f"[DEBUG] /query_stream (POST) called with user_input='{user_input}', request_id='{client_request_id}'")
-    
-#     http_query = {"qry_contents": user_input}
-#     # request_id 파트 추가
-#     if client_request_id:
-#         http_query["request_id"] = client_request_id
-#     print(f"[DEBUG] Built http_query={http_query}")
-
-#     response = inference_handle.process_query_stream.remote(http_query)
-#     obj_ref = response._to_object_ref_sync()
-#     request_id = ray.get(obj_ref)
-    
-#     print(f"[DEBUG] streaming request_id={request_id}")
-    
-#     def sse_generator():
-#         try:
-#             while True:
-#                 # Retrieve token from SSEQueueManager
-#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
-#                 if token is None or token == "[[STREAM_DONE]]":
-#                     break
-#                 yield f"data: {token}\n\n"
-#         except Exception as e:
-#             error_token = json.dumps({"type": "error", "message": str(e)})
-#             yield f"data: {error_token}\n\n"
-#         finally:
-#             # Cleanup: close the SSE queue after streaming is done
-#             try:
-#                 obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
-#                 ray.get(obj_ref)
-#             except Exception as ex:
-#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
-#             print("[DEBUG] SSE closed.")
-
-#     return Response(sse_generator(), mimetype="text/event-stream")
-
-# --------------------- Streaming part TEST for API format matching ----------------------------
-
 @app.route("/query_stream", methods=["POST"])
 def query_stream():
     """
@@ -186,7 +235,9 @@ def query_stream():
       - qry_id, user_id, page_id, auth_class, qry_contents, qry_time
     auth_class는 내부적으로 'admin'으로 통일합니다.
     """
+    # 요청에서 바로 body 받아오기
     body = request.json or {}
+    
     # 새로운 필드 추출
     qry_id = body.get("qry_id")
     user_id = body.get("user_id")
@@ -194,8 +245,17 @@ def query_stream():
     auth_class = "admin"  # 어떤 값이 와도 'admin'으로 통일
     qry_contents = body.get("qry_contents", "")
     qry_time = body.get("qry_time")  # 클라이언트 측 타임스탬프
-
+    image_data = body.get("image_data") # Image Data
+    # RAG 여부
+    use_rag = body.get("rag")
+    print(f"[DEBUG] RAG using = ", use_rag)
+    
     print(f"[DEBUG] /query_stream called with qry_id='{qry_id}', user_id='{user_id}', page_id='{page_id}', qry_contents='{qry_contents}', qry_time='{qry_time}'")
+    
+    # SSE 큐 생성
+    chat_id = body.get("page_id") or str(uuid.uuid4()) # 뒤에서 다시 초기화됨
+    ray.get(sse_manager.create_queue.remote(chat_id))
+
     
     # 새로운 http_query 생성 – 내부 로직에서는 page_id를 채팅방 id로 사용
     http_query = {
@@ -204,11 +264,24 @@ def query_stream():
         "page_id": page_id if page_id else str(uuid.uuid4()),
         "auth_class": auth_class,
         "qry_contents": qry_contents,
-        "qry_time": qry_time
+        "qry_time": qry_time,
+        "use_rag" : use_rag,
     }
     
-    # 기존 request_id 대신 page_id를 SSE queue key로 사용
-    print(f"[DEBUG] Built http_query: {http_query}")
+    # image_data가 존재하면 http_query에 추가하고, 길이(또는 타입)만 간략하게 출력
+    if image_data is not None:
+        http_query["image_data"] = image_data
+        # image_data가 문자열이나 시퀀스 타입이면 길이를, 아니면 타입을 출력합니다.
+        if hasattr(image_data, "__len__"):
+            print(f"[DEBUG] image_data received: length={len(image_data)}")
+        else:
+            print(f"[DEBUG] image_data received: type={type(image_data)}")
+
+    # http_query 전체를 출력할 때 image_data 내용은 생략(요약 정보만 출력)
+    http_query_print = http_query.copy()
+    if "image_data" in http_query_print:
+        http_query_print["image_data"] = "<omitted>"
+    print(f"[DEBUG] Built http_query: {http_query_print}")
     
     # Ray Serve를 통한 streaming 호출 (변경 없음, 내부 인자는 수정된 http_query)
     response = inference_handle.process_query_stream.remote(http_query)
@@ -229,15 +302,12 @@ def query_stream():
             yield f"data: {error_token}\n\n"
         finally:
             try:
-                obj_ref = inference_handle.close_sse_queue.remote(chat_id)._to_object_ref_sync()
-                ray.get(obj_ref)
+                ray.get(sse_manager.delete_queue.remote(chat_id))
             except Exception as ex:
                 print(f"[DEBUG] Error closing SSE queue for {chat_id}: {str(ex)}")
             print("[DEBUG] SSE closed.")
 
     return Response(sse_generator(), mimetype="text/event-stream")
-
-# --------------------- CLT Streaming part ----------------------------
 
 # --------------------- CLT Streaming part ----------------------------
 @app.route("/queryToSLLM", methods=["POST"])
@@ -257,7 +327,6 @@ def query_stream_to_clt():
     qry_time = body.get("qry_time", "")
     
     response_url = config.response_url
-
 
     print(f"[DEBUG] /queryToSLLM called with qry_id='{qry_id}', user_id='{user_id}', "
           f"page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
@@ -342,8 +411,7 @@ def query_stream_to_clt():
             print(f"[ERROR] sse_generator encountered an error: {e}")
         finally:
             try:
-                obj_ref = inference_handle.close_sse_queue.remote(request_id)._to_object_ref_sync()
-                ray.get(obj_ref)
+                ray.get(sse_manager.delete_queue.remote(request_id))
             except Exception as ex:
                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
             print("[DEBUG] SSE closed.")
@@ -356,7 +424,8 @@ def query_stream_to_clt():
     # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
 
-# ------------------------------------------------
+
+# --------------------- History & Reference part ----------------------------
 
 # 새로 추가1: request_id로 대화 기록을 조회하는 API 엔드포인트
 @app.route("/history", methods=["GET"])
@@ -378,7 +447,6 @@ def conversation_history():
         print(f"[ERROR /history] {e}")
         error_resp = error_format(f"대화 기록 조회 오류: {str(e)}", 500)
         return Response(error_resp, content_type="application/json; charset=utf-8")
-
 
 # 새로 추가2: request_id로 해당 답변의 참고자료를 볼 수 있는 API
 @app.route("/reference", methods=["GET"])
@@ -417,7 +485,38 @@ def get_reference():
         print(f"[ERROR /reference] {e}")
         error_resp = error_format(f"참조 조회 오류: {str(e)}", 500)
         return Response(error_resp, content_type="application/json; charset=utf-8")
-
+    
+# 새로 추가3: request_id로 해당 답변 생성을 중도에 멈출 수 있는 API
+@app.route("/stop_generation", methods=["POST"])
+def stop_generation():
+    """
+    Endpoint to stop an ongoing generation process
+    """
+    try:
+        body = request.json or {}
+        request_id = body.get("request_id")
+        
+        if not request_id:
+            error_resp = error_format("request_id parameter is required", 400)
+            return Response(error_resp, content_type="application/json; charset=utf-8")
+        
+        print(f"[DEBUG] Received stop generation request for request_id={request_id}")
+        
+        # Send the stop signal to the inference service
+        response = inference_handle.stop_generation.remote(request_id)
+        obj_ref = response._to_object_ref_sync()
+        result = ray.get(obj_ref)
+        
+        # Return success response
+        return jsonify({
+            "status": "success", 
+            "message": f"Stop request for {request_id} received", 
+            "detail": result
+        })
+        
+    except Exception as e:
+        error_resp = error_format(f"Error processing stop request: {str(e)}", 500)
+        return Response(error_resp, content_type="application/json; charset=utf-8")
 
 # Flask app 실행
 if __name__ == "__main__":

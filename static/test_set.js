@@ -9,7 +9,7 @@ function buildTestQueries() {
     if (testSet === 'set_3_ask') {
         const differentThreeQueries = [
             { id: "only3-1", text: "남성해운 중국 시장 근황" },
-            { id: "only3-2", text: "공 컨테이너 수송 전략" },
+            { id: "only3-2", text: "공 컨테이너 이송 전략" },
             { id: "only3-3", text: "남성해운의 새로운 전략" }
         ];
         queries = differentThreeQueries;
@@ -17,7 +17,7 @@ function buildTestQueries() {
     } else if (testSet === 'set_5_ask') {
         const differentFiveQueries = [
             { id: "only5-1", text: "남성해운 중국 시장 근황" },
-            { id: "only5-2", text: "공 컨테이너 수송 전략" },
+            { id: "only5-2", text: "공 컨테이너 이송 전략" },
             { id: "only5-3", text: "남성해운의 새로운 전략" },
             { id: "only5-4", text: "신입사원이 알아야 할 필수 인사규범" },
             { id: "only5-5", text: "남성해운이 가장 최근에 체결한 계약서 내용" }
@@ -27,7 +27,7 @@ function buildTestQueries() {
     } else if (testSet === 'set_10_ask') {
         const differentTenQueries = [
             { id: "only10-1", text: "남성해운 중국 시장 근황" },
-            { id: "only10-2", text: "공 컨테이너 수송 전략" },
+            { id: "only10-2", text: "공 컨테이너 이송 전략" },
             { id: "only10-3", text: "남성해운의 새로운 전략" },
             { id: "only10-4", text: "신입사원이 알아야 할 필수 인사규범" },
             { id: "only10-5", text: "남성해운이 가장 최근에 체결한 계약서 내용" },
@@ -42,7 +42,7 @@ function buildTestQueries() {
     } else if (testSet === 'set_15_ask') {
         const differentFifteenQueries = [
             { id: "only15-1", text: "남성해운 중국 시장 근황" },
-            { id: "only15-2", text: "공 컨테이너 수송 전략" },
+            { id: "only15-2", text: "공 컨테이너 이송 전략" },
             { id: "only15-3", text: "남성해운의 새로운 전략" },
             { id: "only15-4", text: "신입사원이 알아야 할 필수 인사규범" },
             { id: "only15-5", text: "남성해운이 가장 최근에 체결한 계약서 내용" },
