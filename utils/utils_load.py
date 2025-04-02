@@ -255,7 +255,7 @@ def load_model(config):
         # # Ensure it's properly assigned to engine_args
         # engine_args.observability_config = observability_config
     
-        engine_args.show_hidden_metrics_for_version = "0.7"
+        # engine_args.show_hidden_metrics_for_version = "0.7"
     
         print("EngineArgs setting be finished")
         
@@ -267,7 +267,8 @@ def load_model(config):
                 signal.signal = lambda s, h: None  # signal 설정 무시
                 print("비메인 스레드에서 signal.signal을 monkey-patch 하였습니다.")
             # --- v1 구동 해결책: -------------------------------------------------------------
-            engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
+            # engine = AsyncLLMEngine.from_engine_args(engine_args) # Original
+            engine = AsyncLLMEngine.from_engine_args(engine_args) # TEST
             # v1 구동 해결책: 엔진 생성 후 원래 signal.signal으로 복원 (필요 시) -----------------
             if threading.current_thread() is not threading.main_thread():
                 signal.signal = original_signal

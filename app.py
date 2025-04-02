@@ -18,16 +18,23 @@ os.environ["MKL_THREADING_LAYER"] = "GNU"
 # --------- vLLM ---------
 # Use the vLLM as v1 version
 os.environ["VLLM_USE_V1"] = "1"
-os.environ["VLLM_STANDBY_MEM"] = "0"
 
+# ---------------------- Weird configuration of them ----------------------
+# os.environ["VLLM_STANDBY_MEM"] = "0"
 # Metrics logging configuration 
-os.environ["VLLM_METRICS_LEVEL"] = "2"  # Increase to max level
-os.environ["VLLM_LOG_STATS_INTERVAL"] = "5"  # Report every 5 seconds
-os.environ["VLLM_SHOW_PROGRESS"] = "1"  # Show progress bars
-os.environ["VLLM_LOG_LEVEL"] = "DEBUG"  # Set log level to DEBUG
+# os.environ["VLLM_METRICS_LEVEL"] = "2"  # Increase to max level
+# os.environ["VLLM_LOG_STATS_INTERVAL"] = "5"  # Report every 5 seconds
+# os.environ["VLLM_SHOW_PROGRESS"] = "1"  # Show progress bars
+# os.environ["VLLM_LOG_LEVEL"] = "DEBUG"  # Set log level to DEBUG
+# os.environ["VLLM_PROFILE_MEMORY"]= "1"
+# ------------------------------------------------------------------------
+# TEST env
+# os.environ["VLLM_LOGGING_LEVEL"] = "DEBUG"         # 로그 레벨을 DEBUG로 변경 - configuration 단계에서만 다 보여주고 engine 구동 중에 토큰 관련한 내용은 여전히 안보임
+# os.environ["VLLM_TRACE_FUNCTION"] = "1"            # 함수 호출 추적 활성화 
+# os.environ["VERBOSE"] = "1"                        # 설치 및 디버깅 로그 활성화
+os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
 
-os.environ["VLLM_PROFILE_MEMORY"]= "1"
-# GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU - 기본 안정화 세팅은 0번 GPU)
+# GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU - 2GPU 시에 해당 설정을 없애주어야 함)
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # 토크나이저 병렬 처리 명시적 비활성화
@@ -35,6 +42,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # VLLM FLASH ATTENTION SETTING
 os.environ["VLLM_ATTENTION_BACKEND"] = "FLASH_ATTN"
+# VLLM 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 # --------- Ray ---------
