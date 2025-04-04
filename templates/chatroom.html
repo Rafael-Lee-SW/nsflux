@@ -161,20 +161,21 @@
         <label for="testUserInput">사용자 입력</label>
         <textarea id="testUserInput" placeholder="사용자 메시지를 입력하세요..." rows="3"></textarea>
       </div>
+      <!-- 프롬프트 테스트 패널의 파일 업로드 부분 수정 -->
       <div class="form-group">
-        <label>이미지 (선택사항)</label>
-        <div class="test-image-upload">
-          <input type="file" id="testImageUpload" accept="image/*" style="display: none;">
-          <button class="test-upload-btn" onclick="document.getElementById('testImageUpload').click();">
+        <label>파일 업로드 (선택사항)</label>
+        <div class="test-file-upload">
+          <input type="file" id="testFileUpload" accept="image/*,application/pdf" style="display: none;">
+          <button class="test-upload-btn" onclick="document.getElementById('testFileUpload').click();">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
               <circle cx="8.5" cy="8.5" r="1.5"></circle>
               <polyline points="21 15 16 10 5 21"></polyline>
             </svg>
-            이미지 업로드
+            파일 업로드 (이미지/PDF)
           </button>
         </div>
-        <div id="testImagePreview" class="test-image-preview"></div>
+        <div id="testFilePreview" class="test-file-preview"></div>
       </div>
       <div class="form-actions">
         <button id="runTestBtn" class="run-test-btn" onclick="runPromptTest()">
@@ -1952,11 +1953,12 @@
     /************************************************************************
      * Prompt Testing Features
      ************************************************************************/
+    // 프롬프트 테스트용 파일 업로드 처리 함수
     function setupPromptTestFeatures() {
-      // Initialize prompt test image upload
-      const testImageInput = document.getElementById('testImageUpload');
-      if (testImageInput) {
-        testImageInput.addEventListener('change', handleTestImageUpload);
+      // 파일 업로드 이벤트 리스너 설정
+      const testFileInput = document.getElementById('testFileUpload');
+      if (testFileInput) {
+        testFileInput.addEventListener('change', handleTestFileUpload);
       }
     }
 
@@ -1970,38 +1972,112 @@
       }
     }
     
-    function handleTestImageUpload(event) {
+    // 테스트 파일 업로드 처리 (이미지 또는 PDF)
+    function handleTestFileUpload(event) {
       const file = event.target.files[0];
       if (!file) return;
       
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        const preview = document.getElementById('testImagePreview');
-        preview.innerHTML = '';
+      const preview = document.getElementById('testFilePreview');
+      preview.innerHTML = '';
+      
+      // 파일 타입 확인
+      const fileType = file.type.startsWith('image/') ? 'image' : 
+                      (file.type === 'application/pdf' ? 'pdf' : 'unknown');
+      
+      if (fileType === 'unknown') {
+        alert('지원되지 않는 파일 형식입니다. 이미지 또는 PDF만 업로드 가능합니다.');
+        event.target.value = '';
+        return;
+      }
+      
+      // 미리보기 UI 생성
+      const fileContainer = document.createElement('div');
+      fileContainer.className = 'test-file-container';
+      
+      // 파일 타입에 따라 다른 UI 표시
+      if (fileType === 'image') {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const img = document.createElement('img');
+          img.src = e.target.result;
+          img.className = 'test-preview-image';
+          fileContainer.appendChild(img);
+          
+          // 파일 정보 표시
+          const fileInfo = document.createElement('div');
+          fileInfo.className = 'test-file-info';
+          fileInfo.innerHTML = `
+            <span class="file-name">${file.name}</span>
+            <span class="file-type">이미지 파일</span>
+          `;
+          fileContainer.appendChild(fileInfo);
+        };
+        reader.readAsDataURL(file);
+      } else if (fileType === 'pdf') {
+        // PDF 아이콘 표시
+        const pdfIcon = document.createElement('div');
+        pdfIcon.className = 'pdf-icon';
+        pdfIcon.innerHTML = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+        `;
+        fileContainer.appendChild(pdfIcon);
         
-        const img = document.createElement('img');
-        img.src = e.target.result;
-        img.className = 'test-preview-image';
-        preview.appendChild(img);
+        // 파일 정보 표시
+        const fileInfo = document.createElement('div');
+        fileInfo.className = 'test-file-info';
+        fileInfo.innerHTML = `
+          <span class="file-name">${file.name}</span>
+          <span class="file-type">PDF 문서</span>
+        `;
+        fileContainer.appendChild(fileInfo);
+      }
+      
+      // 삭제 버튼 추가
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'remove-test-file-btn';
+      removeBtn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      `;
+      removeBtn.onclick = function() {
+        preview.innerHTML = '';
+        event.target.value = '';
       };
-      reader.readAsDataURL(file);
+      fileContainer.appendChild(removeBtn);
+      
+      // 미리보기 영역에 추가
+      preview.appendChild(fileContainer);
+      
+      // 파일 타입 정보를 data 속성으로 저장 (나중에 사용)
+      preview.dataset.fileType = fileType;
     }
     
+    
+    // 프롬프트 테스트 실행 함수 수정
     async function runPromptTest() {
       const systemPrompt = document.getElementById('systemPrompt').value.trim();
       const userInput = document.getElementById('testUserInput').value.trim();
-      const imageInput = document.getElementById('testImageUpload');
-    
+      const fileInput = document.getElementById('testFileUpload');
+      const filePreview = document.getElementById('testFilePreview');
+      
       if (!systemPrompt) {
         alert("시스템 프롬프트를 입력해주세요.");
         return;
       }
-    
+      
       // UI 세팅
       document.getElementById('runTestBtn').classList.add('hidden');
       document.getElementById('stopTestBtn').classList.remove('hidden');
       isTestPromptRunning = true;
-    
+      
       const resultArea = document.getElementById('testResultArea');
       resultArea.innerHTML = `
         <div class="test-loading">
@@ -2011,24 +2087,43 @@
           <p>프롬프트 테스트 중...</p>
         </div>
       `;
-    
-      // 이미지 처리
-      let imageBase64 = null;
-      if (imageInput.files.length > 0) {
-        imageBase64 = await readFileAsBase64(imageInput.files[0]);
+      
+      // 파일 처리
+      let fileData = null;
+      let fileType = null;
+      
+      if (fileInput.files.length > 0) {
+        const file = fileInput.files[0];
+        fileType = file.type.startsWith('image/') ? 'image' : 
+                  (file.type === 'application/pdf' ? 'pdf' : 'unknown');
+        
+        if (fileType !== 'unknown') {
+          try {
+            fileData = await readFileAsBase64(file);
+          } catch (error) {
+            console.error("파일 읽기 오류:", error);
+            resultArea.innerHTML = `<p class="test-error">파일 읽기 오류: ${error.message}</p>`;
+            isTestPromptRunning = false;
+            document.getElementById('runTestBtn').classList.remove('hidden');
+            document.getElementById('stopTestBtn').classList.add('hidden');
+            return;
+          }
+        }
       }
-    
+      
       // POST로 보낼 payload
       const payload = {
-        prompt: systemPrompt, // 예) /test_prompt_stream 에서 system_prompt 로 받음
+        prompt: systemPrompt,
         user_input: userInput,
       };
-      if (imageBase64) {
-        payload.image_data = imageBase64;
+      
+      if (fileData && fileType) {
+        payload.file_data = fileData;
+        payload.file_type = fileType;
       }
-    
+      
       try {
-        // (중요) EventSource를 삭제하고, fetch + reader.read()로 chunk 처리
+        // 스트리밍 요청 보내기
         const response = await fetch('/test_prompt_stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2037,23 +2132,23 @@
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
-    
+        
         // SSE-like chunk 수신
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
         let sseBuffer = "";
         let fullResponse = "";
-    
+        
         // 출력 영역 초기화
         resultArea.innerHTML = `<div id="streamingTestResult" class="streaming-test-result"></div>`;
         const streamingResult = document.getElementById('streamingTestResult');
-    
+        
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
           const chunk = decoder.decode(value, { stream: true });
           sseBuffer += chunk;
-    
+          
           // \n 단위로 분할
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop();  // 마지막 줄은 아직 완료 안된 chunk
@@ -2071,6 +2166,8 @@
                 if (msgObj.type === "answer") {
                   fullResponse += msgObj.answer;
                   streamingResult.innerHTML = parseMarkdown(fullResponse);
+                  // 스크롤 자동 이동
+                  streamingResult.scrollTop = streamingResult.scrollHeight;
                 } else if (msgObj.type === "reference") {
                   console.log("Reference object:", msgObj);
                 }
@@ -2078,6 +2175,7 @@
                 // JSON 파싱 실패 -> 텍스트로 처리
                 fullResponse += jsonStr;
                 streamingResult.innerHTML = parseMarkdown(fullResponse);
+                streamingResult.scrollTop = streamingResult.scrollHeight;
               }
             }
           }
@@ -2104,4 +2202,3 @@
   </script>
 </body>
 </html>
-

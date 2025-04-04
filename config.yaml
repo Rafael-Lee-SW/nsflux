@@ -35,8 +35,8 @@ vllm:
   mm_processor_kwargs:            # 이미지 처리 시 사용되는 추가 인자 정의
     do_pan_and_scan: True         # 이미지 내 객체 감지 및 영역 스캔 기능을 활성화
   disable_mm_preprocessor_cache: False # 이미지 전처리 캐시를 비활성화 할지 여부
-  limit_mm_per_prompt:            # 프롬프트 당 허용되는 멀티모달(예, 이미지) 입력의 최대 개수
-    image: 2                      # 최대 image 처리 개수
+  limit_mm_per_prompt:            # 프롬프트 당 허용되는 멀티모달(예, 이미지, 비디오 등) 입력의 최대 개수
+    image: 5                      # 최대 image 처리 개수
 
 ### model huggingface setting and sampling params
 model:

@@ -527,25 +527,27 @@ async def test_prompt():
     필요한 파라미터:
     - prompt: 테스트할 프롬프트
     - user_input: 사용자 입력 텍스트
-    - image_data: (선택) 이미지 데이터 (base64 인코딩)
+    - file_data: (선택) 파일 데이터 (base64 인코딩)
+    - file_type: (선택) 파일 타입 ('image' 또는 'pdf')
     """
     try:
         # 요청 파라미터 추출
         body = request.json or {}
         system_prompt = body.get("prompt", "")
         user_input = body.get("user_input", "")
-        image_data = body.get("image_data")
+        file_data = body.get("file_data")
+        file_type = body.get("file_type", "image")  # 기본값은 이미지
         
         if not system_prompt:
             return Response(error_format("프롬프트는 필수입니다.", 400), content_type=content_type)
             
-        print(f"[DEBUG] /test_prompt called with prompt length={len(system_prompt)}, user_input='{user_input[:50]}...' and image={image_data is not None}")
+        print(f"[DEBUG] /test_prompt called with prompt length={len(system_prompt)}, user_input='{user_input[:50]}...' and file_type={file_type}")
         
         # 요청 ID 생성
         request_id = str(uuid.uuid4())
         
         # Ray Serve를 통한 프롬프트 테스트 호출
-        response = inference_handle.test_prompt.remote(system_prompt, user_input, image_data, request_id)
+        response = inference_handle.test_prompt.remote(system_prompt, user_input, file_data, file_type, request_id)
         obj_ref = response._to_object_ref_sync()
         result = ray.get(obj_ref)
         
@@ -568,19 +570,21 @@ def test_prompt_stream():
     필요한 파라미터:
     - prompt: 테스트할 프롬프트
     - user_input: 사용자 입력 텍스트
-    - image_data: (선택) 이미지 데이터 (base64 인코딩)
+    - file_data: (선택) 파일 데이터 (base64 인코딩)
+    - file_type: (선택) 파일 타입 ('image' 또는 'pdf')
     """
     try:
         # 요청 파라미터 추출
         body = request.json or {}
         system_prompt = body.get("prompt", "")
         user_input = body.get("user_input", "")
-        image_data = body.get("image_data")
+        file_data = body.get("file_data")
+        file_type = body.get("file_type", "image")  # 기본값은 이미지
         
         if not system_prompt:
             return Response(error_format("프롬프트는 필수입니다.", 400), content_type=content_type)
             
-        print(f"[DEBUG] /test_prompt_stream called with prompt length={len(system_prompt)}, user_input='{user_input[:50]}...' and image={image_data is not None}")
+        print(f"[DEBUG] /test_prompt_stream called with prompt length={len(system_prompt)}, user_input='{user_input[:50]}...' and file_type={file_type}")
         
         # 요청 ID 생성 (SSE 큐 ID로 사용)
         request_id = str(uuid.uuid4())
@@ -589,7 +593,7 @@ def test_prompt_stream():
         ray.get(sse_manager.create_queue.remote(request_id))
         
         # Ray Serve를 통한 스트리밍 프롬프트 테스트 호출
-        response = inference_handle.test_prompt_stream.remote(system_prompt, user_input, image_data, request_id)
+        response = inference_handle.test_prompt_stream.remote(system_prompt, user_input, file_data, file_type, request_id)
         obj_ref = response._to_object_ref_sync()
         chat_id = ray.get(obj_ref)
         
@@ -616,7 +620,8 @@ def test_prompt_stream():
     except Exception as e:
         error_resp = error_format(f"프롬프트 스트리밍 테스트 중 오류: {str(e)}", 500)
         return Response(error_resp, content_type=content_type)
-
+    
+    
 # Flask app 실행
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)

@@ -1642,6 +1642,75 @@ body {
     text-align: center;
 }
 
+/* PDF 관련 스타일 */
+.pdf-icon {
+    width: 60px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    margin-right: 10px;
+}
+
+.pdf-icon svg {
+    color: #e74c3c;
+}
+
+.test-file-container {
+    display: flex;
+    align-items: center;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    padding: 10px;
+    margin-top: 10px;
+    position: relative;
+}
+
+.test-file-info {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+}
+
+.file-name {
+    font-weight: 500;
+    margin-bottom: 3px;
+}
+
+.file-type {
+    font-size: 0.85em;
+    color: #6c757d;
+}
+
+.remove-test-file-btn {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    background-color: rgba(255, 255, 255, 0.7);
+    border: none;
+    border-radius: 50%;
+    padding: 5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.remove-test-file-btn:hover {
+    background-color: rgba(255, 255, 255, 0.9);
+}
+
+/* PDF 처리 중 표시 스타일 */
+.pdf-processing {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f0f8ff;
+    border-left: 3px solid #007bff;
+    font-style: italic;
+}
+
 /* Dark mode support for image components */
 @media (prefers-color-scheme: dark) {
     .image-upload-btn {

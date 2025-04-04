@@ -916,25 +916,27 @@ class InferenceActor:
     # -------------------------------------------------------------------------
     # PROMPT TESTING - 프롬프트 테스트 기능
     # -------------------------------------------------------------------------
-    async def test_prompt(self, system_prompt: str, user_text: str, image_data: Optional[Any], request_id: str = None) -> str:
+    async def test_prompt(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
         """
         새 프롬프트를 테스트합니다.
         
         Args:
             system_prompt: 테스트할 시스템 프롬프트
             user_text: 사용자 입력 텍스트
-            image_data: 이미지 데이터 (선택)
+            file_data: 파일 데이터 (선택)
+            file_type: 파일 타입 ('image' 또는 'pdf')
             request_id: 요청 ID
             
         Returns:
             str: 생성된 결과
         """
-        logger.info(f"프롬프트 테스트 메서드 호출: prompt_length={len(system_prompt)}, request_id={request_id}")
+        logger.info(f"프롬프트 테스트 메서드 호출: prompt_length={len(system_prompt)}, file_type={file_type}, request_id={request_id}")
         
         result = await test_prompt_with_image(
             system_prompt=system_prompt,
             user_text=user_text,
-            image_data=image_data,
+            file_data=file_data,
+            file_type=file_type,
             model=self.model,
             tokenizer=self.tokenizer,
             config=self.config,
@@ -943,20 +945,21 @@ class InferenceActor:
         
         return result
 
-    async def test_prompt_stream(self, system_prompt: str, user_text: str, image_data: Optional[Any], request_id: str = None) -> str:
+    async def test_prompt_stream(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
         """
         새 프롬프트를 스트리밍 방식으로 테스트합니다.
         
         Args:
             system_prompt: 테스트할 시스템 프롬프트
             user_text: 사용자 입력 텍스트
-            image_data: 이미지 데이터 (선택)
+            file_data: 파일 데이터 (선택)
+            file_type: 파일 타입 ('image' 또는 'pdf')
             request_id: 요청 ID
             
         Returns:
             str: 채팅 ID (스트리밍용)
         """
-        logger.info(f"스트리밍 프롬프트 테스트 시작: prompt_length={len(system_prompt)}, request_id={request_id}")
+        logger.info(f"스트리밍 프롬프트 테스트 시작: prompt_length={len(system_prompt)}, file_type={file_type}, request_id={request_id}")
         
         if not request_id:
             request_id = str(uuid.uuid4())
@@ -967,7 +970,8 @@ class InferenceActor:
                 async for chunk in test_prompt_streaming(
                     system_prompt=system_prompt,
                     user_text=user_text,
-                    image_data=image_data,
+                    file_data=file_data,
+                    file_type=file_type,
                     model=self.model,
                     tokenizer=self.tokenizer,
                     config=self.config,
@@ -1087,34 +1091,36 @@ class InferenceService:
         return result
     
     # InferenceService 클래스에 다음 메서드 추가
-    async def test_prompt(self, system_prompt: str, user_text: str, image_data: Optional[Any] = None, request_id: str = None) -> str:
+    async def test_prompt(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
         """
         새 프롬프트 테스트 API
         
         Args:
             system_prompt: 테스트할 시스템 프롬프트
             user_text: 사용자 입력 텍스트
-            image_data: 이미지 데이터 (선택)
+            file_data: 파일 데이터 (선택)
+            file_type: 파일 타입 ('image' 또는 'pdf')
             request_id: 요청 ID
             
         Returns:
             str: 생성된 결과
         """
-        result = await self.actor.test_prompt.remote(system_prompt, user_text, image_data, request_id)
+        result = await self.actor.test_prompt.remote(system_prompt, user_text, file_data, file_type, request_id)
         return result
 
-    async def test_prompt_stream(self, system_prompt: str, user_text: str, image_data: Optional[Any] = None, request_id: str = None) -> str:
+    async def test_prompt_stream(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
         """
         새 프롬프트 스트리밍 테스트 API
         
         Args:
             system_prompt: 테스트할 시스템 프롬프트
             user_text: 사용자 입력 텍스트
-            image_data: 이미지 데이터 (선택)
+            file_data: 파일 데이터 (선택)
+            file_type: 파일 타입 ('image' 또는 'pdf')
             request_id: 요청 ID
             
         Returns:
             str: 채팅 ID (스트리밍용)
         """
-        req_id = await self.actor.test_prompt_stream.remote(system_prompt, user_text, image_data, request_id)
+        req_id = await self.actor.test_prompt_stream.remote(system_prompt, user_text, file_data, file_type, request_id)
         return req_id
