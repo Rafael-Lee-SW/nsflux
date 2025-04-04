@@ -95,7 +95,8 @@ def load_model(config):
             config.embed_model_id,
             cache_dir=config.cache_dir,
             trust_remote_code=True,
-            token=token,  # using 'token' parameter
+            token=token,
+            device_map="auto"
         )
     except Exception as e:
         raise e
@@ -110,7 +111,7 @@ def load_model(config):
         raise e
     print(":Embedding tokenizer loaded successfully.")
     embed_model.eval()
-    embed_tokenizer.model_max_length = 4096
+    embed_tokenizer.model_max_length = 8192
 
     # -------------------------------
     # Load the main LLM model via vLLM.
