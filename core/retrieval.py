@@ -11,6 +11,7 @@
 import logging
 import numpy as np
 import torch
+import torch.nn.functional as F
 import rank_bm25
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any, Optional, Union
@@ -57,7 +58,7 @@ def retrieve(
         scaled_bm25_score = min_max_scaling(bm25_score)
         
         # 최종 스코어 계산 (가중치 적용)
-        score = scaled_sim_score * 0.4 + scaled_bm25_score * 0.6
+        score = scaled_sim_score * 0.7 + scaled_bm25_score * 0.3
         score_values = score[:, 0, 0]
         
         # 상위 N개 문서 선택
@@ -118,16 +119,10 @@ def cal_sim_score(
         query_vector = query_vector.unsqueeze(0)
     
     # 각 청크와의 유사도 계산
-    score = []
-    for chunk in chunks:
-        if len(chunk.shape) == 1:
-            chunk = chunk.unsqueeze(0)
-        
-        # 정규화 및 코사인 유사도 계산
-        query_norm = query_vector / query_vector.norm(dim=1)[:, None]
-        chunk_norm = chunk / chunk.norm(dim=1)[:, None]
-        sim_score = torch.mm(query_norm, chunk_norm.transpose(0, 1)) * 100
-        score.append(sim_score.detach())
+    passage_emb = F.normalize(chunks, p=2, dim=-1) # (Batch, 1, Dim)
+    query_emb   = F.normalize(query_vector, p=2, dim=-1) # (1, Dim)
+
+    score = (passage_emb @ query_emb.T) # (Batch, 1, 1)
     
     return np.array(score)
 
@@ -200,22 +195,25 @@ def cal_bm25_score(
 def embed(query: str, embed_model, embed_tokenizer) -> torch.Tensor:
     """
     텍스트를 임베딩 벡터로 변환
-    
+
     Args:
         query: 임베딩할 텍스트
         embed_model: 임베딩 모델
         embed_tokenizer: 임베딩 토크나이저
-        
+    
     Returns:
         torch.Tensor: 임베딩 벡터
     """
     logger.info(f"임베딩 시작: '{query}'")
-    
-    inputs = embed_tokenizer(query, padding=True, truncation=True, return_tensors="pt")
-    embeddings, _ = embed_model(**inputs, return_dict=False)
-    
+    with torch.no_grad():
+        inputs = embed_tokenizer(query, max_length=4096, padding="max_length", truncation=True, return_tensors="pt").to(embed_model.device)
+        outputs = embed_model(**inputs)
+        # Last Sequence Token is used as Embedding V
+        embeddings = outputs.last_hidden_state[:,-1].cpu() # (Batch, Embed Dims) == (1,4096)
+
     logger.info("임베딩 완료")
-    return embeddings[0][0]
+    return embeddings
+
 
 @time_tracker
 def min_max_scaling(arr: np.ndarray) -> np.ndarray:

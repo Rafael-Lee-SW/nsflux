@@ -115,6 +115,33 @@ body {
     box-shadow: var(--shadow-md);
 }
 
+/* Sidebar tools */
+.sidebar-tools {
+    margin-bottom: 1.5rem;
+}
+
+.sidebar-tool-btn {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.5rem;
+    width: 100%;
+    background-color: transparent;
+    color: var(--text-light);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.5rem;
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border-radius: var(--radius-md);
+    transition: var(--transition-normal);
+}
+
+.sidebar-tool-btn:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
 .chat-room-list {
     list-style: none;
     width: 100%;
@@ -802,6 +829,10 @@ body {
 }
 
 .message-content h6 {
+    font-size: 0.875rem;
+}
+
+.message-content h6 {
     font-size: 0.85rem;
 }
 
@@ -1031,6 +1062,12 @@ body {
     .message-ref-btn {
         padding: 0.25rem;
     }
+
+    .prompt-test-panel {
+        width: 100%;
+        height: 100%;
+        border-radius: 0;
+    }
 }
 
 /* Dark mode support (optional) */
@@ -1092,6 +1129,29 @@ body {
 
     .message-ref-btn:hover {
         background-color: rgba(16, 163, 127, 0.2);
+    }
+
+    .prompt-test-panel {
+        background-color: #1f2937;
+        border-color: #374151;
+    }
+
+    .test-panel-header {
+        border-bottom-color: #374151;
+    }
+
+    .test-panel-content textarea {
+        background-color: #111827;
+        color: #f9fafb;
+        border-color: #374151;
+    }
+
+    .test-panel-result {
+        border-top-color: #374151;
+    }
+
+    .test-result-area {
+        background-color: #111827;
     }
 }
 
@@ -1291,6 +1351,364 @@ body {
     max-height: 200px;
     object-fit: contain;
     display: block;
+}
+
+/* Prompt Test Panel */
+.prompt-test-panel {
+    position: fixed;
+    top: 0;
+    right: -800px;
+    /* Start offscreen */
+    width: 500px;
+    height: 100vh;
+    background-color: white;
+    border-left: 1px solid var(--border-color);
+    box-shadow: var(--shadow-lg);
+    transition: right 0.3s ease-in-out;
+    display: flex;
+    flex-direction: column;
+    z-index: 999;
+}
+
+.prompt-test-panel.active {
+    right: 0;
+}
+
+.test-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.test-panel-header h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--primary);
+}
+
+.close-panel-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem;
+    border-radius: var(--radius-sm);
+    transition: var(--transition-normal);
+}
+
+.close-panel-btn:hover {
+    background-color: rgba(0, 0, 0, 0.05);
+    color: var(--primary);
+}
+
+.test-panel-content {
+    flex: 1;
+    padding: 1.5rem;
+    overflow-y: auto;
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+}
+
+.form-group label {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+}
+
+.form-group textarea {
+    width: 100%;
+    padding: 0.75rem;
+    font-size: 0.9375rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    resize: vertical;
+    transition: var(--transition-normal);
+    font-family: inherit;
+}
+
+.form-group textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.2);
+}
+
+.test-image-upload {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.test-upload-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background-color: white;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition-normal);
+}
+
+.test-upload-btn:hover {
+    background-color: var(--chat-bg);
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.test-upload-btn svg {
+    color: var(--primary);
+}
+
+.test-image-preview {
+    margin-top: 0.75rem;
+}
+
+.test-image-container {
+    position: relative;
+    max-width: 200px;
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+
+.test-preview-image {
+    width: 100%;
+    display: block;
+    max-height: 150px;
+    object-fit: contain;
+}
+
+.remove-test-image-btn {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    background: rgba(0, 0, 0, 0.6);
+    border: none;
+    color: white;
+    border-radius: 50%;
+    width: 1.5rem;
+    height: 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: var(--transition-normal);
+}
+
+.remove-test-image-btn:hover {
+    background: rgba(0, 0, 0, 0.8);
+}
+
+.test-file-info {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+}
+
+.form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.run-test-btn,
+.stop-test-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition-normal);
+}
+
+.run-test-btn {
+    background-color: var(--primary);
+    color: white;
+    border: none;
+}
+
+.run-test-btn:hover {
+    background-color: var(--primary-hover);
+}
+
+.stop-test-btn {
+    background-color: #f44336;
+    color: white;
+    border: none;
+}
+
+.stop-test-btn:hover {
+    background-color: #d32f2f;
+}
+
+.hidden {
+    display: none;
+}
+
+.test-panel-result {
+    padding: 1.5rem;
+    border-top: 1px solid var(--border-color);
+    max-height: 40vh;
+    overflow-y: auto;
+}
+
+.test-panel-result h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+}
+
+.test-result-area {
+    background-color: var(--chat-bg);
+    padding: 1rem;
+    border-radius: var(--radius-md);
+    font-size: 0.875rem;
+    min-height: 150px;
+    overflow-y: auto;
+    line-height: 1.5;
+}
+
+.no-result {
+    color: var(--text-secondary);
+    font-style: italic;
+    text-align: center;
+    margin: 2rem 0;
+}
+
+.test-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 150px;
+}
+
+.test-typing-indicator {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.test-typing-indicator span {
+    height: 0.5rem;
+    width: 0.5rem;
+    margin: 0 0.1rem;
+    background-color: var(--primary);
+    border-radius: 50%;
+    display: inline-block;
+    opacity: 0.6;
+    animation: pulse 1s infinite;
+}
+
+.test-typing-indicator span:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.test-typing-indicator span:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+.streaming-test-result {
+    min-height: 100px;
+}
+
+.test-error {
+    color: #f44336;
+    text-align: center;
+    margin: 1rem 0;
+}
+
+.test-stopped-note {
+    color: #f44336;
+    font-style: italic;
+    margin-top: 1rem;
+    text-align: center;
+}
+
+/* PDF 관련 스타일 */
+.pdf-icon {
+    width: 60px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    margin-right: 10px;
+}
+
+.pdf-icon svg {
+    color: #e74c3c;
+}
+
+.test-file-container {
+    display: flex;
+    align-items: center;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    padding: 10px;
+    margin-top: 10px;
+    position: relative;
+}
+
+.test-file-info {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+}
+
+.file-name {
+    font-weight: 500;
+    margin-bottom: 3px;
+}
+
+.file-type {
+    font-size: 0.85em;
+    color: #6c757d;
+}
+
+.remove-test-file-btn {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    background-color: rgba(255, 255, 255, 0.7);
+    border: none;
+    border-radius: 50%;
+    padding: 5px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.remove-test-file-btn:hover {
+    background-color: rgba(255, 255, 255, 0.9);
+}
+
+/* PDF 처리 중 표시 스타일 */
+.pdf-processing {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f0f8ff;
+    border-left: 3px solid #007bff;
+    font-style: italic;
 }
 
 /* Dark mode support for image components */
