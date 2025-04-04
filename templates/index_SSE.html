@@ -1,0 +1,36 @@
+function generateText() {
+    const inputText = document.getElementById("inputText").value;
+    document.getElementById("output").innerHTML = "";  // Clear previous results
+    
+    // Send query to the server
+    fetch('/query', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ qry_contents: inputText })
+    })
+    .then(response => {
+        if (response.ok) {
+            // Start listening for answers
+            listenForAnswers();
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+    });
+}
+
+function listenForAnswers() {
+    const eventSource = new EventSource('/answer');
+
+    eventSource.onmessage = function(event) {
+        const output = JSON.parse(event.data);
+        document.getElementById("output").innerHTML += output + " ";
+    };
+
+    eventSource.onerror = function() {
+        eventSource.close();
+        document.getElementById("output").innerHTML += "<br><b>Generation Complete</b>";
+    };
+}
