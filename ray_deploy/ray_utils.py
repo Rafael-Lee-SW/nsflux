@@ -18,6 +18,8 @@ from core import (
     generate_answer,
     generate_answer_stream,
     image_query,
+    test_prompt_with_image,
+    test_prompt_streaming,
 )
 from utils import (
     load_model,
@@ -517,7 +519,6 @@ class InferenceActor:
         # 요청 정보 추출
         http_query, request_id, is_streaming = self._get_request_info(http_query_or_stream_dict)
         
-        
         # 요청 ID가 없으면 생성 (성능 모니터링용)
         if not request_id:
             request_id = str(uuid.uuid4())
@@ -544,8 +545,7 @@ class InferenceActor:
                 self.performance_monitor.update_request(request_id, 0, checkpoint="image_processed")
                 
                 # RAG 활용 응답 생성
-                await self._process_rag_query(http_query, user_input, image_description, 
-                                        request_id, is_streaming, future)
+                await self._process_rag_query(http_query, user_input, image_description, request_id, is_streaming, future)
         except Exception as e:
             err_msg = f"처리 중 오류 발생: {str(e)}"
             logger.error(err_msg)
@@ -912,6 +912,94 @@ class InferenceActor:
         except Exception as e:
             logger.error(f"Error stopping generation: {e}")
             return f"Error stopping generation: {str(e)}"
+        
+    # -------------------------------------------------------------------------
+    # PROMPT TESTING - 프롬프트 테스트 기능
+    # -------------------------------------------------------------------------
+    async def test_prompt(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
+        """
+        새 프롬프트를 테스트합니다.
+        
+        Args:
+            system_prompt: 테스트할 시스템 프롬프트
+            user_text: 사용자 입력 텍스트
+            file_data: 파일 데이터 (선택)
+            file_type: 파일 타입 ('image' 또는 'pdf')
+            request_id: 요청 ID
+            
+        Returns:
+            str: 생성된 결과
+        """
+        logger.info(f"프롬프트 테스트 메서드 호출: prompt_length={len(system_prompt)}, file_type={file_type}, request_id={request_id}")
+        
+        result = await test_prompt_with_image(
+            system_prompt=system_prompt,
+            user_text=user_text,
+            file_data=file_data,
+            file_type=file_type,
+            model=self.model,
+            tokenizer=self.tokenizer,
+            config=self.config,
+            request_id=request_id
+        )
+        
+        return result
+
+    async def test_prompt_stream(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
+        """
+        새 프롬프트를 스트리밍 방식으로 테스트합니다.
+        
+        Args:
+            system_prompt: 테스트할 시스템 프롬프트
+            user_text: 사용자 입력 텍스트
+            file_data: 파일 데이터 (선택)
+            file_type: 파일 타입 ('image' 또는 'pdf')
+            request_id: 요청 ID
+            
+        Returns:
+            str: 채팅 ID (스트리밍용)
+        """
+        logger.info(f"스트리밍 프롬프트 테스트 시작: prompt_length={len(system_prompt)}, file_type={file_type}, request_id={request_id}")
+        
+        if not request_id:
+            request_id = str(uuid.uuid4())
+        
+        # 비동기 제너레이터를 처리하기 위한 작업자
+        async def process_stream():
+            try:
+                async for chunk in test_prompt_streaming(
+                    system_prompt=system_prompt,
+                    user_text=user_text,
+                    file_data=file_data,
+                    file_type=file_type,
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    config=self.config,
+                    request_id=request_id
+                ):
+                    # 응답 토큰 JSON 형식으로 포장하여 전송
+                    answer_json = json.dumps({
+                        "type": "answer",
+                        "answer": chunk
+                    }, ensure_ascii=False)
+                    await self.queue_manager.put_token.remote(request_id, answer_json)
+                
+                # 스트리밍 완료 신호 전송
+                await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+                
+            except Exception as e:
+                err_msg = f"스트리밍 프롬프트 테스트 오류: {str(e)}"
+                logger.error(err_msg)
+                
+                # 에러 메시지 전송
+                error_token = json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                await self.queue_manager.put_token.remote(request_id, error_token)
+                await self.queue_manager.put_token.remote(request_id, "[[STREAM_DONE]]")
+        
+        # 비동기 작업 시작
+        asyncio.create_task(process_stream())
+        
+        return request_id
 
 # -------------------------------------------------------------------------
 # Ray Serve 배포를 위한 서비스 클래스
@@ -1001,3 +1089,38 @@ class InferenceService:
         """
         result = await self.actor.stop_generation.remote(request_id)
         return result
+    
+    # InferenceService 클래스에 다음 메서드 추가
+    async def test_prompt(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
+        """
+        새 프롬프트 테스트 API
+        
+        Args:
+            system_prompt: 테스트할 시스템 프롬프트
+            user_text: 사용자 입력 텍스트
+            file_data: 파일 데이터 (선택)
+            file_type: 파일 타입 ('image' 또는 'pdf')
+            request_id: 요청 ID
+            
+        Returns:
+            str: 생성된 결과
+        """
+        result = await self.actor.test_prompt.remote(system_prompt, user_text, file_data, file_type, request_id)
+        return result
+
+    async def test_prompt_stream(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
+        """
+        새 프롬프트 스트리밍 테스트 API
+        
+        Args:
+            system_prompt: 테스트할 시스템 프롬프트
+            user_text: 사용자 입력 텍스트
+            file_data: 파일 데이터 (선택)
+            file_type: 파일 타입 ('image' 또는 'pdf')
+            request_id: 요청 ID
+            
+        Returns:
+            str: 채팅 ID (스트리밍용)
+        """
+        req_id = await self.actor.test_prompt_stream.remote(system_prompt, user_text, file_data, file_type, request_id)
+        return req_id
