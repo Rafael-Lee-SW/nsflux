@@ -518,6 +518,107 @@ def stop_generation():
         error_resp = error_format(f"Error processing stop request: {str(e)}", 500)
         return Response(error_resp, content_type="application/json; charset=utf-8")
 
+# --------------------- 프롬프트 테스트 엔드포인트 ----------------------------
+@app.route("/test_prompt", methods=["POST"])
+async def test_prompt():
+    """
+    새 프롬프트를 테스트하는 API 엔드포인트.
+    
+    필요한 파라미터:
+    - prompt: 테스트할 프롬프트
+    - user_input: 사용자 입력 텍스트
+    - image_data: (선택) 이미지 데이터 (base64 인코딩)
+    """
+    try:
+        # 요청 파라미터 추출
+        body = request.json or {}
+        system_prompt = body.get("prompt", "")
+        user_input = body.get("user_input", "")
+        image_data = body.get("image_data")
+        
+        if not system_prompt:
+            return Response(error_format("프롬프트는 필수입니다.", 400), content_type=content_type)
+            
+        print(f"[DEBUG] /test_prompt called with prompt length={len(system_prompt)}, user_input='{user_input[:50]}...' and image={image_data is not None}")
+        
+        # 요청 ID 생성
+        request_id = str(uuid.uuid4())
+        
+        # Ray Serve를 통한 프롬프트 테스트 호출
+        response = inference_handle.test_prompt.remote(system_prompt, user_input, image_data, request_id)
+        obj_ref = response._to_object_ref_sync()
+        result = ray.get(obj_ref)
+        
+        # 결과 반환
+        return Response(json.dumps({
+            "status": "success",
+            "result": result
+        }, ensure_ascii=False), content_type=content_type)
+        
+    except Exception as e:
+        error_resp = error_format(f"프롬프트 테스트 중 오류: {str(e)}", 500)
+        return Response(error_resp, content_type=content_type)
+
+# --------------------- 프롬프트 스트리밍 테스트 엔드포인트 ----------------------------
+@app.route("/test_prompt_stream", methods=["POST"])
+def test_prompt_stream():
+    """
+    새 프롬프트를 스트리밍 방식으로 테스트하는 API 엔드포인트.
+    
+    필요한 파라미터:
+    - prompt: 테스트할 프롬프트
+    - user_input: 사용자 입력 텍스트
+    - image_data: (선택) 이미지 데이터 (base64 인코딩)
+    """
+    try:
+        # 요청 파라미터 추출
+        body = request.json or {}
+        system_prompt = body.get("prompt", "")
+        user_input = body.get("user_input", "")
+        image_data = body.get("image_data")
+        
+        if not system_prompt:
+            return Response(error_format("프롬프트는 필수입니다.", 400), content_type=content_type)
+            
+        print(f"[DEBUG] /test_prompt_stream called with prompt length={len(system_prompt)}, user_input='{user_input[:50]}...' and image={image_data is not None}")
+        
+        # 요청 ID 생성 (SSE 큐 ID로 사용)
+        request_id = str(uuid.uuid4())
+        
+        # SSE 큐 생성
+        ray.get(sse_manager.create_queue.remote(request_id))
+        
+        # Ray Serve를 통한 스트리밍 프롬프트 테스트 호출
+        response = inference_handle.test_prompt_stream.remote(system_prompt, user_input, image_data, request_id)
+        obj_ref = response._to_object_ref_sync()
+        chat_id = ray.get(obj_ref)
+        
+        def sse_generator():
+            try:
+                while True:
+                    # SSEQueueManager에서 토큰을 가져옴
+                    token = ray.get(sse_manager.get_token.remote(chat_id, 120))
+                    if token is None or token == "[[STREAM_DONE]]":
+                        break
+                    yield f"data: {token}\n\n"
+            except Exception as e:
+                error_token = json.dumps({"type": "error", "message": str(e)})
+                yield f"data: {error_token}\n\n"
+            finally:
+                try:
+                    ray.get(sse_manager.delete_queue.remote(chat_id))
+                except Exception as ex:
+                    print(f"[DEBUG] Error closing SSE queue for {chat_id}: {str(ex)}")
+                print("[DEBUG] SSE closed.")
+
+        return Response(sse_generator(), mimetype="text/event-stream")
+        
+    except Exception as e:
+        error_resp = error_format(f"프롬프트 스트리밍 테스트 중 오류: {str(e)}", 500)
+        return Response(error_resp, content_type=content_type)
+
 # Flask app 실행
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
+    
+    

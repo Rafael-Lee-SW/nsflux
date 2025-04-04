@@ -90,6 +90,12 @@ from .SQL_NS import (
     get_metadata,
 )
 
+# Image Processing 모듈 - 새로운 프롬프트 테스트를 위한
+from .prompt_test import (
+    test_prompt_with_image,
+    test_prompt_streaming,
+)
+
 __all__ = [
     # RAG 모듈 관련 함수들
     "execute_rag",
@@ -138,4 +144,8 @@ __all__ = [
     "make_metadata_from_table",
     "run_sql_unno",
     "get_metadata",
+    
+    # 새로운 프롬프트 테스트
+    "test_prompt_with_image",
+    "test_prompt_streaming",
 ]
