@@ -108,3 +108,57 @@ workspace
 └─ vectorize.ipynb
 
 ```
+```
+workspace
+├─ .dockerignore
+├─ app.py
+├─ config.yaml
+├─ core
+│  ├─ generation.py
+│  ├─ image_processing.py
+│  ├─ pdf_processor.py
+│  ├─ prompt_test.py
+│  ├─ RAG.py
+│  ├─ retrieval.py
+│  ├─ sql.py
+│  ├─ SQL_NS.py
+│  ├─ sql_processing.py
+│  └─ __init__.py
+├─ Dockerfile
+├─ prompt
+│  ├─ prompt_rag.py
+│  ├─ prompt_sql.py
+│  └─ __init__.py
+├─ ray_deploy
+│  ├─ langchain.py
+│  ├─ ray_setup.py
+│  ├─ ray_utils.py
+│  ├─ sse_manager.py
+│  └─ __init__.py
+├─ README.md
+├─ requirements.txt
+├─ save_utils.py
+├─ static
+│  ├─ chat_styles.css
+│  ├─ NS_LOGO_ONLY.svg
+│  ├─ test_set.js
+│  └─ test_styles.css
+├─ templates
+│  ├─ chatroom.html
+│  ├─ index.html
+│  ├─ index_socket.html
+│  ├─ index_SSE.html
+│  ├─ index_test.html
+│  └─ index_test_streaming.html
+├─ utils
+│  ├─ debug_tracking.py
+│  ├─ logger_config.py
+│  ├─ summarizer.py
+│  ├─ tracking.py
+│  ├─ utils_format.py
+│  ├─ utils_load.py
+│  ├─ utils_vector.py
+│  └─ __init__.py
+└─ vectorize.ipynb
+
+```
