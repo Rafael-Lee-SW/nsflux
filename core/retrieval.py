@@ -76,12 +76,12 @@ def retrieve(
             # 문서 텍스트 컨텐츠 구성
             documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}, , Score: {score_str}\n"
             
-            # 문서 메타데이터 구성
+            # 문서 메타데이터 구성 - RAG 서비스 API 형식에 맞게 수정
             documents_list.append({
                 "file_name": data["file_names"][index],
                 "title": data["titles"][index],
-                "contents": data["texts_vis"][index],
-                "chunk_id": data["chunk_ids"][index],
+                "contents": data["texts_vis"][index],  # 리스트 형태로 유지
+                "chunk_id": data["chunk_ids"][index],  # 정수 형태로 유지
             })
         
         logger.info("검색 완료: %d개 문서 반환", len(documents_list))

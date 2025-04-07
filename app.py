@@ -159,12 +159,15 @@ import asyncio
 import time
 
 # Configuration
-import yaml
-from box import Box
-with open("./config.yaml", "r") as f:
-    config_yaml = yaml.load(f, Loader=yaml.FullLoader)
-    config = Box(config_yaml)
+from config import config
 random_seed(config.seed)
+
+# RAG 서비스 URL 설정이 없는 경우 기본값 설정
+if not hasattr(config, 'rag_service_url'):
+    config.rag_service_url = "http://localhost:8000"
+    logging.info(f"RAG 서비스 URL이 설정되지 않았습니다. 기본값 '{config.rag_service_url}'을 사용합니다.")
+else:
+    logging.info(f"RAG 서비스 URL: {config.rag_service_url}")
 
 ########## Ray Dashboard 8265 port ##########
 init_ray()  # Initialize the Ray

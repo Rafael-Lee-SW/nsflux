@@ -5,6 +5,9 @@ model_id : 'google/gemma-3-27b-it'
 response_url : "http://202.20.84.16:8083/responseToUI"
 # response_url : "https://eo5smhcazmp1bqe.m.pipedream.net"
 
+### RAG Service
+rag_service_url : "http://150.136.90.210:8000"  # RAG 서비스 URL
+
 ### ray
 ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)

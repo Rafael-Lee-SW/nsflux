@@ -20,6 +20,8 @@ import logging
 import re
 import uuid
 from typing import Dict, List, Tuple, Any, Optional, Union, Generator
+import httpx
+from config import config
 
 # 내부 모듈 임포트
 from core.retrieval import retrieve, expand_time_range_if_needed
@@ -57,6 +59,11 @@ logger = logging.getLogger("RAG")
 # 글로벌 구분자
 SECTION_SEPARATOR = "-" * 100
 
+# RAG 서비스 API 호출 설정
+RAG_API_TIMEOUT = 60.0  # 타임아웃 시간 (초)
+RAG_API_MAX_RETRIES = 3  # 최대 재시도 횟수
+RAG_API_RETRY_DELAY = 1.0  # 재시도 간 대기 시간 (초)
+
 @time_tracker
 async def execute_rag(
     query: str, 
@@ -83,9 +90,6 @@ async def execute_rag(
     # 필수 파라미터 추출
     model = kwargs.get("model")
     tokenizer = kwargs.get("tokenizer")
-    embed_model = kwargs.get("embed_model")
-    embed_tokenizer = kwargs.get("embed_tokenizer")
-    data = kwargs.get("data")
     config = kwargs.get("config")
     
     # 테이블 필요 여부 확인
@@ -113,10 +117,20 @@ async def execute_rag(
                 f"실제 선적된 B/L 데이터: {str(detailed_result)}\n\n"
             )
             
-            # 결과 메타데이터 구성
+            # 결과 메타데이터 구성 - RAG 서비스 API 형식에 맞게 수정
             docs_list = [
-                {"title": title, "data": table_json},
-                {"title": "DG B/L 상세 정보", "data": detailed_result},
+                {
+                    "file_name": "SQL_Result",
+                    "title": title,
+                    "contents": [{"data": table_json}],
+                    "chunk_id": 0
+                },
+                {
+                    "file_name": "B/L_Detail",
+                    "title": "DG B/L 상세 정보",
+                    "contents": [{"data": detailed_result}],
+                    "chunk_id": 1
+                }
             ]
             
             logger.info("테이블 데이터 처리 완료")
@@ -130,20 +144,54 @@ async def execute_rag(
     else:
         logger.info("표준 검색 실행: 키워드='%s', 시간 범위='%s'", keywords, time_range)
         
-        # 적응형 시간 필터링 적용
-        filtered_data = expand_time_range_if_needed(time_range, data, min_docs=50)
+        # RAG 서비스 API 호출 (재시도 로직 포함)
+        retry_count = 0
+        last_error = None
         
-        # 문서 검색 실행
-        logger.info("검색에 사용되는 문서 수: %d", len(filtered_data.get("vectors", [])))
-        docs, docs_list = retrieve(
-            keywords, 
-            filtered_data, 
-            config.N, 
-            embed_model, 
-            embed_tokenizer
-        )
+        while retry_count < RAG_API_MAX_RETRIES:
+            try:
+                # 타임아웃 설정이 포함된 클라이언트 생성
+                async with httpx.AsyncClient(timeout=RAG_API_TIMEOUT) as client:
+                    logger.info(f"RAG 서비스 API 호출 시도 {retry_count + 1}/{RAG_API_MAX_RETRIES}")
+                    response = await client.post(
+                        f"{config.rag_service_url}/api/retrieve",
+                        json={
+                            "query": keywords,
+                            "top_n": config.N,
+                            "time_bound": time_range,
+                            "min_docs": 50
+                        }
+                    )
+                    
+                    if response.status_code != 200:
+                        logger.error(f"RAG 서비스 API 오류: {response.status_code} - {response.text}")
+                        return "검색 서비스에 연결할 수 없습니다.", []
+                    
+                    # 응답 파싱
+                    result = response.json()
+                    docs = result.get("documents", "")
+                    docs_list = result.get("documents_list", [])
+                    
+                    logger.info(f"RAG 서비스 API 응답: {len(docs_list)}개 문서 검색됨")
+                    return docs, docs_list
+                    
+            except httpx.ReadTimeout as e:
+                last_error = e
+                retry_count += 1
+                logger.warning(f"RAG 서비스 API 타임아웃 (시도 {retry_count}/{RAG_API_MAX_RETRIES}): {str(e)}")
+                if retry_count < RAG_API_MAX_RETRIES:
+                    await asyncio.sleep(RAG_API_RETRY_DELAY)
+                continue
+                
+            except Exception as e:
+                last_error = e
+                logger.error(f"RAG 서비스 API 호출 중 오류 발생: {str(e)}", exc_info=True)
+                break
         
-        return docs, docs_list
+        # 모든 재시도 실패 또는 기타 오류 발생
+        error_msg = f"검색 서비스에 연결할 수 없습니다. 오류: {str(last_error)}"
+        logger.error(error_msg)
+        return error_msg, []
 
 @time_tracker
 async def generate_answer(
