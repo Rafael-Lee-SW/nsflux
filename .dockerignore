@@ -24,6 +24,12 @@ dist/
 *.tmp
 
 # If you have any large data or model files that are not needed in build context, ignore them
-# data/
+data/
 models/
 logs/
+
+# rag-service
+rag-service/
+
+# frontend
+frontend/

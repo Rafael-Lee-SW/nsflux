@@ -1,0 +1,21 @@
+fastapi==0.104.1
+uvicorn==0.23.2
+pydantic==1.10.7
+numpy==1.24.3
+torch==2.1.0
+transformers==4.50.0
+rank-bm25==0.2.2
+python-dotenv==1.0.0
+httpx==0.25.0
+python-multipart==0.0.6
+tqdm==4.66.1
+loguru==0.7.2
+asyncio==3.4.3
+
+# New requirements for optimization
+ray[serve]==2.7.1
+onnx==1.14.1
+onnxruntime-gpu==1.16.3  # Use onnxruntime if no GPU
+optimum==1.16.1  # Hugging Face Optimum for easy ONNX conversion
+sentence-transformers==2.2.2  # Optimized for embedding tasks 
+pydantic==1.10.7
