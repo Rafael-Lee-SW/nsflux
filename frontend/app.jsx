@@ -1,1 +1,0 @@
-// It will be created as a Next.js application later on but not now.
