@@ -1,0 +1,1 @@
+THis is the shared folder that to achieve the goal of MCP so that all the common API and protocol are being matched with this standard.

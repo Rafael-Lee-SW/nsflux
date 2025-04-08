@@ -54,7 +54,9 @@ class InferenceActor:
         
         # 성능 모니터 초기화 (Ray 액터 내부에서)
         from utils.debug_tracking import get_performance_monitor, print_memory_usage
+        print("[INIT] Before getting performance monitor")
         self.performance_monitor = get_performance_monitor()
+        print("[INIT] After getting performance monitor")
         
         # 초기 메모리 사용량 로깅
         print_memory_usage("InferenceActor 초기화 시작")

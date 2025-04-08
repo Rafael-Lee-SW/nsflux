@@ -13,56 +13,54 @@ import httpx
 import torch
 import ray
 from contextlib import asynccontextmanager
-from transformers import AutoTokenizer, AutoModel
 from config import settings
 from utils import load_data, random_seed
 from retrieval import retrieve, sort_by_time, expand_time_range_if_needed
+
+# Conditional imports based on settings
+if settings.USE_ONNX:
+    from optimized_model import ONNXEmbeddingModel as EmbeddingModel
+else:
+    from model import EmbeddingModel
 
 # 환경 변수 로드
 load_dotenv()
 
 # 전역 변수로 모델과 데이터 저장
 model = None
-tokenizer = None
 data = None
 embedding_cache = {}
 
 # 모델 초기화 함수
 def initialize_model():
-    global model, tokenizer
+    global model
     try:
-        logger.info("모델 다운로드 시작...")
-        model_name = settings.MODEL_NAME
+        logger.info("모델 초기화 시작...")
         
-        # 토크나이저와 모델 로드
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
+        # 임베딩 모델 생성
+        model = EmbeddingModel(
+            model_id=settings.MODEL_NAME,
             cache_dir=settings.CACHE_DIR,
-            trust_remote_code=True
-        )
-        model = AutoModel.from_pretrained(
-            model_name,
-            cache_dir=settings.CACHE_DIR,
-            trust_remote_code=True
+            batch_size=settings.BATCH_SIZE,
+            max_workers=settings.MAX_WORKERS
         )
         
-        # GPU 사용 설정
-        if torch.cuda.is_available():
-            model = model.to('cuda')
-            logger.info("GPU 사용 설정 완료")
+        # 모델 로드
+        if model.load():
+            logger.info("모델 초기화 완료")
+            return True
         else:
-            logger.info("CPU 사용 설정 완료")
+            logger.error("모델 로드 실패")
+            return False
             
-        logger.info("모델 초기화 완료")
-        
     except Exception as e:
         logger.error(f"모델 초기화 중 오류 발생: {str(e)}")
-        raise
+        return False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """서비스 시작 및 종료 시 실행되는 lifespan 이벤트 핸들러"""
-    global model, tokenizer, data
+    global model, data
     
     # 서비스 시작 시 초기화 작업 수행
     try:
@@ -72,35 +70,45 @@ async def lifespan(app: FastAPI):
         # Ray 초기화 (설정에 따라 조건부 실행)
         if settings.USE_RAY:
             if not ray.is_initialized():
-                ray.init(
-                    address=settings.RAY_ADDRESS,
-                    num_cpus=settings.RAY_NUM_CPUS,
-                    num_gpus=settings.RAY_NUM_GPUS if settings.RAY_NUM_GPUS > 0 else None,
-                    ignore_reinit_error=True
-                )
-                logger.info(f"Ray initialized with {settings.RAY_NUM_CPUS} CPUs and {settings.RAY_NUM_GPUS} GPUs")
+                try:
+                    ray.init(
+                        address=settings.RAY_ADDRESS,
+                        num_cpus=settings.RAY_NUM_CPUS,
+                        num_gpus=settings.RAY_NUM_GPUS if settings.RAY_NUM_GPUS > 0 else None,
+                        ignore_reinit_error=True
+                    )
+                    logger.info(f"Ray initialized with {settings.RAY_NUM_CPUS} CPUs and {settings.RAY_NUM_GPUS} GPUs")
+                except Exception as e:
+                    logger.error(f"Ray initialization failed: {e}")
+                    logger.info("Proceeding without Ray")
         else:
             logger.info("Ray 사용 비활성화됨")
         
         # 모델 초기화
-        initialize_model()
+        if not initialize_model():
+            logger.error("Failed to initialize model, service may not function correctly")
         
         # 데이터 로드
         data = load_data(settings.DATA_PATH)
+        if data is None:
+            logger.error(f"Failed to load data from {settings.DATA_PATH}")
         
         logger.info("서비스 초기화 완료")
         
     except Exception as e:
         logger.error(f"서비스 초기화 실패: {str(e)}")
-        raise
+        logger.warning("서비스가 제한된 기능으로 실행됩니다")
     
     yield
     
     # 서비스 종료 시 정리 작업
     logger.info("서비스 종료")
     if settings.USE_RAY and ray.is_initialized():
-        ray.shutdown()
-        logger.info("Ray shut down")
+        try:
+            ray.shutdown()
+            logger.info("Ray shut down")
+        except Exception as e:
+            logger.error(f"Ray shutdown error: {e}")
 
 # FastAPI 앱 초기화
 app = FastAPI(
@@ -112,7 +120,7 @@ app = FastAPI(
 
 class RetrieveRequest(BaseModel):
     query: str
-    top_n: int = 5
+    top_n: int = 10
     time_bound: str = "all"
     min_docs: int = 50
 
@@ -164,12 +172,24 @@ async def retrieve_documents(request: RetrieveRequest):
             data=filtered_data,
             top_n=request.top_n,
             embed_model=model,
-            embed_tokenizer=tokenizer
+            embed_tokenizer=model.tokenizer
         )
+        
+        # Document 객체로 변환
+        formatted_documents = []
+        for doc in documents_list:
+            formatted_documents.append(
+                Document(
+                    file_name=doc["file_name"],
+                    title=doc["title"],
+                    contents=doc["contents"],
+                    chunk_id=doc["chunk_id"]
+                )
+            )
         
         return RetrieveResponse(
             documents=documents,
-            documents_list=documents_list
+            documents_list=formatted_documents
         )
         
     except Exception as e:
@@ -185,4 +205,4 @@ if __name__ == "__main__":
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.DEBUG
-    ) 
+    )

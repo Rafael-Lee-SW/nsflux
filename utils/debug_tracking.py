@@ -13,6 +13,18 @@ import re
 
 # 로거 설정
 logger = logging.getLogger("performance")
+# 로거가 이미 핸들러를 가지고 있지 않은 경우에만 핸들러 추가
+if not logger.handlers:
+    # 콘솔 핸들러 생성
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    # 포매터 설정
+    formatter = logging.Formatter("[%(levelname)s | %(asctime)s | %(name)s] %(message)s", 
+                                datefmt="%Y-%m-%d %H:%M:%S")
+    console_handler.setFormatter(formatter)
+    # 로거에 핸들러 추가
+    logger.addHandler(console_handler)
+    logger.setLevel(logging.INFO)
 
 
 class PerformanceMonitor:

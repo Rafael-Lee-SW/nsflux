@@ -1,21 +1,22 @@
-fastapi==0.104.1
-uvicorn==0.23.2
-pydantic==1.10.7
-numpy==1.24.3
-torch==2.1.0
-transformers==4.50.0
+fastapi==0.115.12
+uvicorn==0.34.0
+pydantic-settings==2.8.1
+pydantic==2.11.2
+numpy==1.26.4
+torch==2.6.0
+transformers==4.51.0
 rank-bm25==0.2.2
-python-dotenv==1.0.0
-httpx==0.25.0
-python-multipart==0.0.6
-tqdm==4.66.1
-loguru==0.7.2
+python-dotenv==1.0.1
+httpx==0.28.1
+python-multipart==0.0.20
+tqdm==4.67.1
+loguru==0.7.3
 asyncio==3.4.3
 
-# New requirements for optimization
-ray[serve]==2.7.1
-onnx==1.14.1
-onnxruntime-gpu==1.16.3  # Use onnxruntime if no GPU
-optimum==1.16.1  # Hugging Face Optimum for easy ONNX conversion
-sentence-transformers==2.2.2  # Optimized for embedding tasks 
-pydantic==1.10.7
+# Optimization dependencies
+ray[serve]==2.43.0
+onnx==1.17.0
+onnxruntime-gpu==1.21.0  # Use onnxruntime if no GPU
+optimum==1.24.0  # Hugging Face Optimum for easy ONNX conversion
+sentence-transformers==4.0.2  # Optimized for embedding tasks 
+vllm==0.8.3

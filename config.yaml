@@ -66,7 +66,7 @@ metadata_unno : '/workspace/data/METADATA_OPRAIMDG.json'
 sql_data_path : '/workspace/data/poc.db'        # SQLite 데이터베이스 Path
 
 ### Retrieve
-N : 5 # Retrieve top N chunks
+N : 10 # Retrieve top N chunks
 
 ### Others
 beep : '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'

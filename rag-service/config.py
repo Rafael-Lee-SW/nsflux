@@ -5,6 +5,8 @@ import os
 class Settings(BaseSettings):
     # 모델 설정
     MODEL_NAME: str = "Linq-AI-Research/Linq-Embed-Mistral"
+    USE_ONNX: bool = False
+    ONNX_MODEL_PATH: str = "./models/onnx"
     
     # 서버 설정
     HOST: str = "0.0.0.0"
@@ -12,11 +14,12 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     
     # 데이터 설정
-    DATA_PATH: str = "data/0404_Mistral_DB.json"
+    DATA_PATH: str = "./data/0404_Mistral_DB.json"
     MIN_DOCS: int = 50
     
     # 캐시 설정
     CACHE_DIR: str = "cache"
+    HF_TOKEN_PATH: str = "/root/.cache/huggingface/token"
     
     # 멀티프로세싱 설정
     MAX_WORKERS: int = 4
@@ -38,4 +41,4 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # 캐시 디렉토리 생성
-os.makedirs(settings.CACHE_DIR, exist_ok=True) 
+os.makedirs(settings.CACHE_DIR, exist_ok=True)
