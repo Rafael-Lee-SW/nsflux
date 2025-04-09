@@ -1158,18 +1158,27 @@
         updateAIStreamingMessage(errMsg);
         finalizeAIMessage(errMsg, originalRequestId);
       } finally {
-        welcomeImgInput.value = '';
-        document.getElementById('welcomeImagePreview').innerHTML = '';
-        document.getElementById('welcomeImagePreview').classList.remove('has-image');
-        
-        // When streaming completes naturally
-        resetButtonToSendButton();
-        isProcessing = false;
-        
-        // Update streaming flag
-        if (chatRoomsData[originalRequestId]) {
-          chatRoomsData[originalRequestId].isStreaming = false;
+        if (welcomeImgInput) {
+          welcomeImgInput.value = '';
         }
+        
+        const welcomeImagePreview = document.getElementById('welcomeImagePreview');
+        if (welcomeImagePreview) {
+          welcomeImagePreview.innerHTML = '';
+          welcomeImagePreview.classList.remove('has-image');
+        }
+        
+        // 첫 대화 후 환영 화면이 사라지고 채팅 UI로 전환되므로, 
+        // setTimeout을 사용하여 DOM이 업데이트된 후 버튼 상태를 변경합니다.
+        setTimeout(() => {
+          resetButtonToSendButton();
+          isProcessing = false;
+          
+          // Update streaming flag
+          if (chatRoomsData[originalRequestId]) {
+            chatRoomsData[originalRequestId].isStreaming = false;
+          }
+        }, 100);
       }
 
       // Welcome 화면 숨기고 값 넘기기
@@ -1875,6 +1884,7 @@
 
     // Function to reset button back to send button
     function resetButtonToSendButton() {
+      // 일반 채팅 화면의 전송 버튼
       const sendButton = document.getElementById("sendButton");
       if (sendButton) {
         sendButton.innerHTML = `
@@ -1887,10 +1897,13 @@
         `;
         sendButton.classList.remove("stop-btn");
         sendButton.disabled = false;
+        
+        // 기존 이벤트 리스너 제거 후 새로 할당
+        sendButton.onclick = null;
         sendButton.onclick = sendMessage;
       }
       
-      // Reset welcome button too if it exists
+      // welcome 화면의 전송 버튼
       const welcomeSendButton = document.getElementById("welcomeSendButton");
       if (welcomeSendButton) {
         welcomeSendButton.innerHTML = `
@@ -1902,6 +1915,9 @@
           </svg>
         `;
         welcomeSendButton.classList.remove("stop-btn");
+        
+        // 기존 이벤트 리스너 제거 후 새로 할당
+        welcomeSendButton.onclick = null;
         welcomeSendButton.onclick = sendWelcomeMessage;
       }
     }
