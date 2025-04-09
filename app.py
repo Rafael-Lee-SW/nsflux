@@ -83,6 +83,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 import sys
 
+# 기본은 INFO
+logging.basicConfig(level=logging.INFO)
 
 # 글로벌 로깅 설정
 # app.py 로깅 설정 수정
@@ -96,6 +98,7 @@ def setup_logging():
     # 루트 로거 설정
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
+    root_logger.isEnabledFor(logging.INFO)
 
     # 기존 핸들러 제거 (중복 방지)
     for handler in root_logger.handlers[:]:
@@ -184,6 +187,7 @@ else:
 
 ########## Ray Dashboard 8265 port ##########
 init_ray()  # Initialize the Ray
+
 sse_manager = SSEQueueManager.options(name="SSEQueueManager").remote()
 serve.start(detached=True)
 
@@ -709,6 +713,29 @@ def test_prompt_stream():
     except Exception as e:
         error_resp = error_format(f"프롬프트 스트리밍 테스트 중 오류: {str(e)}", 500)
         return Response(error_resp, content_type=content_type)
+
+#  Flask 라우트들 아래에 추가 (stream 부분 이후 아무 곳이나 OK)
+@app.route("/metrics", methods=["GET"])
+async def get_metrics():
+    try:
+        snapshot = await inference_handle.metrics.remote()
+        return Response(json.dumps(snapshot, ensure_ascii=False),
+                        content_type="application/json; charset=utf-8")
+    except Exception as e:
+        return Response(json.dumps({"error": str(e)}, ensure_ascii=False),
+                        status=500,
+                        content_type="application/json; charset=utf-8")
+
+@app.route("/global_metrics")
+def global_metrics():
+    try:
+        coll = ray.get_actor("MetricsCollector")
+        data = ray.get(coll.dump_global.remote())
+        return Response(json.dumps(data, ensure_ascii=False),
+                        content_type="application/json; charset=utf-8")
+    except Exception as e:
+        return Response(json.dumps({"error": str(e)}, ensure_ascii=False),
+                        status=500, content_type="application/json; charset=utf-8")
 
 
 # Flask app 실행

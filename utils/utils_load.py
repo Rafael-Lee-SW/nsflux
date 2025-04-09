@@ -1,10 +1,18 @@
 # utils/utils_load.py
 import json
-import numpy as np
+import os
+import logging
+import time
 import torch
+import numpy as np
+import gzip
+import builtins
+import glob
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
+import re
 import random
 import shutil
-from datetime import datetime, timedelta
 from transformers import (
     AutoModel,
     AutoTokenizer,
@@ -13,24 +21,24 @@ from transformers import (
     AutoConfig,
 )
 
-import os
-
-# 전역 캐시 변수 - 데이터의 변화를 감지하기 위한
-_cached_data = None
-_cached_data_mtime = 0
-
 # Import vLLM utilities
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 
-# Define the minimum valid file size (e.g., 10MB)
-MIN_WEIGHT_SIZE = 10 * 1024 * 1024
+# Globals
+_cached_data = None  # 벡터 DB 데이터 캐싱
+_cached_data_mtime = 0  # 캐시 유효성 확인용 수정 시간
+
+# PyTorch 모델 파일 최소 크기 (fallback 용)
+MIN_WEIGHT_SIZE = 10 * 1024 * 1024  # 10MB
 
 # For tracking execution time of functions
 from utils.tracking import time_tracker
-
+# For logging system
+from utils.log_system import MetricsManager
 # Logging
-import logging
+logging.basicConfig(level=logging.INFO)
+
 # -------------------------------------------------
 # Function: find_weight_directory - 허깅페이스 권한 문제 해결 후에 잘 사용되지 아니함
 # -------------------------------------------------
@@ -257,6 +265,8 @@ def load_model(config):
         # engine_args.observability_config = observability_config
     
         # engine_args.show_hidden_metrics_for_version = "0.7"
+        
+        engine_args.disable_log_stats = False
     
         print("EngineArgs setting be finished")
         

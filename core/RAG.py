@@ -50,9 +50,6 @@ from vllm import SamplingParams
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.model_executor.models.interfaces import SupportsMultiModal
 
-# Tracking
-from utils.debug_tracking import get_performance_monitor
-
 # 로깅 설정
 logger = logging.getLogger("RAG")
 
@@ -412,16 +409,6 @@ async def generate_answer_stream(
             generate_request = await prepare_multimodal_request(prompt, pil_image, config.model_id, tokenizer)
         else:
             generate_request = prompt
-        
-        # 성능 모니터링 위한 초기화
-        from utils.debug_tracking import get_performance_monitor
-        perf_monitor = get_performance_monitor()
-        if request_id:
-            perf_monitor.update_request(
-                request_id, 0, 
-                checkpoint="start_vllm_generation",
-                current_output=""
-            )
         
         # 스트리밍 생성
         async for partial_chunk in collect_vllm_text_stream(generate_request, model, sampling_params, request_id):

@@ -11,8 +11,8 @@ rag_service_url : "http://150.136.90.210:8000"  # RAG 서비스 URL
 ### ray
 ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)
-  num_gpus: 2                     # 각 Actor(Node)가 점유하고 있는 GPU 갯수
-  num_cpus: 48                    # 각 Actor(Node)가 점유하고 있는 CPU 갯수 (1 actor 시에 gpu 48개, 2 actor 시에 gpu 24개 할당)
+  num_gpus: 1                     # 각 Actor(Node)가 점유하고 있는 GPU 갯수
+  num_cpus: 24                    # 각 Actor(Node)가 점유하고 있는 CPU 갯수 (1 actor 시에 gpu 48개, 2 actor 시에 gpu 24개 할당)
   max_batch_size: 10               # max_concurrency(actor 최대 동시 처리량, default 1000)로 대체해도 됨
   batch_wait_timeout: 0.05        
   max_ongoing_requests: 100       # ray.serve에서 deployment setting으로 동시 요청 처리 갯수를 의미함(Batch랑 다름)
@@ -23,7 +23,7 @@ vllm:
   enable_prefix_caching: True
   scheduler_delay_factor: 0.1
   enable_chunked_prefill: True
-  tensor_parallel_size: 2         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
+  tensor_parallel_size: 1         # vLLM의 GPU 사용 갯수 (!!!! num_gpus 보다 작아야 함 !!!!)
   max_num_seqs: 128               # v1에 따른 상향
   max_num_batched_tokens: 34000   # v1에 따른 상향
   block_size: 128                 # 미적용

@@ -29,6 +29,7 @@ from utils import (
     error_format,
 )
 from utils.summarizer import summarize_conversation
+from utils.log_system import MetricsManager
 # Langchain Memory system
 from ray_deploy.langchain import CustomConversationBufferMemory, serialize_message
 
@@ -46,20 +47,12 @@ with open("./config.yaml", "r") as f:
 
 @ray.remote  # From Decorator, Each Actor is allocated 1 GPU
 class InferenceActor:
-    def __init__(self, config):
+    def __init__(self, config, metrics_collector=None):
         """
         InferenceActor 초기화: 모델, 토크나이저, 데이터 로드 및 배치 처리 설정
         """
         self.config = config
-        
-        # 성능 모니터 초기화 (Ray 액터 내부에서)
-        from utils.debug_tracking import get_performance_monitor, print_memory_usage
-        print("[INIT] Before getting performance monitor")
-        self.performance_monitor = get_performance_monitor()
-        print("[INIT] After getting performance monitor")
-        
-        # 초기 메모리 사용량 로깅
-        print_memory_usage("InferenceActor 초기화 시작")
+        self.metrics_collector = metrics_collector
         
         # 액터 내부에서 모델 및 토크나이저를 새로 로드 (GPU에 한 번만 로드)
         self.model, self.tokenizer, self.embed_model, self.embed_tokenizer = load_model(
@@ -80,7 +73,6 @@ class InferenceActor:
         # --- SSE Queue Manager --- 
         self.queue_manager = ray.get_actor("SSEQueueManager")
 
-
         # --- 기타 설정 ---
         # 활성 작업 추적을 위한 변수 추가
         self.batch_counter = 0  # New counter to track batches
@@ -95,6 +87,30 @@ class InferenceActor:
         # 연속 배치 처리기 시작 (Continuous batch)
         asyncio.create_task(self.continuous_batch_processor())
         
+        # MetricsManager 초기화 (더 안전하게)
+        try:
+            # 각 액터마다 자체 인스턴스 생성
+            self.metrics = MetricsManager()
+            # 엔진 설정
+            self.metrics.set_engine(self.model)
+            
+            # 현재 이벤트 루프 가져와서 메트릭스 매니저 시작
+            loop = asyncio.get_event_loop()
+            self.metrics.start(loop)
+            
+            # 메트릭스 동기화 태스크 시작 (metrics_collector가 있는 경우)
+            if self.metrics_collector is not None:
+                asyncio.create_task(self._sync_metrics_with_collector())
+        except Exception as e:
+            logging.error(f"메트릭스 초기화 실패: {e}")
+            # 오류 발생 시 더미 메트릭스 매니저 사용
+            class DummyMetrics:
+                def start_request(self, *args, **kwargs): pass
+                def first_token(self, *args, **kwargs): pass
+                def update_tokens(self, *args, **kwargs): pass
+                def finish_request(self, *args, **kwargs): pass
+            self.metrics = DummyMetrics()
+            
     # -------------------------------------------------------------------------
     # GET MEMORY FOR SESSION - 세션별 메모리 관리
     # -------------------------------------------------------------------------
@@ -524,27 +540,33 @@ class InferenceActor:
         # 요청 ID가 없으면 생성 (성능 모니터링용)
         if not request_id:
             request_id = str(uuid.uuid4())
-        
+            
         # 사용자 입력 추출
         user_input = http_query.get("qry_contents", "")
         logger.info(f"사용자 입력: {user_input}")
         
-        # 성능 모니터링 시작 - 요청별 트래킹 시작
-        self.performance_monitor.start_request(request_id, input_text=user_input, tokenizer=self.tokenizer)
-        self.performance_monitor.update_request(request_id, 0, checkpoint="query_received")
+        # RAG 사용 여부 확인
+        use_rag = http_query.get("use_rag", True)
+        
+        # 이미지 데이터 확인
+        image_data = http_query.get("image_data")
         
         try:
-            # RAG 사용 여부 확인
-            use_rag = http_query.get("use_rag", True)
+            # request_id 결정 후 - metrics 에 요청 시작 정보 전달
+            self.metrics.start_request(
+                request_id,
+                user_input,
+                rag=use_rag,
+                image=bool(image_data),
+                sql=False  # 나중에 테이블 쿼리면 True 로 다시 호출해도 됨
+            )
             
             if use_rag is False:
                 logger.info("RAG 비활성화 모드로 실행")
-                self.performance_monitor.update_request(request_id, 0, checkpoint="rag_disabled")
                 await self._process_direct_query(user_input, request_id, future, http_query)
             else:
                 # 이미지 처리 (있는 경우)
                 image_description = await self._process_image_if_exists(http_query)
-                self.performance_monitor.update_request(request_id, 0, checkpoint="image_processed")
                 
                 # RAG 활용 응답 생성
                 await self._process_rag_query(http_query, user_input, image_description, request_id, is_streaming, future)
@@ -552,9 +574,8 @@ class InferenceActor:
             err_msg = f"처리 중 오류 발생: {str(e)}"
             logger.error(err_msg)
             
-            # 성능 모니터에 오류 기록
-            self.performance_monitor.update_request(request_id, 0, checkpoint=f"error: {str(e)[:50]}")
-            self.performance_monitor.complete_request(request_id, success=False)
+            # 빈 응답으로 요청 종료 처리
+            self.metrics.finish_request(request_id, answer_text="")
             
             # 스트리밍인 경우 에러 토큰 전송
             if is_streaming:
@@ -572,6 +593,7 @@ class InferenceActor:
         finally:
             # 요청 중지 시에 active_generation 정리
             self.active_generations.discard(request_id)
+
             # 스트리밍 요청인 경우 정리 작업
             if is_streaming:
                 try:
@@ -608,7 +630,6 @@ class InferenceActor:
         stream_start_time = time.time()
         token_count = 0
         first_token_received = False
-        self.performance_monitor.update_request(request_id, 0, checkpoint="stream_start")
 
         try:
             # 1. 참조 데이터 전송
@@ -623,8 +644,6 @@ class InferenceActor:
                 }, ensure_ascii=False)
                 await self.queue_manager.put_token.remote(request_id, reference_json)
                 logger.info(f"참조 데이터 전송 완료: request_id={request_id}")
-                self.performance_monitor.update_request(request_id, 0, checkpoint="reference_sent")
-
             
             # 2. 메모리 가져오기
             memory = self.get_memory_for_session(request_id)
@@ -642,11 +661,6 @@ class InferenceActor:
             retrieval_tokens = self.tokenizer.tokenize(retrieval_str)
             total_tokens = len(self.tokenizer.tokenize(str(final_query))) + len(retrieval_tokens)
             logger.info(f"토큰 수: 이전 대화={len(past_tokens)}, 검색 자료={len(retrieval_tokens)}, 질문={len(query_tokens)}, 총={total_tokens}")
-            
-            self.performance_monitor.update_request(
-                request_id, 0, 
-                checkpoint=f"prompt_ready (total_tokens={total_tokens})"
-            )
                 
             # 5. 스트리밍 응답 생성 및 전송
             partial_accumulator = ""
@@ -667,12 +681,17 @@ class InferenceActor:
                 current_tokens = len(partial_accumulator.split())
                 token_count = current_tokens
                 
-                # 첫 토큰 도착 확인 (StreamingTokenCounter에서 성능 모니터에 이미 기록했을 수 있음)
+                # 첫 토큰 도착 확인
                 current_time = time.time()
                 if not first_token_received and token_count > 0:
                     first_token_latency = current_time - stream_start_time
                     first_token_received = True
                     logger.info(f"첫 토큰 생성: {request_id} (latency: {first_token_latency:.3f}s)")
+                    # 첫 토큰 생성 시간 기록
+                    self.metrics.first_token(request_id)
+                
+                # 토큰 업데이트
+                self.metrics.update_tokens(request_id, token_count)
                 
                 # 응답 토큰 JSON 형식으로 포장하여 전송
                 answer_json = json.dumps({
@@ -685,37 +704,44 @@ class InferenceActor:
             generation_time = time.time() - stream_start_time
             tokens_per_second = token_count / generation_time if generation_time > 0 else 0
             
-            # 최종 성능 지표 업데이트
-            self.performance_monitor.update_request(
-                request_id, token_count,
-                current_output=partial_accumulator,
-                checkpoint=f"generation_complete ({generation_time:.2f}s, {tokens_per_second:.2f} tokens/s, {token_count} tokens)"
-            )
-            
-            # 6. 최종 축적된 텍스트
+            # 최종 축적된 텍스트
             final_text = partial_accumulator
             
-            # 7. 대화 저장
+            # 대화 저장
             chunk_ids = self._extract_chunk_ids(retrieval) if retrieval else []
             await self._store_conversation(memory, user_input, final_text, chunk_ids, http_query)
             
-            # 8. 최종 응답 구조 생성
+            # 최종 응답 구조 생성
             if chart is not None:
                 ans = process_to_format([final_text, chart], type="Answer")
             else:
                 ans = process_to_format([final_text], type="Answer")
                 
-            # 9. 결과 설정 및 스트리밍 종료 신호 전송
+            # 결과 설정 및 스트리밍 종료 신호 전송
             final_res = process_format_to_response([retrieval, ans] if retrieval else [ans], qry_id=http_query.get("qry_id", ""), continue_="E")
             future.set_result(final_res)
             
             # 요청 완료 처리 - 성공
-            self.performance_monitor.complete_request(request_id, success=True)
+            self.metrics.finish_request(request_id, final_text)
             
             logger.info(f"스트리밍 응답 완료: request_id={request_id}")
             
             # At the end, when generation completes naturally
             self.active_generations.discard(request_id)
+            
+            # ★ 전역 수집기에 보고1
+            self.metrics.finish_request(request_id, final_text)
+
+            # ★ 전역 수집기에 보고2
+            if self.metrics_collector is not None:
+                try:
+                    await self.metrics_collector.register_actor_request.remote(
+                        self.actor_id,            # ← __init__ 에서 만든 고유 ID
+                        self.metrics.dump_state()["recent_finished"][-1]
+                    )
+                except Exception as e:
+                    logger.warning(f"metrics report failed: {e}")
+            
         except Exception as e:
             err_msg = f"스트리밍 응답 중 오류: {str(e)}"
             
@@ -897,8 +923,8 @@ class InferenceActor:
                 except Exception as e:
                     logger.error(f"Error sending stop tokens: {e}")
                 
-                # 3) PerformanceMonitor에 “이 요청이 종료됨”을 알림
-                self.performance_monitor.complete_request(request_id, success=False)
+                # 3) 중단된 요청 완료 처리 
+                self.metrics.finish_request(request_id, answer_text="[중단됨]")
 
                 # 4) SSE 큐 삭제
                 await self.queue_manager.delete_queue.remote(request_id)
@@ -1002,6 +1028,66 @@ class InferenceActor:
         asyncio.create_task(process_stream())
         
         return request_id
+    
+    # InferenceActor 클래스에 추가할 메서드
+    async def _sync_metrics_with_collector(self):
+        """주기적으로 로컬 지표를 전역 수집기와 동기화합니다."""
+        self.actor_id = f"actor_{id(self)}"  # 각 액터의 고유 ID
+        
+        while True:
+            try:
+                if self.metrics_collector is not None:
+                    # 현재 상태를 가져와서 수집기에 전송
+                    state = self.metrics.dump_state()
+                    
+                    # 완료된 요청을 수집기에 등록
+                    for completed_req in state.get("recent_finished", []):
+                        await self.metrics_collector.register_actor_request.remote(
+                            self.actor_id, completed_req
+                        )
+                    
+                    # 액터 상태 정보 등록
+                    await self.metrics_collector.register_actor_stats.remote(
+                        self.actor_id, state["global"]
+                    )
+            except Exception as e:
+                logging.error(f"지표 동기화 실패: {e}")
+            
+            # 1분마다 동기화
+            await asyncio.sleep(60)
+            
+    # InferenceActor 클래스에 추가할 안전한 지표 메서드
+    def safe_metrics_call(self, method_name, *args, **kwargs):
+        """
+        에러가 전파되지 않도록 지표 메서드를 안전하게 호출합니다.
+        
+        Args:
+            method_name (str): 호출할 MetricsManager 메서드 이름
+            *args, **kwargs: 메서드에 전달할 인자
+        """
+        try:
+            if hasattr(self.metrics, method_name):
+                method = getattr(self.metrics, method_name)
+                if callable(method):
+                    return method(*args, **kwargs)
+        except Exception as e:
+            logging.error(f"metrics.{method_name} 호출 중 오류: {e}")
+        return None
+    
+    # ──────────────────────────────────────────────────────────
+    #   메트릭 스냅샷 반환 (Dashboard / API 용)
+    # ──────────────────────────────────────────────────────────
+    def get_metrics_snapshot(self):
+        return self.metrics.dump_state()
+
+    # 이 메서드를 사용하여 기존 코드의 직접 호출을 대체합니다
+    # 예를 들어, 아래와 같이 수정:
+
+    # 기존:
+    # self.metrics.start_request(request_id, user_input, rag=use_rag, image=bool(image_data))
+
+    # 수정:
+    # self.safe_metrics_call('start_request', request_id, user_input, rag=use_rag, image=bool(image_data))
 
 # -------------------------------------------------------------------------
 # Ray Serve 배포를 위한 서비스 클래스
@@ -1020,10 +1106,18 @@ class InferenceService:
             config: 설정 객체
         """
         self.config = config
+        # metrics_collector 설정
+        try:
+            metrics_collector = ray.get_actor("MetricsCollector")
+        except ValueError:
+            metrics_collector = None
+            logging.warning("MetricsCollector 액터를 찾을 수 없습니다 - 전역 지표가 비활성화됩니다")
+        
+        # metrics_collector를 InferenceActor에 전달
         self.actor = InferenceActor.options(
             num_gpus=config.ray.num_gpus, 
             num_cpus=config.ray.num_cpus
-        ).remote(config)
+        ).remote(config, metrics_collector)
 
     async def query(self, http_query: dict):
         """
@@ -1126,3 +1220,9 @@ class InferenceService:
         """
         req_id = await self.actor.test_prompt_stream.remote(system_prompt, user_text, file_data, file_type, request_id)
         return req_id
+    
+    async def metrics(self):
+        """
+        GET /metrics 에서 호출 – Actor 의 메트릭 스냅샷 반환
+        """
+        return await self.actor.get_metrics_snapshot.remote()
