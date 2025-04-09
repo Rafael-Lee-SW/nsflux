@@ -7,32 +7,44 @@ from loguru import logger
 import asyncio
 from functools import partial
 import ray
+from typing import List, Dict, Any, Tuple, Optional, Set
 
 class ONNXEmbeddingModel:
-    """Optimized embedding model using ONNX Runtime"""
+    """Optimized embedding model using ONNX Runtime with continuous batching"""
     
-    def __init__(self, model_path, batch_size=8, max_workers=4):
+    def __init__(self, model_id, batch_size=8, max_workers=4):
         """
         Initialize the ONNX embedding model
         
         Args:
-            model_path: Path to the ONNX model directory
+            model_id: Path to the ONNX model directory or model ID
             batch_size: Batch size for processing
             max_workers: Maximum number of Ray workers
         """
-        self.model_path = model_path
+        self.model_id = model_id
+        self.model_path = model_id  # For backward compatibility
         self.batch_size = batch_size
         self.max_workers = max_workers
         self.model = None
         self.tokenizer = None
         self.session_options = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.embedding_dim = 768  # Default embedding dimension
+        
+        # 연속 배치 처리 관련 속성
+        self.request_queue = asyncio.Queue()
+        self.active_tasks = set()
+        self.max_concurrent_tasks = batch_size
+        self.batch_processor_task = None
         
         # Configure Ray if not already initialized
         if not ray.is_initialized():
-            ray.init(num_cpus=max_workers)
+            try:
+                ray.init(num_cpus=max_workers, ignore_reinit_error=True)
+            except Exception as e:
+                logger.error(f"Ray 초기화 실패: {e}")
             
-        logger.info(f"ONNX Embedding model initialized: device={self.device}, batch_size={batch_size}")
+        logger.info(f"ONNX Embedding model initialized: device={self.device}, batch_size={batch_size}, max_workers={max_workers}")
     
     def load(self):
         """Load the ONNX model and tokenizer"""
@@ -63,6 +75,18 @@ class ONNXEmbeddingModel:
             if hasattr(self.tokenizer, 'model_max_length'):
                 self.tokenizer.model_max_length = 8192
                 
+            # 임베딩 차원 추출
+            outputs_meta = self.model.get_outputs()
+            if outputs_meta and len(outputs_meta) > 0:
+                # 출력 shape에서 차원 추출
+                output_shape = outputs_meta[0].shape
+                if output_shape and len(output_shape) > 1:
+                    self.embedding_dim = output_shape[-1]  # 마지막 차원이 임베딩 차원
+                    logger.info(f"모델의 임베딩 차원 탐지: {self.embedding_dim}")
+            
+            # 배치 프로세서 시작
+            self.start_batch_processor()
+                
             logger.info("ONNX model and tokenizer loaded successfully")
             return True
             
@@ -70,116 +94,88 @@ class ONNXEmbeddingModel:
             logger.error(f"Failed to load ONNX model: {str(e)}")
             return False
     
-    @ray.remote
-    def _embed_ray(model_path, text, session_options, device):
-        """Ray remote function for parallel embedding"""
-        # Load model within the Ray worker
-        if device == "cuda":
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-        else:
-            providers = ['CPUExecutionProvider']
-            
-        model = ort.InferenceSession(
-            os.path.join(model_path, "model.onnx"),
-            sess_options=session_options,
-            providers=providers
-        )
-        
-        # Load tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        
-        # Tokenize
-        inputs = tokenizer(
-            text, 
-            max_length=4096, 
-            padding="max_length", 
-            truncation=True, 
-            return_tensors="np"
-        )
-        
-        # Run inference
-        outputs = model.run(
-            None, 
-            {
-                "input_ids": inputs["input_ids"],
-                "attention_mask": inputs["attention_mask"]
-            }
-        )
-        
-        # Get embedding from the last hidden state
-        # Assuming outputs[0] is the last hidden state with shape [batch_size, seq_len, hidden_size]
-        embeddings = outputs[0][:, -1, :]  # Get the embedding of the last token
-        
-        return embeddings
+    def start_batch_processor(self):
+        """연속 배치 처리기 시작"""
+        if self.batch_processor_task is None or self.batch_processor_task.done():
+            self.batch_processor_task = asyncio.create_task(self.continuous_batch_processor())
+            logger.info("연속 배치 처리기 시작됨")
     
-    def embed(self, text):
-        """Synchronous embedding"""
-        logger.info(f"Embedding text: '{text}'")
-        
+    # -------------------------------------------------------------------------
+    # CONTINUOUOS BATCH PROCESSOR - 연속 배치 처리
+    # -------------------------------------------------------------------------
+    async def continuous_batch_processor(self):
+        """
+        연속적인 배치 처리 - 최대 max_concurrent_tasks개의 요청이 항상 동시에 처리되도록 함
+        """
+        logger.info(f"연속 배치 처리기 시작: 최대 동시 작업 수={self.max_concurrent_tasks}")
         try:
-            # Tokenize
-            inputs = self.tokenizer(
-                text, 
-                max_length=4096, 
-                padding="max_length", 
-                truncation=True, 
-                return_tensors="np"
-            )
-            
-            # Run inference
-            outputs = self.model.run(
-                None, 
-                {
-                    "input_ids": inputs["input_ids"],
-                    "attention_mask": inputs["attention_mask"]
-                }
-            )
-            
-            # Get embedding from the last hidden state
-            embeddings = outputs[0][:, -1, :]  # Get the embedding of the last token
-            
-            # Convert to tensor for compatibility
-            embeddings_tensor = torch.tensor(embeddings)
-            
-            logger.info("Embedding completed")
-            return embeddings_tensor
-            
+            while True:
+                # 사용 가능한 슬롯 확인
+                available_slots = self.max_concurrent_tasks - len(self.active_tasks)
+                
+                if available_slots > 0:
+                    try:
+                        # 새 요청 받기 (타임아웃 0.01초)
+                        request_obj, fut = await asyncio.wait_for(self.request_queue.get(), timeout=0.01)
+
+                        # 비동기 처리 작업 생성
+                        task = asyncio.create_task(
+                            self._process_single_query(request_obj, fut)
+                        )
+                        
+                        # 작업 완료 시 활성 목록에서 제거하는 콜백 설정
+                        task.add_done_callback(
+                            lambda t, task_ref=task: self.active_tasks.discard(task_ref)
+                        )
+                        
+                        # 활성 작업 목록에 추가
+                        self.active_tasks.add(task)
+                        
+                        logger.info(f"[연속 배치] +1 요청 => 현재 활성 작업 {len(self.active_tasks)}/{self.max_concurrent_tasks}")
+                    
+                    except asyncio.TimeoutError:
+                        # 새 요청이 없으면 잠시 대기
+                        await asyncio.sleep(0.01)
+                else:
+                    # 모든 슬롯이 사용 중이면 작업 완료될 때까지 대기
+                    if self.active_tasks:
+                        # 작업 중 하나라도 완료될 때까지 대기
+                        done, pending = await asyncio.wait(
+                            self.active_tasks, 
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+                        
+                        # 완료된 작업 확인
+                        for task in done:
+                            try:
+                                await task
+                            except Exception as e:
+                                logger.error(f"작업 실패: {e}")
+                        
+                        logger.info(f"[연속 배치] 완료된 작업: {len(done)} => 현재 활성 작업 {len(self.active_tasks)}/{self.max_concurrent_tasks}")
+                    else:
+                        await asyncio.sleep(0.01)
+                        
+        except asyncio.CancelledError:
+            logger.info("배치 처리기가 취소되었습니다.")
         except Exception as e:
-            logger.error(f"Embedding failed: {str(e)}")
-            return None
+            logger.error(f"배치 처리기 오류: {e}")
     
-    async def embed_async(self, text):
-        """Asynchronous embedding"""
-        logger.info(f"Async embedding text: '{text}'")
+    async def _process_single_query(self, text, future):
+        """
+        단일 쿼리 처리 (배치 처리기에서 호출됨)
         
-        # Run in an executor to avoid blocking
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self.embed, text)
-        
-        return result
-    
-    async def embed_batch_async(self, texts):
-        """Process a batch of texts in parallel using Ray"""
-        logger.info(f"Batch embedding {len(texts)} texts")
-        
-        # Split into batches
-        batches = [texts[i:i + self.batch_size] for i in range(0, len(texts), self.batch_size)]
-        results = []
-        
-        for batch in batches:
-            # Process batch in parallel with Ray
-            futures = [
-                self._embed_ray.remote(
-                    self.model_path, text, self.session_options, self.device
-                ) for text in batch
-            ]
-            
-            # Get results
-            batch_results = ray.get(futures)
-            
-            # Convert to tensors
-            batch_tensors = [torch.tensor(emb) for emb in batch_results]
-            results.extend(batch_tensors)
-        
-        logger.info(f"Batch embedding completed for {len(results)} texts")
-        return results 
+        Args:
+            text: 임베딩할 텍스트
+            future: 결과를 설정할 Future 객체
+        """
+        try:
+            logger.info(f"쿼리 처리 시작: '{text[:30]}...'")
+            # 실제 임베딩 처리는 ThreadPoolExecutor를 통해 비동기적으로 수행
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, self.embed, text)
+            future.set_result(result)
+            logger.info(f"쿼리 처리 완료: '{text[:30]}...'")
+        except Exception as e:
+            logger.error(f"쿼리 처리 중 오류: {e}")
+            future.set_exception(e)

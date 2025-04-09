@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import threading
 import numpy as np
+from typing import List, Dict, Any, Tuple, Optional, Set
+from collections import deque
 
 # Conditional import for vLLM
 try:
@@ -39,9 +41,16 @@ class EmbeddingModel:
         self.max_workers = max_workers
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.use_vllm = VLLM_AVAILABLE and self.device == "cuda"  # vLLM requires GPU
-        self.embedding_dim = 768  # Default embedding dimension
+        self.embedding_dim = 4096  # Default embedding dimension
         # vLLM 문제 발생 시 표준 모드로 강제 전환하는 플래그
         self.force_standard_mode = False
+        
+        # 연속 배치 처리 관련 속성 추가
+        self.request_queue = asyncio.Queue()
+        self.active_tasks = set()
+        self.max_concurrent_tasks = batch_size
+        self.batch_processor_task = None
+        
         logger.info(f"임베딩 모델 초기화: device={self.device}, batch_size={batch_size}, max_workers={max_workers}, use_vllm={self.use_vllm}")
         
     @time_tracker
@@ -123,12 +132,99 @@ class EmbeddingModel:
                 else:
                     logger.info("CPU 사용 설정 완료")
             
+            # 배치 프로세서 시작
+            self.start_batch_processor()
+            
             logger.info("임베딩 모델 로드 완료")
             return True
             
         except Exception as e:
             logger.error(f"임베딩 모델 로드 실패: {e}")
             return False
+    
+    def start_batch_processor(self):
+        """연속 배치 처리기 시작"""
+        if self.batch_processor_task is None or self.batch_processor_task.done():
+            self.batch_processor_task = asyncio.create_task(self.continuous_batch_processor())
+            logger.info("연속 배치 처리기 시작됨")
+    
+    # -------------------------------------------------------------------------
+    # CONTINUOUOS BATCH PROCESSOR - 연속 배치 처리
+    # -------------------------------------------------------------------------
+    async def continuous_batch_processor(self):
+        """
+        연속적인 배치 처리 - 최대 max_concurrent_tasks개의 요청이 항상 동시에 처리되도록 함
+        """
+        logger.info(f"연속 배치 처리기 시작: 최대 동시 작업 수={self.max_concurrent_tasks}")
+        try:
+            while True:
+                # 사용 가능한 슬롯 확인
+                available_slots = self.max_concurrent_tasks - len(self.active_tasks)
+                
+                if available_slots > 0:
+                    try:
+                        # 새 요청 받기 (타임아웃 0.01초)
+                        request_obj, fut = await asyncio.wait_for(self.request_queue.get(), timeout=0.01)
+
+                        # 비동기 처리 작업 생성
+                        task = asyncio.create_task(
+                            self._process_single_query(request_obj, fut)
+                        )
+                        
+                        # 작업 완료 시 활성 목록에서 제거하는 콜백 설정
+                        task.add_done_callback(
+                            lambda t, task_ref=task: self.active_tasks.discard(task_ref)
+                        )
+                        
+                        # 활성 작업 목록에 추가
+                        self.active_tasks.add(task)
+                        
+                        logger.info(f"[연속 배치] +1 요청 => 현재 활성 작업 {len(self.active_tasks)}/{self.max_concurrent_tasks}")
+                    
+                    except asyncio.TimeoutError:
+                        # 새 요청이 없으면 잠시 대기
+                        await asyncio.sleep(0.01)
+                else:
+                    # 모든 슬롯이 사용 중이면 작업 완료될 때까지 대기
+                    if self.active_tasks:
+                        # 작업 중 하나라도 완료될 때까지 대기
+                        done, pending = await asyncio.wait(
+                            self.active_tasks, 
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+                        
+                        # 완료된 작업 확인
+                        for task in done:
+                            try:
+                                await task
+                            except Exception as e:
+                                logger.error(f"작업 실패: {e}")
+                        
+                        logger.info(f"[연속 배치] 완료된 작업: {len(done)} => 현재 활성 작업 {len(self.active_tasks)}/{self.max_concurrent_tasks}")
+                    else:
+                        await asyncio.sleep(0.01)
+                        
+        except asyncio.CancelledError:
+            logger.info("배치 처리기가 취소되었습니다.")
+        except Exception as e:
+            logger.error(f"배치 처리기 오류: {e}")
+    
+    async def _process_single_query(self, text, future):
+        """
+        단일 쿼리 처리 (배치 처리기에서 호출됨)
+        
+        Args:
+            text: 임베딩할 텍스트
+            future: 결과를 설정할 Future 객체
+        """
+        try:
+            logger.info(f"쿼리 처리 시작: '{text[:30]}...'")
+            result = await self._actual_embed_async(text)
+            future.set_result(result)
+            logger.info(f"쿼리 처리 완료: '{text[:30]}...'")
+        except Exception as e:
+            logger.error(f"쿼리 처리 중 오류: {e}")
+            future.set_exception(e)
     
     @time_tracker
     async def embed_async(self, text):
@@ -145,8 +241,25 @@ class EmbeddingModel:
             logger.error("모델이 로드되지 않음")
             return torch.zeros(self.embedding_dim, dtype=torch.float32)
         
-        logger.info(f"비동기 임베딩 시작: '{text}'")
+        logger.info(f"비동기 임베딩 요청: '{text[:30]}...'")
         
+        # Future 객체 생성 및 큐에 추가
+        future = asyncio.Future()
+        await self.request_queue.put((text, future))
+        
+        # 결과 대기
+        return await future
+    
+    async def _actual_embed_async(self, text):
+        """
+        실제 임베딩 수행 (내부 호출용)
+        
+        Args:
+            text: 임베딩할 텍스트
+            
+        Returns:
+            torch.Tensor: 임베딩 벡터
+        """
         try:
             # 표준 모드로 강제 전환된 경우 vLLM을 사용하지 않음
             if self.force_standard_mode:
@@ -284,14 +397,14 @@ class EmbeddingModel:
                     if embeddings.shape[-1] > self.embedding_dim:
                         embeddings = embeddings[:, :self.embedding_dim]
                     else:
-                        padded = torch.zeros(self.embedding_dim, dtype=torch.float32)
-                        padded[:embeddings.shape[-1]] = embeddings
+                        padded = torch.zeros((1, self.embedding_dim), dtype=torch.float32)
+                        padded[:, :embeddings.shape[-1]] = embeddings
                         embeddings = padded
                 
-                return embeddings
+                return embeddings[0]  # 첫 번째 배치 항목만 반환
         except Exception as e:
             logger.error(f"동기식 임베딩 처리 실패: {e}")
-            return torch.zeros((1, self.embedding_dim), dtype=torch.float32)
+            return torch.zeros(self.embedding_dim, dtype=torch.float32)
     
     @time_tracker
     async def embed_batch_async(self, texts):
@@ -310,63 +423,31 @@ class EmbeddingModel:
         
         logger.info(f"배치 임베딩 시작: {len(texts)}개 텍스트")
         
-        # 결과값 캐싱 및 오류 복원력을 위한 결과 초기화
-        results = [None] * len(texts)
+        # 비동기 작업 생성
+        futures = []
+        for text in texts:
+            future = asyncio.Future()
+            await self.request_queue.put((text, future))
+            futures.append(future)
         
-        try:
-            # 표준 모드로 강제 전환된 경우 vLLM을 사용하지 않음
-            if self.force_standard_mode:
-                logger.info("표준 모드로 강제 전환되어 있어 vLLM을 사용하지 않습니다.")
-                
-                # 표준 transformers - 배치 처리
-                all_embeddings = []
-                
-                # 배치로 분할하여 처리
-                for i in range(0, len(texts), self.batch_size):
-                    batch = texts[i:i + self.batch_size]
-                    batch_embeddings = await asyncio.to_thread(self._embed_batch_sync, batch)
-                    all_embeddings.extend(batch_embeddings)
-                
-                return all_embeddings
-            
-            # vLLM 사용 시
-            if self.use_vllm:
-                # vLLM을 사용한 개별 처리 (현재 vLLM의 배치 처리에 문제가 있음)
-                tasks = []
-                for i, text in enumerate(texts):
-                    tasks.append(self._process_with_index(i, text, results))
-                
-                # 모든 작업 동시 실행
-                await asyncio.gather(*tasks)
-                
-                # 처리되지 않은 항목이 있는지 확인하고 기본값으로 설정
-                for i, result in enumerate(results):
-                    if result is None:
-                        results[i] = torch.zeros(self.embedding_dim, dtype=torch.float32)
-                
-                return results
+        # 모든 작업 완료 대기
+        results = await asyncio.gather(*futures, return_exceptions=True)
+        
+        # 오류 처리 및 결과 가공
+        processed_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"텍스트 {i} 처리 실패: {result}")
+                processed_results.append(torch.zeros(self.embedding_dim, dtype=torch.float32))
             else:
-                # 표준 transformers - 배치 처리
-                all_embeddings = []
-                
-                # 배치로 분할하여 처리
-                for i in range(0, len(texts), self.batch_size):
-                    batch = texts[i:i + self.batch_size]
-                    batch_embeddings = await asyncio.to_thread(self._embed_batch_sync, batch)
-                    all_embeddings.extend(batch_embeddings)
-                
-                return all_embeddings
-                
-        except Exception as e:
-            logger.error(f"배치 임베딩 실패: {e}")
-            # 다음 호출을 위해 표준 모드로 강제 전환
-            self.force_standard_mode = True
-            return [torch.zeros(self.embedding_dim, dtype=torch.float32)] * len(texts)
+                processed_results.append(result)
+        
+        return processed_results
     
     async def _process_with_index(self, index, text, results_list):
         """특정 인덱스에 대한 텍스트 처리 (결과는 결과 리스트에 직접 저장)"""
         try:
-            embedding = await self.embed_async(text)
+            embedding = await self._actual_embed_async(text)
             results_list[index] = embedding
         except Exception as e:
             logger.error(f"텍스트 {index} 처리 실패: {e}")
@@ -418,7 +499,14 @@ class EmbeddingModel:
                 
         return embeddings
     
+    def stop_batch_processor(self):
+        """배치 처리기 중지"""
+        if self.batch_processor_task and not self.batch_processor_task.done():
+            self.batch_processor_task.cancel()
+            logger.info("배치 처리기 중지 요청됨")
+    
     def __del__(self):
         """리소스 정리"""
+        self.stop_batch_processor()
         if hasattr(self, 'model'):
             del self.model

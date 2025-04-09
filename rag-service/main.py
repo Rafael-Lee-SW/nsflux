@@ -56,7 +56,8 @@ def initialize_model():
     except Exception as e:
         logger.error(f"모델 초기화 중 오류 발생: {str(e)}")
         return False
-
+    
+    
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """서비스 시작 및 종료 시 실행되는 lifespan 이벤트 핸들러"""
@@ -102,13 +103,23 @@ async def lifespan(app: FastAPI):
     yield
     
     # 서비스 종료 시 정리 작업
-    logger.info("서비스 종료")
+    logger.info("서비스 종료 중...")
+    
+    # 모델 배치 프로세서 중지
+    if model:
+        if hasattr(model, 'stop_batch_processor'):
+            model.stop_batch_processor()
+            logger.info("모델 배치 프로세서 중지됨")
+    
+    # Ray 종료
     if settings.USE_RAY and ray.is_initialized():
         try:
             ray.shutdown()
             logger.info("Ray shut down")
         except Exception as e:
             logger.error(f"Ray shutdown error: {e}")
+    
+    logger.info("서비스 종료 완료")
 
 # FastAPI 앱 초기화
 app = FastAPI(
