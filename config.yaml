@@ -13,7 +13,7 @@ ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)
   num_gpus: 1                     # 각 Actor(Node)가 점유하고 있는 GPU 갯수
   num_cpus: 24                    # 각 Actor(Node)가 점유하고 있는 CPU 갯수 (1 actor 시에 gpu 48개, 2 actor 시에 gpu 24개 할당)
-  max_batch_size: 10               # max_concurrency(actor 최대 동시 처리량, default 1000)로 대체해도 됨
+  max_batch_size: 30               # max_concurrency(actor 최대 동시 처리량, default 1000)로 대체해도 됨
   batch_wait_timeout: 0.05        
   max_ongoing_requests: 100       # ray.serve에서 deployment setting으로 동시 요청 처리 갯수를 의미함(Batch랑 다름)
 
@@ -29,7 +29,7 @@ vllm:
   block_size: 128                 # 미적용
   gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
   ### 모델 변경에 따른 추가된 설정
-  max_model_len: 80000            # For the new model (Gemma2 : 8192) / Gemma3는 1xH100(SXM5)일 경우 최대 22000~23000, so that 20000으로 세팅
+  max_model_len: 20000            # For the new model (Gemma2 : 8192) / Gemma3는 1xH100(SXM5)일 경우 최대 22000~23000, so that 20000으로 세팅
   ### v1에 따른 새로운 인자값
   disable_custom_all_reduce: true
   # enable_memory_defrag: True      # Gemma3 이식 작업에서 도입, 현재 미사용
@@ -39,7 +39,7 @@ vllm:
     do_pan_and_scan: True         # 이미지 내 객체 감지 및 영역 스캔 기능을 활성화
   disable_mm_preprocessor_cache: False # 이미지 전처리 캐시를 비활성화 할지 여부
   limit_mm_per_prompt:            # 프롬프트 당 허용되는 멀티모달(예, 이미지, 비디오 등) 입력의 최대 개수
-    image: 5                      # 최대 image 처리 개수
+    image: 10                      # 최대 image 처리 개수
 
 ### model huggingface setting and sampling params
 model:
@@ -51,15 +51,15 @@ model:
   top_k : 30                      # top-k 샘플링: 상위 k개의 후보 토큰 중 하나를 선택 (50)
   top_p : 1.0                     # top-p 샘플링: 누적 확률을 기준으로 후보 토큰을 선택 (1.0 보다 낮을수록 창의력 증가)
   repetition_penalty : 1.0        # 같은 단어를 반복해서 출력하지 않도록 패널티를 부여 (1.0 보다 클수록 페널티 증가)
-# embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
-embed_model_id : 'Linq-AI-Research/Linq-Embed-Mistral'
+embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
+# embed_model_id : 'Linq-AI-Research/Linq-Embed-Mistral'
 # cache_dir : "D:/huggingface" # Windows Local
 # cache_dir : "/media/user/7340afbb-e4ce-4a38-8210-c6362e85eae7/RAG/RAG_application/huggingface" # Local
 cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
-data_path : '/workspace/data/0404_Mistral_DB.json'     # VectorDB Path - New one (계약서 데이터 포함)
-# data_path : '/workspace/data/0228_DB_.json'     # VectorDB Path - New one (계약서 데이터 포함)
+# data_path : '/workspace/data/0404_Mistral_DB.json'     # VectorDB Path - New one (계약서 데이터 포함)
+data_path : '/workspace/data/0228_DB_.json'     # VectorDB Path - New one (계약서 데이터 포함)
 # data_path : 'data/1104_NS_DB_old.json' # VectorDB Path - Old one
 metadata_path : '/workspace/data/Metadata.json' # Metadata.json Path
 metadata_unno : '/workspace/data/METADATA_OPRAIMDG.json'
