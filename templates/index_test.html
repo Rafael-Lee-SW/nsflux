@@ -238,19 +238,189 @@
         refDiv.style.display = (refDiv.style.display === "none" || refDiv.style.display === "") ? "block" : "none";
       }
 
+      // Utility: escape HTML characters
+      function escapeHtml(unsafe) {
+        return unsafe
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+      }
+
+      // Functions to handle markdown tables (if used)
+      function convertMarkdownTable(tableContent) {
+        const lines = tableContent.trim().split(/\r?\n/);
+        if (lines.length < 2) return tableContent;
+        const headers = lines[0]
+          .split('|')
+          .map(s => s.trim())
+          .filter(s => s);
+        const dataRows = lines.slice(2).map(line =>
+          line.split('|').map(s => s.trim()).filter(s => s)
+        );
+        let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
+        headers.forEach(h => {
+          html += `<th>${h}</th>`;
+        });
+        html += '</tr></thead><tbody>';
+        dataRows.forEach(row => {
+          html += '<tr>';
+          row.forEach(cell => {
+            html += `<td>${cell}</td>`;
+          });
+          html += '</tr>';
+        });
+        html += '</tbody></table>';
+        return html;
+      }
+
+      function parsePlainTextTables(text) {
+        text = text.replace(/\t/g, "    ");
+        const lines = text.split(/\r?\n/);
+        let outputLines = [];
+        let i = 0;
+        while (i < lines.length) {
+          if (lines[i].trim() && lines[i].match(/\S+(?:\s{2,}\S+)+/)) {
+            const headerLine = lines[i];
+            if (
+              i + 1 < lines.length &&
+              lines[i + 1].trim().match(/^[-\s]+$/)
+            ) {
+              let tableLines = [];
+              tableLines.push(headerLine);
+              tableLines.push(lines[i + 1]);
+              i += 2;
+              while (
+                i < lines.length &&
+                lines[i].trim() &&
+                lines[i].match(/\S+(?:\s{2,}\S+)+/)
+              ) {
+                tableLines.push(lines[i]);
+                i++;
+              }
+              outputLines.push(convertPlainTextTableToHTML(tableLines));
+              continue;
+            }
+          }
+          outputLines.push(lines[i]);
+          i++;
+        }
+        return outputLines.join("\n");
+      }
+
+      function convertPlainTextTableToHTML(lines) {
+        const headerLine = lines[0];
+        const headers = headerLine.trim().split(/\s{2,}/);
+        let html = '<table border="1" cellpadding="5" cellspacing="0"><thead><tr>';
+        headers.forEach(h => {
+          html += `<th>${h}</th>`;
+        });
+        html += '</tr></thead><tbody>';
+        for (let j = 2; j < lines.length; j++) {
+          const row = lines[j].trim().split(/\s{2,}/);
+          html += '<tr>';
+          row.forEach(cell => {
+            html += `<td>${cell}</td>`;
+          });
+          html += '</tr>';
+        }
+        html += '</tbody></table>';
+        return html;
+      }
+
+      // New markdown parser modeled after chatroom.html
+      function parseMarkdown(text) {
+        if (!text) return "";
+
+        // Process special table markers (if used)
+        text = text.replace(
+          /<<<TABLE>>>([\s\S]*?)<<<END_TABLE>>>/g,
+          function(match, tableContent) {
+            return convertMarkdownTable(tableContent);
+          }
+        );
+        text = parsePlainTextTables(text);
+
+        // Process footnotes (optional)
+        const footnoteRegex = /^\[\^(\d+)\]:\s*(.+)$/gm;
+        const footnotesDict = {};
+        let match;
+        while ((match = footnoteRegex.exec(text)) !== null) {
+          const num = match[1];
+          const content = match[2];
+          footnotesDict[num] = content;
+        }
+        text = text.replace(footnoteRegex, "").trim();
+
+        // If text is already HTML, return as is.
+        if (text.trim().startsWith("<")) {
+          return text;
+        }
+
+        // Process code blocks
+        text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(m, lang, code) {
+          return `<pre><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`;
+        });
+        // Process inline code
+        text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+        // Process bold and italic
+        text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+        // Process hyperlinks ([text](url) syntax)
+        text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+
+        // Process headers (supporting up to h6)
+        text = text.replace(/^###### (.*)$/gm, "<h6>$1</h6>");
+        text = text.replace(/^##### (.*)$/gm, "<h5>$1</h5>");
+        text = text.replace(/^#### (.*)$/gm, "<h4>$1</h4>");
+        text = text.replace(/^### (.*)$/gm, "<h3>$1</h3>");
+        text = text.replace(/^## (.*)$/gm, "<h2>$1</h2>");
+        text = text.replace(/^# (.*)$/gm, "<h1>$1</h1>");
+
+        // Process lists
+        text = text.replace(/^\s*\* (.*)$/gm, "<li>$1</li>");
+        text = text.replace(/^\s*\d+\. (.*)$/gm, "<li>$1</li>");
+        text = text.replace(/(<li>[\s\S]*?<\/li>)/gm, function(m) {
+          if (m.trim().startsWith("<ul>")) return m;
+          return "<ul>" + m + "</ul>";
+        });
+
+        // Process blockquotes
+        text = text.replace(/^> (.*)$/gm, "<blockquote>$1</blockquote>");
+
+        // Wrap remaining text blocks in paragraphs
+        const blocks = text.split(/\n\s*\n/);
+        const blockLevelTags = ["<h1>", "<h2>", "<h3>", "<ul>", "<ol>", "<blockquote>", "<pre>"];
+        const htmlBlocks = blocks.map(block => {
+          const trimmed = block.trim();
+          for (let tag of blockLevelTags) {
+            if (trimmed.startsWith(tag)) {
+              return trimmed;
+            }
+          }
+          return `<p>${trimmed.replace(/\n/g, "<br>")}</p>`;
+        });
+        let html = htmlBlocks.join("");
+
+        // Append collected footnotes if any
+        const footnotesKeys = Object.keys(footnotesDict);
+        if (footnotesKeys.length > 0) {
+          let footnotesHTML = '<div class="footnotes"><hr><ol>';
+          footnotesKeys
+            .sort((a, b) => Number(a) - Number(b))
+            .forEach(num => {
+              footnotesHTML += `<li id="fn${num}">${footnotesDict[num]} <a href="#ref${num}" title="Back to content">↩</a></li>`;
+            });
+          footnotesHTML += "</ol></div>";
+          html += footnotesHTML;
+        }
+        return html;
+      }
+
+      // Override renderMarkdown to use the new parser
       function renderMarkdown(text) {
-        if (!text) return '';
-        text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        text = text.replace(/\_(.*?)\_/g, '<em>$1</em>');
-        text = text.replace(/\`(.*?)\`/g, '<code>$1</code>');
-        text = text.replace(/\`\`\`([\s\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>');
-        text = text.replace(/\n/g, '<br>');
-        text = text.replace(/^\s*\-\s+(.*?)$/gm, '<li>$1</li>');
-        text = text.replace(/(<li>.*?<\/li>)/gs, '<ul>$1</ul>');
-        text = text.replace(/^#\s+(.*?)$/gm, '<h1>$1</h1>');
-        text = text.replace(/^##\s+(.*?)$/gm, '<h2>$1</h2>');
-        text = text.replace(/^###\s+(.*?)$/gm, '<h3>$1</h3>');
-        return text;
+        return parseMarkdown(text);
       }
 
       function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
