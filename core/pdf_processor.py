@@ -140,7 +140,7 @@ def extract_images(page):
     
     return images
 
-async def pdf_to_prompt_context(pdf_content, max_pages=10, max_images=3):
+async def pdf_to_prompt_context(pdf_content, max_pages=10, max_images=10):
     """
     PDF를 처리하여 LLM 프롬프트에 적합한 컨텍스트 문자열로 변환합니다.
     

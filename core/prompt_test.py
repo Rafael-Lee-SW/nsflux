@@ -108,8 +108,8 @@ async def test_prompt_with_image(
             # 복수의 이미지를 포함하도록 수정
             message_content = [{"type": "text", "text": user_text}]
             
-            # 이미지 추가 (최대 5개로 제한해 모델이 처리할 수 있는 범위 내에서 유지)
-            max_images_for_model = min(5, len(pil_images))
+            # 이미지 추가 (최대 10개로 제한해 모델이 처리할 수 있는 범위 내에서 유지)
+            max_images_for_model = min(10, len(pil_images))
             for i in range(max_images_for_model):
                 message_content.insert(0, {"type": "image", "url": pil_images[i]})
                 
@@ -135,7 +135,7 @@ async def test_prompt_with_image(
             generate_request = {
                 "prompt": prompt_string,
                 "multi_modal_data": {
-                    "image": pil_images[:max_images_for_model]  # 최대 5개 이미지로 제한
+                    "image": pil_images[:max_images_for_model]  # 최대 10개 이미지로 제한
                 }
             }
             
@@ -280,7 +280,7 @@ async def test_prompt_streaming(
                         except Exception as e:
                             logger.warning(f"이미지 변환 오류 (무시됨): {str(e)}")
                     
-                    max_images_for_model = min(5, len(pil_images))
+                    max_images_for_model = min(10, len(pil_images))
                     yield f"PDF에서 {len(pdf_images)}개 이미지 추출 완료. {max_images_for_model}개 이미지를 사용합니다.\n"
                     
                     if len(pil_images) > max_images_for_model:
@@ -306,8 +306,8 @@ async def test_prompt_streaming(
             # 복수의 이미지를 포함하도록 수정
             message_content = [{"type": "text", "text": user_text}]
             
-            # 이미지 추가 (최대 5개로 제한해 모델이 처리할 수 있는 범위 내에서 유지)
-            max_images_for_model = min(5, len(pil_images))
+            # 이미지 추가 (최대 10개로 제한해 모델이 처리할 수 있는 범위 내에서 유지)
+            max_images_for_model = min(10, len(pil_images))
             for i in range(max_images_for_model):
                 message_content.insert(0, {"type": "image", "url": pil_images[i]})
                 
@@ -333,7 +333,7 @@ async def test_prompt_streaming(
             generate_request = {
                 "prompt": prompt_string,
                 "multi_modal_data": {
-                    "image": pil_images[:max_images_for_model]  # 최대 5개 이미지로 제한
+                    "image": pil_images[:max_images_for_model]  # 최대 10개 이미지로 제한
                 }
             }
             
