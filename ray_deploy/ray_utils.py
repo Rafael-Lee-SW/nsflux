@@ -144,7 +144,20 @@ class InferenceActor:
             if available_slots > 0:
                 try:
                     # 새 요청 받기
-                    request_obj, fut = await asyncio.wait_for(self.request_queue.get(), timeout=0.01)
+                    queue_item = await asyncio.wait_for(self.request_queue.get(), timeout=0.01)
+                    
+                    # 큐 아이템 처리 - 튜플인 경우 항목 수에 따라 다르게 처리
+                    if isinstance(queue_item, tuple):
+                        if len(queue_item) == 2:
+                            request_obj, fut = queue_item
+                        elif len(queue_item) == 3:
+                            request_obj, fut, _ = queue_item  # 세 번째 항목은 무시
+                        else:
+                            logger.error(f"예상치 못한 튜플 길이: {len(queue_item)}")
+                            continue
+                    else:
+                        logger.error(f"예상치 못한 큐 아이템 타입: {type(queue_item)}")
+                        continue
 
                     # 비동기 처리 작업 생성
                     task = asyncio.create_task(
@@ -736,7 +749,7 @@ class InferenceActor:
             if self.metrics_collector is not None:
                 try:
                     await self.metrics_collector.register_actor_request.remote(
-                        self.actor_id,            # ← __init__ 에서 만든 고유 ID
+                        self.actor_id,            # ← __init__ 에서 만든 고유 ID
                         self.metrics.dump_state()["recent_finished"][-1]
                     )
                 except Exception as e:
@@ -1223,6 +1236,6 @@ class InferenceService:
     
     async def metrics(self):
         """
-        GET /metrics 에서 호출 – Actor 의 메트릭 스냅샷 반환
+        GET /metrics 에서 호출 – Actor 의 메트릭 스냅샷 반환
         """
         return await self.actor.get_metrics_snapshot.remote()
