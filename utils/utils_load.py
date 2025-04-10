@@ -104,7 +104,7 @@ def load_model(config):
             cache_dir=config.cache_dir,
             trust_remote_code=True,
             token=token,
-            device_map="auto"
+            # device_map="auto"
         )
     except Exception as e:
         raise e

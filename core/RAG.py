@@ -33,8 +33,8 @@ from core.SQL_NS import run_sql_unno, run_sql_bl, get_metadata
 
 # 프롬프트 템플릿 불러오기
 from prompt import (
-    QUERY_SORT_PROMPT, 
-    GENERATE_PROMPT_TEMPLATE, 
+    QUERY_SORT_PROMPT,
+    GENERATE_PROMPT_TEMPLATE,
     STREAM_PROMPT_TEMPLATE,
     IMAGE_DESCRIPTION_PROMPT,
     NON_RAG_PROMPT_TEMPLATE,
@@ -61,51 +61,50 @@ RAG_API_TIMEOUT = 60.0  # 타임아웃 시간 (초)
 RAG_API_MAX_RETRIES = 3  # 최대 재시도 횟수
 RAG_API_RETRY_DELAY = 1.0  # 재시도 간 대기 시간 (초)
 
+
 @time_tracker
 async def execute_rag(
-    query: str, 
-    keywords: str, 
-    needs_table: str, 
-    time_range: str, 
-    **kwargs
+    query: str, keywords: str, needs_table: str, time_range: str, **kwargs
 ) -> Tuple[str, List[Dict]]:
     """
     RAG(Retrieval-Augmented Generation) 실행의 메인 진입점
-    
+
     Args:
         query: 구체화된 사용자 질문
         keywords: 검색에 사용할 키워드
         needs_table: 테이블 데이터 필요 여부 ("yes" 또는 "no")
         time_range: 검색 시간 범위 ("all" 또는 "시작일:종료일" 형식)
         **kwargs: 추가 파라미터 (model, tokenizer, embed_model, embed_tokenizer, data, config)
-    
+
     Returns:
         Tuple[str, List[Dict]]: (검색된 문서 내용, 문서 메타데이터 리스트)
     """
     logger.info("execute_rag 진입: query='%s', needs_table=%s", query, needs_table)
-    
+
     # 필수 파라미터 추출
     model = kwargs.get("model")
     tokenizer = kwargs.get("tokenizer")
     config = kwargs.get("config")
-    
+
     # 테이블 필요 여부 확인
     if needs_table == "yes":
         logger.info("테이블 데이터 필요: SQL 생성 시작")
         try:
             # SQL 생성 및 실행
             result = await generate_sql(query, model, tokenizer, config)
-            
+
             # SQL 실행 결과가 없는 경우
             if result is None:
                 logger.warning("SQL 실행 결과 없음")
                 docs = "테이블 조회 결과가 비어 있습니다. 조회할 데이터가 없거나 SQL 오류가 발생했습니다."
                 docs_list = []
                 return docs, docs_list
-            
+
             # SQL 실행 결과 처리
-            final_sql_query, title, explain, table_json, chart_json, detailed_result = result
-            
+            final_sql_query, title, explain, table_json, chart_json, detailed_result = (
+                result
+            )
+
             # LLM 입력용 프롬프트 구성
             prompt = (
                 f"실제 사용된 SQL문: {final_sql_query}\n\n"
@@ -113,26 +112,26 @@ async def execute_rag(
                 f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
                 f"실제 선적된 B/L 데이터: {str(detailed_result)}\n\n"
             )
-            
+
             # 결과 메타데이터 구성 - RAG 서비스 API 형식에 맞게 수정
             docs_list = [
                 {
                     "file_name": "SQL_Result",
                     "title": title,
                     "contents": [{"data": table_json}],
-                    "chunk_id": 0
+                    "chunk_id": 0,
                 },
                 {
                     "file_name": "B/L_Detail",
                     "title": "DG B/L 상세 정보",
                     "contents": [{"data": detailed_result}],
-                    "chunk_id": 1
-                }
+                    "chunk_id": 1,
+                },
             ]
-            
+
             logger.info("테이블 데이터 처리 완료")
             return prompt, docs_list
-            
+
         except Exception as e:
             logger.error("SQL 처리 중 오류 발생: %s", str(e), exc_info=True)
             docs = f"테이블 조회 시도 중 예외가 발생했습니다. 해당 SQL을 실행할 수 없어서 테이블 데이터를 가져오지 못했습니다. 오류: {str(e)}"
@@ -140,70 +139,75 @@ async def execute_rag(
             return docs, docs_list
     else:
         logger.info("표준 검색 실행: 키워드='%s', 시간 범위='%s'", keywords, time_range)
-        
+
         # RAG 서비스 API 호출 (재시도 로직 포함)
         retry_count = 0
         last_error = None
-        
+
         while retry_count < RAG_API_MAX_RETRIES:
             try:
                 # 타임아웃 설정이 포함된 클라이언트 생성
                 async with httpx.AsyncClient(timeout=RAG_API_TIMEOUT) as client:
-                    logger.info(f"RAG 서비스 API 호출 시도 {retry_count + 1}/{RAG_API_MAX_RETRIES}")
+                    logger.info(
+                        f"RAG 서비스 API 호출 시도 {retry_count + 1}/{RAG_API_MAX_RETRIES}"
+                    )
                     response = await client.post(
                         f"{config.rag_service_url}/api/retrieve",
                         json={
                             "query": keywords,
                             "top_n": config.N,
                             "time_bound": time_range,
-                            "min_docs": 50
-                        }
+                            "min_docs": 50,
+                        },
                     )
-                    
+
                     if response.status_code != 200:
-                        logger.error(f"RAG 서비스 API 오류: {response.status_code} - {response.text}")
+                        logger.error(
+                            f"RAG 서비스 API 오류: {response.status_code} - {response.text}"
+                        )
                         return "검색 서비스에 연결할 수 없습니다.", []
-                    
+
                     # 응답 파싱
                     result = response.json()
                     docs = result.get("documents", "")
                     docs_list = result.get("documents_list", [])
-                    
+
                     logger.info(f"RAG 서비스 API 응답: {len(docs_list)}개 문서 검색됨")
                     return docs, docs_list
-                    
+
             except httpx.ReadTimeout as e:
                 last_error = e
                 retry_count += 1
-                logger.warning(f"RAG 서비스 API 타임아웃 (시도 {retry_count}/{RAG_API_MAX_RETRIES}): {str(e)}")
+                logger.warning(
+                    f"RAG 서비스 API 타임아웃 (시도 {retry_count}/{RAG_API_MAX_RETRIES}): {str(e)}"
+                )
                 if retry_count < RAG_API_MAX_RETRIES:
                     await asyncio.sleep(RAG_API_RETRY_DELAY)
                 continue
-                
+
             except Exception as e:
                 last_error = e
-                logger.error(f"RAG 서비스 API 호출 중 오류 발생: {str(e)}", exc_info=True)
+                logger.error(
+                    f"RAG 서비스 API 호출 중 오류 발생: {str(e)}", exc_info=True
+                )
                 break
-        
+
         # 모든 재시도 실패 또는 기타 오류 발생
         error_msg = f"검색 서비스에 연결할 수 없습니다. 오류: {str(last_error)}"
         logger.error(error_msg)
         return error_msg, []
 
+
 @time_tracker
-async def generate_answer(
-    query: str, 
-    docs: str, 
-    **kwargs
-) -> str:
+async def generate_answer(query: str, docs: str, **kwargs) -> str:
     """
     검색된 문서를 기반으로 최종 답변 생성
-    
+
     Args:
         query: 사용자 질문
         docs: 검색된 문서 내용
         **kwargs: 추가 파라미터 (model, tokenizer, config)
-    
+
     Returns:
         str: 생성된 답변
     """
@@ -214,20 +218,21 @@ async def generate_answer(
     answer = await generate(docs, query, model, tokenizer, config)
     return answer
 
+
 @time_tracker
 async def query_sort(params: Dict[str, Any]) -> Tuple[str, str, str, str]:
     """
     사용자 질문을 분석하여 구체화하고 RAG 파라미터를 추출
-    
+
     Args:
         params: 파라미터 딕셔너리 (user_input, model, tokenizer, embed_model, embed_tokenizer, data, config)
-    
+
     Returns:
         Tuple[str, str, str, str]: (구체화된 질문, 키워드, 테이블 필요 여부, 시간 범위)
     """
     max_attempts = 3
     attempt = 0
-    
+
     while attempt < max_attempts:
         # 필요 파라미터 추출
         query = params["user_input"]
@@ -238,7 +243,7 @@ async def query_sort(params: Dict[str, Any]) -> Tuple[str, str, str, str]:
         # 프롬프트 구성
         prompt = QUERY_SORT_PROMPT.format(user_query=query)
         logger.info("query_sort 시작 (시도 %d)", attempt + 1)
-        
+
         # LLM에서 응답 생성
         if config.use_vllm:
             sampling_params = SamplingParams(
@@ -266,68 +271,83 @@ async def query_sort(params: Dict[str, Any]) -> Tuple[str, str, str, str]:
                 eos_token_id=tokenizer.eos_token_id,
                 pad_token_id=tokenizer.eos_token_id,
             )
-            answer = tokenizer.decode(outputs[0][token_count:], skip_special_tokens=True)
-        
+            answer = tokenizer.decode(
+                outputs[0][token_count:], skip_special_tokens=True
+            )
+
         logger.debug("Generated answer: %s", answer)
-        
+
         # 응답에서 태그로 감싸진 정보 추출
         query_pattern = r"<query.*?>(.*?)<query.*?>"
         keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
         table_pattern = r"<table.*?>(.*?)<table.*?>"
         time_pattern = r"<time.*?>(.*?)<time.*?>"
-        
+
         m_query = re.search(query_pattern, answer, re.DOTALL)
         m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
         m_table = re.search(table_pattern, answer, re.DOTALL)
         m_time = re.search(time_pattern, answer, re.DOTALL)
-        
+
         # 모든 필수 태그가 존재하는 경우
         if m_query and m_keyword and m_table and m_time:
             qu = m_query.group(1).strip()
             ke = m_keyword.group(1).strip()
             ta = m_table.group(1).strip()
             ti = m_time.group(1).strip()
-            
+
             # 'all' 시간 범위 처리
             if ti == "all":
                 ti = "1900-01-01:2099-01-01"
-                
-            logger.info("질문 구체화 결과: 질문='%s', 키워드='%s', 테이블='%s', 시간='%s'", qu, ke, ta, ti)
+
+            logger.info(
+                "질문 구체화 결과: 질문='%s', 키워드='%s', 테이블='%s', 시간='%s'",
+                qu,
+                ke,
+                ta,
+                ti,
+            )
             return qu, ke, ta, ti
         else:
             logger.error("필요한 태그가 누락됨. 재시도 %d", attempt + 1)
             attempt += 1
-    
-    # 최대 시도 횟수를 초과한 경우
-    raise ValueError("LLM이 올바른 태그 형식의 답변을 생성하지 못했습니다.")
+
+    # 최대 시도 횟수를 초과한 경우 기본값 반환
+    default_qu = params["user_input"]
+    default_ke = params["user_input"]
+    default_ta = "no"
+    default_ti = "1901-01-01:2099-12-01"
+    logger.warning(
+        "최대 시도 횟수를 초과하여 기본값 반환: 질문='%s', 키워드='%s', 테이블='%s', 시간='%s'",
+        default_qu,
+        default_ke,
+        default_ta,
+        default_ti,
+    )
+    return default_qu, default_ke, default_ta, default_ti
 
 @time_tracker
 async def specific_question(params: Dict[str, Any]) -> Tuple[str, str, str, str]:
     """
     대화 이력을 고려한 구체적인 질문 생성
     (query_sort와 유사하지만 대화 이력 처리에 차이가 있을 수 있음)
-    
+
     Args:
         params: 파라미터 딕셔너리
-    
+
     Returns:
         Tuple[str, str, str, str]: (구체화된 질문, 키워드, 테이블 필요 여부, 시간 범위)
     """
     # query_sort와 동일한 로직 사용
     return await query_sort(params)
 
+
 @time_tracker
 async def generate_answer_stream(
-    query: str, 
-    docs: str, 
-    model, 
-    tokenizer, 
-    config, 
-    http_query: Dict
+    query: str, docs: str, model, tokenizer, config, http_query: Dict
 ) -> Generator[str, None, None]:
     """
     스트리밍 방식으로 답변 생성
-    
+
     Args:
         query: 사용자 질문
         docs: 검색된 문서 내용
@@ -335,12 +355,14 @@ async def generate_answer_stream(
         tokenizer: 토크나이저
         config: 설정
         http_query: HTTP 요청 정보
-    
+
     Yields:
         str: 생성된 부분 텍스트
     """
-    logger.info("[GENERATE_ANSWER_STREAM] ---------- 스트리밍 답변 생성 시작 ----------")
-    
+    logger.info(
+        "[GENERATE_ANSWER_STREAM] ---------- 스트리밍 답변 생성 시작 ----------"
+    )
+
     # -------------------------------------------------------------------------
     # 1) 분기 처리를 위한 파라미터 준비
     # -------------------------------------------------------------------------
@@ -369,14 +391,14 @@ async def generate_answer_stream(
 
     logger.info(f"[PROMPT SELECTION] is_image={is_image}, use_rag={use_rag}")
     logger.debug(f"[PROMPT CONTENT]\n{prompt}")
-    
+
     # -------------------------------------------------------------------------
     # 3) request_id 설정 (성능 모니터링 등 용도)
     # -------------------------------------------------------------------------
     request_id = http_query.get("page_id") or http_query.get("qry_id")
     if not request_id:
         request_id = str(uuid.uuid4())
-    
+
     # -------------------------------------------------------------------------
     # 4) 실제 이미지 처리가 필요한 경우, 이미지 로드 (core.image_processing 사용)
     # -------------------------------------------------------------------------
@@ -385,13 +407,16 @@ async def generate_answer_stream(
         try:
             # 이미지 처리 로직은 image_processing 모듈로 이동
             from core.image_processing import prepare_image
+
             pil_image = await prepare_image(image_data)
-            logger.info("이미지 로드 성공: %s", str(pil_image.size if pil_image else None))
+            logger.info(
+                "이미지 로드 성공: %s", str(pil_image.size if pil_image else None)
+            )
         except Exception as e:
             logger.error("이미지 로드 실패: %s", str(e))
-    
+
     # -------------------------------------------------------------------------
-    # 5) 스트리밍 텍스트 생성 (vLLM 또는 HF) 
+    # 5) 스트리밍 텍스트 생성 (vLLM 또는 HF)
     # -------------------------------------------------------------------------
     if config.use_vllm:
         sampling_params = SamplingParams(
@@ -401,25 +426,32 @@ async def generate_answer_stream(
             top_p=config.model.top_p,
             repetition_penalty=config.model.repetition_penalty,
         )
-        
+
         # 멀티모달 요청 구성
         if pil_image:
             # 멀티모달 처리를 위한 요청 구성
             from core.image_processing import prepare_multimodal_request
-            generate_request = await prepare_multimodal_request(prompt, pil_image, config.model_id, tokenizer)
+
+            generate_request = await prepare_multimodal_request(
+                prompt, pil_image, config.model_id, tokenizer
+            )
         else:
             generate_request = prompt
-        
+
         # 스트리밍 생성
-        async for partial_chunk in collect_vllm_text_stream(generate_request, model, sampling_params, request_id):
+        async for partial_chunk in collect_vllm_text_stream(
+            generate_request, model, sampling_params, request_id
+        ):
             # 성능 모니터링 업데이트는 collect_vllm_text_stream 내부에서 수행
             yield partial_chunk
     else:
         # HuggingFace 모델 사용 (Not use vLLM)
         import torch
         from transformers import TextIteratorStreamer
-        
-        input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4024).to("cuda")
+
+        input_ids = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=4024
+        ).to("cuda")
         streamer = TextIteratorStreamer(tokenizer, skip_special_tokens=True)
         generation_kwargs = dict(
             **input_ids,
@@ -431,13 +463,15 @@ async def generate_answer_stream(
             top_p=config.model.top_p,
             repetition_penalty=config.model.repetition_penalty,
         )
-        
+
         import threading
+
         t = threading.Thread(target=model.generate, kwargs=generation_kwargs)
         t.start()
-        
+
         for new_token in streamer:
             yield new_token
+
 
 # 이 RAG.py 파일은 이제 다른 모듈에서 필요한 함수들만 노출하며,
 # 세부 구현은 각각의 특화된 모듈로 이동되었습니다.
