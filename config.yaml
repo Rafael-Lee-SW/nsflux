@@ -1,14 +1,16 @@
 # config.yaml
 # Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
+
 ### Model
 model_id : 'google/gemma-3-27b-it'
 response_url : "http://202.20.84.16:8083/responseToUI"
 # response_url : "https://eo5smhcazmp1bqe.m.pipedream.net"
+rag_service_url : "http://150.136.90.210:8000"  # RAG 서비스 URL
 
 ### ray
 ray:
   actor_count: 1                  # 총 Actor 개수(same as num_replicas)
-  num_gpus: 2                     # 각 Actor(Node)가 점유하고 있는 GPU 갯수
+  num_gpus: 1                     # 각 Actor(Node)가 점유하고 있는 GPU 갯수
   num_cpus: 48                    # 각 Actor(Node)가 점유하고 있는 CPU 갯수 (1 actor 시에 gpu 48개, 2 actor 시에 gpu 24개 할당)
   max_batch_size: 5               # max_concurrency(actor 최대 동시 처리량, default 1000)로 대체해도 됨
   batch_wait_timeout: 0.05        
@@ -24,7 +26,7 @@ vllm:
   max_num_seqs: 128               # v1에 따른 상향
   max_num_batched_tokens: 34000   # v1에 따른 상향
   block_size: 128                 # 미적용
-  gpu_memory_utilization: 0.99    # v0: 0.95 / v1: 0.99로 상향
+  gpu_memory_utilization: 0.95    # v0: 0.95 / v1: 0.99로 상향
   ### 모델 변경에 따른 추가된 설정
   max_model_len: 20000            # For the new model (Gemma2 : 8192) / Gemma3는 1xH100(SXM5)일 경우 최대 22000~23000, so that 20000으로 세팅
   ### v1에 따른 새로운 인자값
@@ -48,20 +50,19 @@ model:
   top_k : 30                      # top-k 샘플링: 상위 k개의 후보 토큰 중 하나를 선택 (50)
   top_p : 1.0                     # top-p 샘플링: 누적 확률을 기준으로 후보 토큰을 선택 (1.0 보다 낮을수록 창의력 증가)
   repetition_penalty : 1.0        # 같은 단어를 반복해서 출력하지 않도록 패널티를 부여 (1.0 보다 클수록 페널티 증가)
-embed_model_id : 'Linq-AI-Research/Linq-Embed-Mistral'
-# cache_dir : "D:/huggingface" # Windows Local
-# cache_dir : "/media/user/7340afbb-e4ce-4a38-8210-c6362e85eae7/RAG/RAG_application/huggingface" # Local
+# embed_model_id : 'Linq-AI-Research/Linq-Embed-Mistral'
+embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
 cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
-data_path : '/workspace/data/0404_Mistral_DB.json'     # VectorDB Path - New one (계약서 데이터 포함)
-# data_path : 'data/1104_NS_DB_old.json' # VectorDB Path - Old one
+data_path : '/workspace/data/0410_Mistral_DB.json'     # VectorDB Path - New one (계약서 데이터 포함)
 metadata_path : '/workspace/data/Metadata.json' # Metadata.json Path
 metadata_unno : '/workspace/data/METADATA_OPRAIMDG.json'
 sql_data_path : '/workspace/data/poc.db'        # SQLite 데이터베이스 Path
+image_base_path: '/globeai/IMAGE/result_3'
 
 ### Retrieve
-N : 5 # Retrieve top N chunks
+N : 7 # Retrieve top N chunks
 
 ### Others
 beep : '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'

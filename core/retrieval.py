@@ -82,6 +82,7 @@ def retrieve(
                 "title": data["titles"][index],
                 "contents": data["texts_vis"][index],
                 "chunk_id": data["chunk_ids"][index],
+                "file_path": data["file_path"][index]
             })
         
         logger.info("검색 완료: %d개 문서 반환", len(documents_list))
@@ -209,7 +210,7 @@ def embed(query: str, embed_model, embed_tokenizer) -> torch.Tensor:
         inputs = embed_tokenizer(query, max_length=4096, padding="max_length", truncation=True, return_tensors="pt").to(embed_model.device)
         outputs = embed_model(**inputs)
         # Last Sequence Token is used as Embedding V
-        embeddings = outputs.last_hidden_state[:,-1].cpu() # (Batch, Embed Dims) == (1,4096)
+        embeddings = outputs.last_hidden_state[:,-1].cpu().to(torch.float32) # (Batch, Embed Dims) == (1,4096)
 
     logger.info("임베딩 완료")
     return embeddings

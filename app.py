@@ -35,7 +35,7 @@ os.environ["VLLM_USE_V1"] = "1"
 os.environ["VLLM_CONFIGURE_LOGGING"] = "1"
 
 # GPU 단독 사용(박상제 연구원님이랑 분기점 - 연구원님 0번 GPU, 수완 1번 GPU - 2GPU 시에 해당 설정을 없애주어야 함)
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 # 토크나이저 병렬 처리 명시적 비활성화
 os.environ["TOKENIZERS_PARALLELISM"] = "false"

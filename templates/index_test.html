@@ -102,7 +102,7 @@
             </div>
           </div>
           <p>
-            이 테스트는 POST 기반 fetch를 사용하여 응답을 스트리밍합니다.
+            이 테스트는 POST 기반 fetch를 사용하여 응답을 스트리밍합니다.<br>
             서버는 SSE 스타일의 청크를 전송하며, 참조 데이터와 답변 텍스트를 분리하여 처리합니다.
           </p>
           <div class="input-group">
@@ -126,7 +126,7 @@
             </div>
           </div>
           <p>
-            여러 스트리밍 쿼리를 POST 방식으로 동시에 실행합니다.
+            여러 스트리밍 쿼리를 POST 방식으로 동시에 실행합니다.<br>
             각 쿼리의 응답이 실시간으로 표시됩니다.
           </p>
           <button class="btn btn-primary btn-lg" onclick="testSimulStreamPOST()">동시 스트리밍 시작 (Start Simultaneous Streaming)</button>
@@ -145,7 +145,7 @@
             </div>
           </div>
           <p>
-            선택한 테스트 셋에 따라 연속적으로 쿼리를 실행하고 평균 응답 시간을 계산합니다.
+            선택한 테스트 셋에 따라 연속적으로 쿼리를 실행하고 평균 응답 시간을 계산합니다.<br>
             (스트리밍 모드에서는 각 요청의 스트리밍 결과를 별도 컨테이너에 실시간으로 보여주며, 상단에 요약 테이블도 표시됩니다.)
           </p>
           <div id="continuousProgress" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
@@ -174,7 +174,7 @@
             </div>
           </div>
           <p>
-            선택한 테스트 셋의 모든 쿼리를 하나의 공유된 request_id로 연속 실행합니다.
+            선택한 테스트 셋의 모든 쿼리를 하나의 공유된 request_id로 연속 실행합니다.<br>
             (스트리밍 모드에서는 각 요청의 스트리밍 결과를 별도 컨테이너에 실시간으로 보여주며, 상단에 요약 테이블도 표시됩니다.)
           </p>
           <div id="chatTestProgress" class="progress-indicator">진행 상황이 여기에 표시됩니다.</div>
@@ -203,9 +203,48 @@
 
     <!-- 공통 스크립트 (HTML 내부) -->
     <script>
-      /************************************************************
-       * 공통 유틸 함수들
-       ************************************************************/
+      /***********************
+       * Helper Functions
+       ***********************/
+      // 토큰 수를 대략 계산 (1 토큰 ≒ 4자)
+      function estimateTokenCount(text) {
+        return Math.ceil(text.length / 4);
+      }
+
+      // 스트리밍 결과 업데이트: 처음에는 첫 줄만 보이고, 내용이 많으면 토글 버튼을 추가
+      function updateStreamingOutput(container, fullText) {
+        var lines = fullText.split('\n');
+        if (lines.length > 1) {
+          var preview = lines[0] + " ... ";
+          container.innerHTML = renderMarkdown(preview) +
+            '<button class="toggle-btn" onclick="toggleFullOutput(this)">전체 보기</button>';
+          container.setAttribute("data-fulltext", fullText);
+          container.setAttribute("data-expanded", "false");
+        } else {
+          container.innerHTML = renderMarkdown(fullText);
+          container.removeAttribute("data-fulltext");
+          container.removeAttribute("data-expanded");
+        }
+      }
+      function toggleFullOutput(btn) {
+        var container = btn.parentElement;
+        var isExpanded = container.getAttribute("data-expanded") === "true";
+        var fullText = container.getAttribute("data-fulltext");
+        if (isExpanded) {
+          // 축소: 첫 줄만 보이게
+          var lines = fullText.split('\n');
+          var preview = lines[0] + " ... ";
+          container.innerHTML = renderMarkdown(preview) +
+            '<button class="toggle-btn" onclick="toggleFullOutput(this)">전체 보기</button>';
+          container.setAttribute("data-expanded", "false");
+        } else {
+          // 확장: 전체 내용 보임
+          container.innerHTML = renderMarkdown(fullText) +
+            '<button class="toggle-btn" onclick="toggleFullOutput(this)">닫기</button>';
+          container.setAttribute("data-expanded", "true");
+        }
+      }
+
       function formatTime(d) {
         if (!d) return '';
         const ms = d.getMilliseconds().toString().padStart(3, '0');
@@ -238,83 +277,114 @@
         refDiv.style.display = (refDiv.style.display === "none" || refDiv.style.display === "") ? "block" : "none";
       }
 
-      function renderMarkdown(text) {
-        if (!text) return '';
-        text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        text = text.replace(/\_(.*?)\_/g, '<em>$1</em>');
-        text = text.replace(/\`(.*?)\`/g, '<code>$1</code>');
-        text = text.replace(/\`\`\`([\s\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>');
-        text = text.replace(/\n/g, '<br>');
-        text = text.replace(/^\s*\-\s+(.*?)$/gm, '<li>$1</li>');
-        text = text.replace(/(<li>.*?<\/li>)/gs, '<ul>$1</ul>');
-        text = text.replace(/^#\s+(.*?)$/gm, '<h1>$1</h1>');
-        text = text.replace(/^##\s+(.*?)$/gm, '<h2>$1</h2>');
-        text = text.replace(/^###\s+(.*?)$/gm, '<h3>$1</h3>');
-        return text;
-      }
-
-      function formatJsonOutput(data, sendTime, receiveTime, elapsed, uniquePrefix = '') {
-        let formattedOutput = `
-          <strong>전송 시간 (Send Time):</strong> ${sendTime} <br>
-          <strong>수신 시간 (Receive Time):</strong> ${receiveTime} <br>
-          <strong>소요 시간 (Elapsed Time):</strong> ${elapsed} ms <br>
-          <hr>
-        `;
-        if (data.status_code !== undefined) {
-          formattedOutput += `
-            <strong>상태 코드 (Status Code):</strong> ${data.status_code} <br>
-            <strong>결과 (Result):</strong> ${data.result} <br>
-            <strong>상세 (Detail):</strong> ${data.detail} <br>
-            <strong>이벤트 시간 (Event Time):</strong> ${data.evt_time} <br>
-            <strong>데이터 목록 (Data List):</strong><br>
-            <ul>
-          `;
-          if (data.data_list) {
-            let answerHTML = "";
-            let retrievalHTML = "";
-            data.data_list.forEach((item, idx) => {
-              if (item.rsp_type === "A") {
-                if (item.answer) {
-                  answerHTML += `<div class="markdown-content">${renderMarkdown(item.answer)}</div>`;
-                } else {
-                  answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
-                }
-              } else if (item.rsp_type === "R") {
-                const hiddenId = `retrieval_${uniquePrefix}_${idx}`;
-                retrievalHTML += `
-                  <div>
-                    <button class="btn btn-secondary btn-sm" onclick="toggleHiddenDiv('${hiddenId}')">참조 데이터 보기 (Show Retrieval)</button>
-                    <div id="${hiddenId}" class="hidden-retrieval" style="display:none;">
-                      <pre>${JSON.stringify(item, null, 4)}</pre>
-                    </div>
-                  </div>
-                `;
-              } else {
-                answerHTML += `<pre>${JSON.stringify(item, null, 4)}</pre>`;
-              }
-            });
-            if (answerHTML)
-              formattedOutput += `<li><strong>답변 (Answer):</strong> ${answerHTML}</li>`;
-            if (retrievalHTML)
-              formattedOutput += `<li><strong>참조 데이터 (Retrieval):</strong> ${retrievalHTML}</li>`;
-          } else {
-            formattedOutput += "<li>데이터가 없습니다 (No data available)</li>";
+      /***********************
+       * 기존 Markdown Parser 및 renderMarkdown 함수
+       * (실제 파서 코드는 프로젝트에 맞게 채워 넣으세요)
+       ***********************/
+      function parseMarkdown(text) {
+        if (!text) return "";
+        // 이곳에 테이블, footnote, 코드블록, 인라인 코드, 굵게/기울임, 링크, 헤더, 목록, 인용문, 문단 처리 로직을 넣으세요.
+        // 예시로 간단한 처리만 포함:
+        text = text.replace(/```([a-z]*)\n([\s\S]*?)```/g, function(m, lang, code) {
+          return `<pre><code class="language-${lang}">${escapeHtml(code.trim())}</code></pre>`;
+        });
+        text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+        text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+        text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+        text = text.replace(/^###### (.*)$/gm, "<h6>$1</h6>");
+        text = text.replace(/^##### (.*)$/gm, "<h5>$1</h5>");
+        text = text.replace(/^#### (.*)$/gm, "<h4>$1</h4>");
+        text = text.replace(/^### (.*)$/gm, "<h3>$1</h3>");
+        text = text.replace(/^## (.*)$/gm, "<h2>$1</h2>");
+        text = text.replace(/^# (.*)$/gm, "<h1>$1</h1>");
+        text = text.replace(/^\s*\* (.*)$/gm, "<li>$1</li>");
+        text = text.replace(/^\s*\d+\. (.*)$/gm, "<li>$1</li>");
+        text = text.replace(/(<li>[\s\S]*?<\/li>)/gm, function(m) {
+          if (m.trim().startsWith("<ul>")) return m;
+          return "<ul>" + m + "</ul>";
+        });
+        text = text.replace(/^> (.*)$/gm, "<blockquote>$1</blockquote>");
+        const blocks = text.split(/\n\s*\n/);
+        const blockLevelTags = ["<h1>", "<h2>", "<h3>", "<ul>", "<ol>", "<blockquote>", "<pre>"];
+        const htmlBlocks = blocks.map(block => {
+          const trimmed = block.trim();
+          for (let tag of blockLevelTags) {
+            if (trimmed.startsWith(tag)) return trimmed;
           }
-          formattedOutput += "</ul>";
-        } else {
-          formattedOutput += "<pre>" + JSON.stringify(data, null, 2) + "</pre>";
-        }
-        return formattedOutput;
+          return `<p>${trimmed.replace(/\n/g, "<br>")}</p>`;
+        });
+        let html = htmlBlocks.join("");
+        return html;
       }
-
-      function updateProgressIndicator(elementId, current, total, successCount = 0, failCount = 0) {
-        const elem = document.getElementById(elementId);
-        if (elem) {
-          const successRate = current > 0 ? ((successCount / current) * 100).toFixed(1) : 0;
-          elem.innerHTML = `완료: ${current} / ${total} 쿼리 | 성공: ${successCount}, 실패: ${failCount}, 성공률: ${successRate}%`;
-        }
+      function renderMarkdown(text) {
+        return parseMarkdown(text);
       }
-
+      
+      /***********************
+       * 전체 현황표 즉시 생성 함수
+       ***********************/
+      function initOverallSummary(containerId) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = buildSimulSummaryTable([]); // 빈 테이블 생성
+      }
+      
+      // 기존 buildSimulSummaryTable()에 토큰 수 처리(필요에 따라 추가)
+      function buildSimulSummaryTable(results) {
+        let successCount = 0;
+        let failCount = 0;
+        results.forEach(r => {
+          if (r.success) successCount++;
+          else failCount++;
+        });
+        let html = `
+          <div class="test-summary">
+            <h3>결과 요약</h3>
+            <p>총: ${results.length}, 성공: ${successCount}, 실패: ${failCount}</p>
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>쿼리</th>
+                  <th>전송 시간</th>
+                  <th>첫 응답(TTFT)</th>
+                  <th>종료 시간</th>
+                  <th>소요(ms)</th>
+                  <th>청크 수</th>
+                  <th>토큰 수</th>
+                  <th>상태</th>
+                  <th>오류</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+        results.forEach(r => {
+          const statusText = r.success ? "성공" : "실패";
+          const statusClass = r.success ? "badge-success" : "badge-danger";
+          const errorText = r.error || "";
+          html += `
+            <tr>
+              <td>${r.id || ''}</td>
+              <td>${r.query || ''}</td>
+              <td>${r.sendTime || ''}</td>
+              <td>${r.firstChunkTime || ''}</td>
+              <td>${r.endTime || ''}</td>
+              <td>${r.duration || ''}</td>
+              <td>${r.chunkCount || 0}</td>
+              <td>${estimateTokenCount(r.result || "")}</td>
+              <td><span class="badge ${statusClass}">${statusText}</span></td>
+              <td style="color:var(--danger);">${errorText}</td>
+            </tr>
+          `;
+        });
+        html += `
+              </tbody>
+            </table>
+          </div>
+        `;
+        return html;
+      }
+      
       /************************************************************
        * (A) 동적으로 연속 테스트 개수의 max를 갱신하는 함수
        ************************************************************/
@@ -537,11 +607,11 @@
         sseBuffer = "";
         postStreamFirstChunkTime = null;
         postStreamEndTime = null;
-        document.getElementById('streamOutput').textContent = "";
+        const outputEl = document.getElementById('streamOutput');
         document.getElementById('streamTiming').innerHTML = "";
         document.getElementById('referenceData').innerHTML = "";
         document.getElementById('referenceData').style.display = "none";
-        document.getElementById('streamOutput').textContent = "스트리밍 응답을 기다리는 중... (Waiting for streaming response...)";
+        outputEl.textContent = "스트리밍 응답을 기다리는 중... (Waiting for streaming response...)";
         const querySentTime = new Date();
         postStreamStartTime = performance.now();
         try {
@@ -560,7 +630,7 @@
             const errTxt = await response.text();
             throw new Error('응답 오류 (Response not OK): ' + response.status + " " + errTxt);
           }
-          document.getElementById('streamOutput').textContent = "";
+          outputEl.textContent = "";
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
           while (true) {
@@ -572,11 +642,12 @@
             }
             const chunk = decoder.decode(value, { stream: true });
             processPostSseChunk(chunk);
-            document.getElementById('streamOutput').innerHTML = renderMarkdown(answerAccumulated);
+            // 스트리밍 결과 토글 방식 적용
+            updateStreamingOutput(outputEl, answerAccumulated);
           }
         } catch (err) {
           console.error('POST-based streaming error:', err);
-          document.getElementById('streamOutput').textContent = "오류 발생 (Error): " + err.message;
+          outputEl.textContent = "오류 발생 (Error): " + err.message;
           postStreamEndTime = performance.now();
           updatePostStreamTiming();
         } finally {
@@ -729,7 +800,7 @@
                 }
                 try {
                   const jsonData = JSON.parse(sseData);
-                  if (jsonData.type === "reference") {
+                  if (jsonData.type === 'reference') {
                     let refHTML = `<h4>참조 데이터 (Reference Data)</h4><ul>`;
                     if (Array.isArray(jsonData.data_list)) {
                       jsonData.data_list.forEach((ref, idx) => {
@@ -740,13 +811,14 @@
                     }
                     refHTML += `</ul>`;
                     container.querySelector(".reference-output").innerHTML = refHTML;
-                  } else if (jsonData.type === "answer") {
+                  } else if (jsonData.type === 'answer') {
                     answerAccumulated += jsonData.answer;
-                    container.querySelector(".stream-output").innerHTML = renderMarkdown(answerAccumulated);
+                    // 스트리밍 결과 업데이트 시 토글 방식 적용
+                    updateStreamingOutput(container.querySelector(".stream-output"), answerAccumulated);
                   }
                 } catch (e) {
                   answerAccumulated += sseData;
-                  container.querySelector(".stream-output").innerHTML = renderMarkdown(answerAccumulated);
+                  updateStreamingOutput(container.querySelector(".stream-output"), answerAccumulated);
                 }
               }
             }
@@ -821,15 +893,12 @@
           document.getElementById('continuousTestResults').innerHTML = html;
         } else {
           const parent = document.getElementById('continuousTestResults');
-          parent.innerHTML = '';
+          parent.innerHTML = '<div id="continuous-summary"></div><div id="continuous-partials"></div>';
+          // 바로 전체 현황표(빈 상태)를 표시
+          initOverallSummary('continuous-summary');
           const total = truncated.length;
-          const summaryContainer = document.createElement('div');
-          summaryContainer.id = "continuous-summary";
-          parent.appendChild(summaryContainer);
-          const partialsContainer = document.createElement('div');
-          partialsContainer.id = "continuous-partials";
-          parent.appendChild(partialsContainer);
           const results = [];
+          const partialsContainer = document.getElementById('continuous-partials');
           for (let i = 0; i < total; i++) {
             const queryObj = truncated[i];
             const containerId = `continuous-stream-${i}`;
@@ -840,9 +909,8 @@
             partialsContainer.appendChild(cardDiv);
             const result = await runStreamingQueryWithUI(queryObj, cardDiv);
             results.push(result);
-            summaryContainer.innerHTML = buildSimulSummaryTable(results);
+            document.getElementById('continuous-summary').innerHTML = buildSimulSummaryTable(results);
           }
-          summaryContainer.innerHTML = buildSimulSummaryTable(results);
         }
       }
       async function runNonStreamingQuery(qObj) {
@@ -947,11 +1015,11 @@
                       refDiv.innerHTML = refHTML;
                     } else if (jsonData.type === 'answer') {
                       answerAccumulated += jsonData.answer;
-                      outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                      updateStreamingOutput(outputDiv, answerAccumulated);
                     }
                   } catch (e) {
                     answerAccumulated += sseData;
-                    outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                    updateStreamingOutput(outputDiv, answerAccumulated);
                   }
                 }
               }
@@ -992,7 +1060,7 @@
           }
         });
       }
-      
+
       /************************************************************
        * (6) Continuous Chat Test - All queries share the same request_id.
        * For streaming mode, similar to (5) but using chat-specific streaming functions.
@@ -1167,11 +1235,11 @@
                       refDiv.innerHTML = refHTML;
                     } else if (json.type === 'answer') {
                       answerAccumulated += json.answer;
-                      outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                      updateStreamingOutput(outputDiv, answerAccumulated);
                     }
                   } catch (err) {
                     answerAccumulated += sseData;
-                    outputDiv.innerHTML = renderMarkdown(answerAccumulated);
+                    updateStreamingOutput(outputDiv, answerAccumulated);
                   }
                 }
               }
@@ -1214,10 +1282,9 @@
           }
         });
       }
-      
+
       async function buildTestQueries() {
-        // 테스트 셋 로직; 실제 테스트 셋 데이터를 반환하는 함수의 예시입니다.
-        // 각 쿼리는 { id: string, text: string } 형태로 구성합니다.
+        // 테스트 셋 로직; 각 쿼리는 { id: string, text: string } 형태로 구성
         return [
           { id: "Q1", text: "첫 번째 테스트 질문입니다." },
           { id: "Q2", text: "두 번째 테스트 질문입니다." },
@@ -1306,3 +1373,4 @@
     <script src="/static/test_set.js"></script>
   </body>
 </html>
+

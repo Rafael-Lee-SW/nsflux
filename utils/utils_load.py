@@ -90,13 +90,15 @@ def load_model(config):
     # Load the embedding model and tokenizer.
     # -------------------------------
     print("Loading embedding model")
+    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
     try:
         embed_model = AutoModel.from_pretrained(
             config.embed_model_id,
             cache_dir=config.cache_dir,
             trust_remote_code=True,
             token=token,  # using 'token' parameter,
-            device_map="auto"
+            device_map="auto",
+            quantization_config = bnb_config
         )
     except Exception as e:
         raise e
@@ -335,7 +337,7 @@ def load_model(config):
         except Exception as e:
             print("DEBUG: Exception loading tokenizer:", e)
             raise e
-        tokenizer.model_max_length = 4024
+        # tokenizer.model_max_length = 4024 # Default is set to infinity Model will control the max length.
         try:
             model = AutoModelForCausalLM.from_pretrained(
                 config.model_id,
@@ -356,7 +358,7 @@ def load_model(config):
 # Function: load_data
 # -------------------------------------------------
 @time_tracker
-def load_data(data_path):
+def load_data(data_path, image_base_path):
     global _cached_data, _cached_data_mtime
     try:
         current_mtime = os.path.getmtime(data_path)
@@ -381,6 +383,7 @@ def load_data(data_path):
         texts = []
         texts_short = []
         texts_vis = []
+        file_path = []
         missing_time = 0
 
         for file_obj in data:
@@ -412,6 +415,12 @@ def load_data(data_path):
                 texts_short.append(chunk["text_short"])
                 texts_vis.append(chunk["text_vis"])
 
+                # 파일 이미지 경로 추가
+                if chunk["file_path"] is not None:
+                    file_path.append(os.path.join(image_base_path, chunk["file_path"]))
+                else:
+                    file_path.append(None) # 이미지가 없는 파일은 None으로 저장됨.
+
         # 실제 텐서로 변환
         try:
             vectors = np.array(vectors)
@@ -429,6 +438,7 @@ def load_data(data_path):
             "texts": texts,
             "texts_short": texts_short,
             "texts_vis": texts_vis,
+            "file_path": file_path
         }
         _cached_data_mtime = current_mtime
         print(f"Data loaded! Length: {len(titles)}, Missing times: {missing_time}")

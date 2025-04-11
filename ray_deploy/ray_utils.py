@@ -62,7 +62,7 @@ class InferenceActor:
             config
         )
         # 데이터는 캐시 파일을 통해 로드
-        self.data = load_data(config.data_path)
+        self.data = load_data(config.data_path, config.image_base_path)
         
         # 비동기 큐와 배치 처리 설정
         self.request_queue = asyncio.Queue()
@@ -325,7 +325,7 @@ class InferenceActor:
         """
         try:
             # 데이터 다시 로드 (항상 최신 데이터 사용)
-            self.data = load_data(self.config.data_path)
+            self.data = load_data(self.config.data_path, self.config.image_base_path)
             
             # 질문 분류 및 RAG 파라미터 준비
             params = {
