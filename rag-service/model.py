@@ -97,9 +97,10 @@ class EmbeddingModel:
                     # AsyncEngineArgs 생성
                     engine_args = AsyncEngineArgs(
                         model=self.model_id,
+                        dtype="bfloat16",
                         trust_remote_code=True,
                         tensor_parallel_size=min(torch.cuda.device_count(), 1),
-                        gpu_memory_utilization=0.9,
+                        gpu_memory_utilization=0.95,
                         max_num_batched_tokens=32768,
                     )
                     

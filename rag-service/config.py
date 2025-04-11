@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     
     # 데이터 설정
     DATA_PATH: str = "./data/0404_Mistral_DB.json"
+    IMAGE_BASE_PATH: str = '/globeai/IMAGE/result_3' # 이미지 경로
     MIN_DOCS: int = 50
     
     # 캐시 설정

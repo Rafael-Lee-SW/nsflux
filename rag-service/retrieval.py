@@ -70,7 +70,9 @@ async def retrieve(
                 "title": data["titles"][index],
                 "contents": data["texts_vis"][index],
                 "chunk_id": data["chunk_ids"][index],
+                "file_path": data["file_path"][index]
             })
+            logger.info(data["file_path"][index])
         
         logger.info("검색 완료: %d개 문서 반환", len(documents_list))
         return documents, documents_list
@@ -270,6 +272,7 @@ def sort_by_time(time_bound: str, data: Dict[str, Any]) -> Dict[str, Any]:
     filtered_data["titles"] = [data["titles"][i] for i in matching_indices]
     filtered_data["times"] = [data["times"][i] for i in matching_indices]
     filtered_data["chunk_ids"] = [data["chunk_ids"][i] for i in matching_indices]
+    filtered_data["file_path"] = [data["file_path"][i] for i in matching_indices]
     
     # 벡터 데이터 처리
     if isinstance(data["vectors"], torch.Tensor):

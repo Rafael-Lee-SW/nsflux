@@ -43,7 +43,7 @@ def random_seed(seed):
 
 # 데이터 로드 함수
 @time_tracker
-def load_data(data_path):
+def load_data(data_path, image_base_path):
     """벡터 데이터베이스 로드"""
     logger.info(f"데이터 로드 시작: {data_path}")
     
@@ -60,6 +60,7 @@ def load_data(data_path):
         texts = []
         texts_short = []
         texts_vis = []
+        file_path = []
         missing_time = 0
         
         for file_obj in data:
@@ -90,6 +91,12 @@ def load_data(data_path):
                 texts.append(chunk["text"])
                 texts_short.append(chunk["text_short"])
                 texts_vis.append(chunk["text_vis"])
+                
+                # 파일 이미지 경로 추가
+                if chunk["file_path"] is not None:
+                    file_path.append(os.path.join(image_base_path, chunk["file_path"]))
+                else:
+                    file_path.append(None) # 이미지가 없는 파일은 None으로 저장됨.
         
         # 실제 텐서로 변환
         try:
@@ -107,6 +114,7 @@ def load_data(data_path):
             "texts": texts,
             "texts_short": texts_short,
             "texts_vis": texts_vis,
+            "file_path": file_path,
         }
         
         logger.info(f"데이터 로드 완료: {len(titles)}개 문서, 누락된 날짜: {missing_time}개")

@@ -90,7 +90,7 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to initialize model, service may not function correctly")
         
         # 데이터 로드
-        data = load_data(settings.DATA_PATH)
+        data = load_data(settings.DATA_PATH, settings.IMAGE_BASE_PATH)
         if data is None:
             logger.error(f"Failed to load data from {settings.DATA_PATH}")
         
@@ -140,6 +140,7 @@ class Document(BaseModel):
     title: str
     contents: List[dict]
     chunk_id: int
+    file_path: Optional[str] = None
 
 class RetrieveResponse(BaseModel):
     documents: str
@@ -189,14 +190,19 @@ async def retrieve_documents(request: RetrieveRequest):
         # Document 객체로 변환
         formatted_documents = []
         for doc in documents_list:
-            formatted_documents.append(
-                Document(
-                    file_name=doc["file_name"],
-                    title=doc["title"],
-                    contents=doc["contents"],
-                    chunk_id=doc["chunk_id"]
+            try:
+                formatted_documents.append(
+                    Document(
+                        file_name=doc["file_name"],
+                        title=doc["title"],
+                        contents=doc["contents"],
+                        chunk_id=doc["chunk_id"],
+                        file_path=doc.get("file_path"),  # file_path가 없으면 None으로 설정
+                    )
                 )
-            )
+            except Exception as e:
+                logger.warning(f"문서 변환 중 오류 발생 (무시됨): {str(e)}")
+                continue
         
         return RetrieveResponse(
             documents=documents,

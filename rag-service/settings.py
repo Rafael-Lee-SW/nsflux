@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     
     # 데이터 설정
     DATA_PATH: str = "data/processed_data.json"
+    IMAGE_BASE_PATH: str = '/globeai/IMAGE/result_3' # 이미지 경로
     
     # 캐시 설정
     CACHE_DIR: str = "cache"
