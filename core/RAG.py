@@ -24,7 +24,7 @@ import httpx
 from config import config
 
 # 내부 모듈 임포트
-from core.retrieval import retrieve, expand_time_range_if_needed
+from core.retrieval import retrieve, expand_time_range_if_needed # Ax100 API로 대체됨
 from core.generation import generate, collect_vllm_text, collect_vllm_text_stream
 from core.sql_processing import generate_sql
 
@@ -57,9 +57,9 @@ logger = logging.getLogger("RAG")
 SECTION_SEPARATOR = "-" * 100
 
 # RAG 서비스 API 호출 설정
-RAG_API_TIMEOUT = 60.0  # 타임아웃 시간 (초)
-RAG_API_MAX_RETRIES = 3  # 최대 재시도 횟수
-RAG_API_RETRY_DELAY = 1.0  # 재시도 간 대기 시간 (초)
+RAG_API_TIMEOUT = 300.0  # 타임아웃 시간 (초)
+# RAG_API_MAX_RETRIES = 3  # 최대 재시도 횟수
+# RAG_API_RETRY_DELAY = 1.0  # 재시도 간 대기 시간 (초)
 
 
 @time_tracker
@@ -140,63 +140,40 @@ async def execute_rag(
     else:
         logger.info("표준 검색 실행: 키워드='%s', 시간 범위='%s'", keywords, time_range)
 
-        # RAG 서비스 API 호출 (재시도 로직 포함)
-        retry_count = 0
-        last_error = None
-
-        while retry_count < RAG_API_MAX_RETRIES:
-            try:
-                # 타임아웃 설정이 포함된 클라이언트 생성
-                async with httpx.AsyncClient(timeout=RAG_API_TIMEOUT) as client:
-                    logger.info(
-                        f"RAG 서비스 API 호출 시도 {retry_count + 1}/{RAG_API_MAX_RETRIES}"
-                    )
-                    response = await client.post(
-                        f"{config.rag_service_url}/api/retrieve",
-                        json={
-                            "query": keywords,
-                            "top_n": config.N,
-                            "time_bound": time_range,
-                            "min_docs": 50,
-                        },
-                    )
-
-                    if response.status_code != 200:
-                        logger.error(
-                            f"RAG 서비스 API 오류: {response.status_code} - {response.text}"
-                        )
-                        return "검색 서비스에 연결할 수 없습니다.", []
-
-                    # 응답 파싱
-                    result = response.json()
-                    docs = result.get("documents", "")
-                    docs_list = result.get("documents_list", [])
-
-                    logger.info(f"RAG 서비스 API 응답: {len(docs_list)}개 문서 검색됨")
-                    return docs, docs_list
-
-            except httpx.ReadTimeout as e:
-                last_error = e
-                retry_count += 1
-                logger.warning(
-                    f"RAG 서비스 API 타임아웃 (시도 {retry_count}/{RAG_API_MAX_RETRIES}): {str(e)}"
+        try:
+            async with httpx.AsyncClient(timeout=RAG_API_TIMEOUT) as client:
+                logger.info("RAG 서비스 API 단일 호출")
+                response = await client.post(
+                    f"{config.rag_service_url}/api/retrieve",
+                    json={
+                        "query": keywords,
+                        "top_n": config.N,
+                        "time_bound": time_range,
+                        "min_docs": 50,
+                    },
                 )
-                if retry_count < RAG_API_MAX_RETRIES:
-                    await asyncio.sleep(RAG_API_RETRY_DELAY)
-                continue
 
-            except Exception as e:
-                last_error = e
-                logger.error(
-                    f"RAG 서비스 API 호출 중 오류 발생: {str(e)}", exc_info=True
-                )
-                break
+                if response.status_code != 200:
+                    logger.error(
+                        "RAG 서비스 API 오류: %s - %s",
+                        response.status_code,
+                        response.text,
+                    )
+                    return "검색 서비스에 연결할 수 없습니다.", []
 
-        # 모든 재시도 실패 또는 기타 오류 발생
-        error_msg = f"검색 서비스에 연결할 수 없습니다. 오류: {str(last_error)}"
-        logger.error(error_msg)
-        return error_msg, []
+                result = response.json()
+                docs = result.get("documents", "")
+                docs_list = result.get("documents_list", [])
 
+                logger.info("RAG 서비스 API 응답: %d개 문서 검색됨", len(docs_list))
+                return docs, docs_list
+
+        except httpx.ReadTimeout as e:
+            logger.error("RAG 서비스 API 타임아웃: %s", e)
+            return "검색 서비스에 연결할 수 없습니다. (타임아웃)", []
+        except Exception as e:
+            logger.error("RAG 서비스 API 호출 중 오류: %s", e, exc_info=True)
+            return f"검색 서비스에 연결할 수 없습니다. 오류: {str(e)}", []
 
 @time_tracker
 async def generate_answer(query: str, docs: str, **kwargs) -> str:
@@ -240,75 +217,80 @@ async def query_sort(params: Dict[str, Any]) -> Tuple[str, str, str, str]:
         tokenizer = params["tokenizer"]
         config = params["config"]
         request_id = params["request_id"]
+        
         # 프롬프트 구성
         prompt = QUERY_SORT_PROMPT.format(user_query=query)
         logger.info("query_sort 시작 (시도 %d)", attempt + 1)
 
-        # LLM에서 응답 생성
-        if config.use_vllm:
-            sampling_params = SamplingParams(
-                max_tokens=config.model.max_new_tokens,
-                temperature=config.model.temperature,
-                top_k=config.model.top_k,
-                top_p=config.model.top_p,
-                repetition_penalty=config.model.repetition_penalty,
-            )
-            # request_id = str(uuid.uuid4()) # 일관된 Request_id 사용
-            answer = await collect_vllm_text(prompt, model, sampling_params, request_id)
-        else:
-            input_ids = tokenizer(
-                prompt, return_tensors="pt", truncation=True, max_length=4024
-            ).to("cuda")
-            token_count = input_ids["input_ids"].shape[1]
-            outputs = model.generate(
-                **input_ids,
-                max_new_tokens=config.model.max_new_tokens,
-                do_sample=config.model.do_sample,
-                temperature=config.model.temperature,
-                top_k=config.model.top_k,
-                top_p=config.model.top_p,
-                repetition_penalty=config.model.repetition_penalty,
-                eos_token_id=tokenizer.eos_token_id,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-            answer = tokenizer.decode(
-                outputs[0][token_count:], skip_special_tokens=True
-            )
+        try:
+            # LLM에서 응답 생성
+            if config.use_vllm:
+                sampling_params = SamplingParams(
+                    max_tokens=config.model.max_new_tokens,
+                    temperature=config.model.temperature,
+                    top_k=config.model.top_k,
+                    top_p=config.model.top_p,
+                    repetition_penalty=config.model.repetition_penalty,
+                )
+                answer = await collect_vllm_text(prompt, model, sampling_params, request_id)
+            else:
+                input_ids = tokenizer(
+                    prompt, return_tensors="pt", truncation=True, max_length=4024
+                ).to("cuda")
+                token_count = input_ids["input_ids"].shape[1]
+                outputs = model.generate(
+                    **input_ids,
+                    max_new_tokens=config.model.max_new_tokens,
+                    do_sample=config.model.do_sample,
+                    temperature=config.model.temperature,
+                    top_k=config.model.top_k,
+                    top_p=config.model.top_p,
+                    repetition_penalty=config.model.repetition_penalty,
+                    eos_token_id=tokenizer.eos_token_id,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+                answer = tokenizer.decode(
+                    outputs[0][token_count:], skip_special_tokens=True
+                )
 
-        logger.debug("Generated answer: %s", answer)
+            logger.debug("Generated answer: %s", answer)
 
-        # 응답에서 태그로 감싸진 정보 추출
-        query_pattern = r"<query.*?>(.*?)<query.*?>"
-        keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
-        table_pattern = r"<table.*?>(.*?)<table.*?>"
-        time_pattern = r"<time.*?>(.*?)<time.*?>"
+            # 응답에서 태그로 감싸진 정보 추출
+            query_pattern = r"<query.*?>(.*?)<query.*?>"
+            keyword_pattern = r"<keyword.*?>(.*?)<keyword.*?>"
+            table_pattern = r"<table.*?>(.*?)<table.*?>"
+            time_pattern = r"<time.*?>(.*?)<time.*?>"
 
-        m_query = re.search(query_pattern, answer, re.DOTALL)
-        m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
-        m_table = re.search(table_pattern, answer, re.DOTALL)
-        m_time = re.search(time_pattern, answer, re.DOTALL)
+            m_query = re.search(query_pattern, answer, re.DOTALL)
+            m_keyword = re.search(keyword_pattern, answer, re.DOTALL)
+            m_table = re.search(table_pattern, answer, re.DOTALL)
+            m_time = re.search(time_pattern, answer, re.DOTALL)
 
-        # 모든 필수 태그가 존재하는 경우
-        if m_query and m_keyword and m_table and m_time:
-            qu = m_query.group(1).strip()
-            ke = m_keyword.group(1).strip()
-            ta = m_table.group(1).strip()
-            ti = m_time.group(1).strip()
+            # 모든 필수 태그가 존재하는 경우
+            if m_query and m_keyword and m_table and m_time:
+                qu = m_query.group(1).strip()
+                ke = m_keyword.group(1).strip()
+                ta = m_table.group(1).strip()
+                ti = m_time.group(1).strip()
 
-            # 'all' 시간 범위 처리
-            if ti == "all":
-                ti = "1900-01-01:2099-01-01"
+                # 'all' 시간 범위 처리
+                if ti == "all":
+                    ti = "1900-01-01:2099-01-01"
 
-            logger.info(
-                "질문 구체화 결과: 질문='%s', 키워드='%s', 테이블='%s', 시간='%s'",
-                qu,
-                ke,
-                ta,
-                ti,
-            )
-            return qu, ke, ta, ti
-        else:
-            logger.error("필요한 태그가 누락됨. 재시도 %d", attempt + 1)
+                logger.info(
+                    "질문 구체화 결과: 질문='%s', 키워드='%s', 테이블='%s', 시간='%s'",
+                    qu,
+                    ke,
+                    ta,
+                    ti,
+                )
+                return qu, ke, ta, ti
+            else:
+                logger.error("필요한 태그가 누락됨. 재시도 %d", attempt + 1)
+                attempt += 1
+
+        except Exception as e:
+            logger.error("질문 구체화 중 오류 발생: %s", str(e), exc_info=True)
             attempt += 1
 
     # 최대 시도 횟수를 초과한 경우 기본값 반환

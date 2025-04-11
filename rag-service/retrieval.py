@@ -38,15 +38,16 @@ async def retrieve(
         logger.info(f"유사도 스코어 계산 완료: shape={sim_score.shape}")
         
         # BM25 스코어 계산
-        bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
-        logger.info(f"BM25 스코어 계산 완료: shape={bm25_score.shape}")
+        # bm25_score = cal_bm25_score(query, data["texts_short"], embed_tokenizer)
+        # logger.info(f"BM25 스코어 계산 완료: shape={bm25_score.shape}")
         
         # 스코어 정규화
         scaled_sim_score = min_max_scaling(sim_score)
-        scaled_bm25_score = min_max_scaling(bm25_score)
+        # scaled_bm25_score = min_max_scaling(bm25_score)
         
         # 최종 스코어 계산 (가중치 적용)
-        score = scaled_sim_score * 0.7 + scaled_bm25_score * 0.3
+        score = scaled_sim_score
+        # score = scaled_sim_score * 0.7 + scaled_bm25_score * 0.3
         score_values = score[:, 0, 0]
         
         # 상위 N개 문서 선택
