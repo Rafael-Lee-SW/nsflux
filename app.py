@@ -659,6 +659,7 @@ def test_prompt_stream():
     - user_input: 사용자 입력 텍스트
     - file_data: (선택) 파일 데이터 (base64 인코딩)
     - file_type: (선택) 파일 타입 ('image' 또는 'pdf')
+    - use_rag: (선택) RAG 사용 여부 (기본값: true)
     """
     try:
         # 요청 파라미터 추출
@@ -667,6 +668,7 @@ def test_prompt_stream():
         user_input = body.get("user_input", "")
         file_data = body.get("file_data")
         file_type = body.get("file_type", "image")  # 기본값은 이미지
+        use_rag = body.get("use_rag", True)  # RAG 사용 여부 (기본값: true)
 
         if not system_prompt:
             return Response(
@@ -674,7 +676,7 @@ def test_prompt_stream():
             )
 
         print(
-            f"[DEBUG] /test_prompt_stream called with prompt length={len(system_prompt)}, user_input='{user_input[:50]}...' and file_type={file_type}"
+            f"[DEBUG] /test_prompt_stream called with prompt length={len(system_prompt)}, user_input='{user_input[:50]}...', file_type={file_type}, use_rag={use_rag}"
         )
 
         # 요청 ID 생성 (SSE 큐 ID로 사용)
@@ -685,7 +687,7 @@ def test_prompt_stream():
 
         # Ray Serve를 통한 스트리밍 프롬프트 테스트 호출
         response = inference_handle.test_prompt_stream.remote(
-            system_prompt, user_input, file_data, file_type, request_id
+            system_prompt, user_input, file_data, file_type, request_id, use_rag
         )
         obj_ref = response._to_object_ref_sync()
         chat_id = ray.get(obj_ref)
@@ -714,7 +716,7 @@ def test_prompt_stream():
         error_resp = error_format(f"프롬프트 스트리밍 테스트 중 오류: {str(e)}", 500)
         return Response(error_resp, content_type=content_type)
 
-#  Flask 라우트들 아래에 추가 (stream 부분 이후 아무 곳이나 OK)
+#  Flask 라우트들 아래에 추가 (stream 부분 이후 아무 곳이나 OK)
 @app.route("/metrics", methods=["GET"])
 async def get_metrics():
     try:

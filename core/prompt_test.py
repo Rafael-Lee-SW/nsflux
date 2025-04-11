@@ -9,6 +9,7 @@ from PIL import Image
 from utils.tracking import time_tracker
 from core.image_processing import prepare_image
 from core.pdf_processor import pdf_to_prompt_context  # 새로 추가
+from core.RAG import execute_rag
 
 # vLLM 관련 임포트
 from vllm import SamplingParams
@@ -16,6 +17,25 @@ from vllm.engine.async_llm_engine import AsyncLLMEngine
 
 # 로깅 설정
 logger = logging.getLogger("PROMPT_TESTING")
+
+# ─── Token counter ──────────────────────────────────────────────
+from functools import lru_cache
+
+@lru_cache(maxsize=1024)
+def _approx_image_tokens(resolution: tuple[int, int]) -> int:
+    """
+    Gemma‑3(ViT‑B) 기본 패치 크기 14×14 가정.
+    필요하면 모델 스펙에 맞춰 조정하세요.
+    """
+    w, h = resolution
+    return (w // 14) * (h // 14)
+
+def count_tokens(text: str, tokenizer) -> int:
+    """Special‑token 제외 토큰 길이."""
+    if not text:
+        return 0
+    return len(tokenizer.encode(text, add_special_tokens=False))
+# ────────────────────────────────────────────────────────────────
 
 @time_tracker
 async def test_prompt_with_image(
@@ -60,6 +80,9 @@ async def test_prompt_with_image(
             try:
                 pil_image = await prepare_image(file_data)
                 logger.info(f"이미지 로드 성공: {pil_image.size if pil_image else None}")
+                if pil_image:
+                    pil_images.append(pil_image)
+                    logger.info(f"이미지가 pil_images 리스트에 추가됨: {pil_image.size}")
             except Exception as e:
                 logger.error(f"이미지 로드 실패: {str(e)}")
                 return f"이미지 로드 오류: {str(e)}"
@@ -84,8 +107,13 @@ async def test_prompt_with_image(
                         try:
                             img_bytes = base64.b64decode(img_data["base64"])
                             img = Image.open(io.BytesIO(img_bytes))
+                            
+                            # RGBA 이미지를 RGB로 변환
+                            if img.mode == 'RGBA':
+                                img = img.convert('RGB')
+                                
                             pil_images.append(img)
-                            logger.info(f"PDF 이미지 추가: 페이지 {img_data['page']}, ID {img_data['image_id']}, 크기 {img.size}")
+                            logger.info(f"PDF 이미지 추가: 페이지 {img_data['page']}, ID {img_data['image_id']}, 크기 {img.size}, 모드 {img.mode}")
                         except Exception as e:
                             logger.warning(f"이미지 변환 오류 (무시됨): {str(e)}")
                             
@@ -131,6 +159,20 @@ async def test_prompt_with_image(
                 add_generation_prompt=True,
             )
             
+            # ─── 토큰 수 로그 ────────────────────────────────
+            tok = processor.tokenizer  # 동일 토크나이저
+            sys_tok  = count_tokens(system_prompt, tok)
+            user_tok = count_tokens(user_text,     tok)
+            rag_tok  = count_tokens(docs,          tok) if 'docs' in locals() else 0
+            img_tok  = sum(_approx_image_tokens(img.size) for img in pil_images[:max_images_for_model])
+            total_tok= count_tokens(prompt_string, tok) + img_tok
+
+            logger.info(
+                f"[TOKENS] system={sys_tok}, user={user_tok}, rag={rag_tok}, "
+                f"images={img_tok}, total_prompt={total_tok}"
+            )
+            # ────────────────────────────────────────────────
+            
             # 멀티모달 요청 구성 (모든 이미지 포함)
             generate_request = {
                 "prompt": prompt_string,
@@ -163,6 +205,17 @@ async def test_prompt_with_image(
                 tokenize=False,
                 add_generation_prompt=True
             )
+            
+            # ─── 토큰 수 로그 ────────────────────────────────
+            sys_tok  = count_tokens(system_prompt, tokenizer)
+            user_tok = count_tokens(user_text,   tokenizer)
+            rag_tok  = count_tokens(docs,        tokenizer) if 'docs' in locals() else 0
+            total_tok= count_tokens(prompt_string, tokenizer)
+            logger.info(
+                f"[TOKENS] system={sys_tok}, user={user_tok}, rag={rag_tok}, "
+                f"total_prompt={total_tok}"
+            )
+            # ────────────────────────────────────────────────
             
             # 일반 텍스트 요청
             generate_request = prompt_string
@@ -215,7 +268,8 @@ async def test_prompt_streaming(
     model: AsyncLLMEngine = None,
     tokenizer: Any = None,
     config: Any = None,
-    request_id: str = None
+    request_id: str = None,
+    use_rag: bool = False  # RAG 사용 여부 추가
 ):
     """
     프롬프트 테스트를 스트리밍 방식으로 수행합니다.
@@ -229,6 +283,7 @@ async def test_prompt_streaming(
         tokenizer: 토크나이저
         config: 설정
         request_id: 요청 ID
+        use_rag: RAG 사용 여부
         
     Yields:
         str: 생성된 부분 텍스트
@@ -236,11 +291,11 @@ async def test_prompt_streaming(
     if not request_id:
         request_id = str(uuid.uuid4())
     
-    logger.info(f"스트리밍 프롬프트 테스트 시작: request_id={request_id}, file_type={file_type}")
+    logger.info(f"스트리밍 프롬프트 테스트 시작: request_id={request_id}, file_type={file_type}, use_rag={use_rag}")
     
     # 파일 처리
     pil_image = None
-    pil_images = []  # 단일 이미지 대신 이미지 리스트로 변경
+    pil_images = []
     pdf_context = {}
     pdf_images = []
     
@@ -249,6 +304,9 @@ async def test_prompt_streaming(
             try:
                 pil_image = await prepare_image(file_data)
                 logger.info(f"이미지 로드 성공: {pil_image.size if pil_image else None}")
+                if pil_image:
+                    pil_images.append(pil_image)
+                    logger.info(f"이미지가 pil_images 리스트에 추가됨: {pil_image.size}")
             except Exception as e:
                 logger.error(f"이미지 로드 실패: {str(e)}")
                 yield f"이미지 로드 오류: {str(e)}"
@@ -276,7 +334,13 @@ async def test_prompt_streaming(
                         try:
                             img_bytes = base64.b64decode(img_data["base64"])
                             img = Image.open(io.BytesIO(img_bytes))
+                            
+                            # RGBA 이미지를 RGB로 변환
+                            if img.mode == 'RGBA':
+                                img = img.convert('RGB')
+                                
                             pil_images.append(img)
+                            logger.info(f"PDF 이미지 추가: 페이지 {img_data['page']}, ID {img_data['image_id']}, 크기 {img.size}, 모드 {img.mode}")
                         except Exception as e:
                             logger.warning(f"이미지 변환 오류 (무시됨): {str(e)}")
                     
@@ -294,6 +358,30 @@ async def test_prompt_streaming(
                 return
     
     try:
+        # RAG 처리
+        if use_rag:
+            yield "RAG 검색 중..."
+            try:
+                # RAG 실행
+                docs, docs_list = await execute_rag(
+                    query=user_text,
+                    keywords=user_text,  # 키워드는 사용자 입력을 그대로 사용
+                    needs_table="no",
+                    time_range="all",
+                    model=model,
+                    tokenizer=tokenizer,
+                    config=config
+                )
+                
+                if docs:
+                    user_text = f"{user_text}\n\n검색된 문서 내용:\n{docs}"
+                    yield "RAG 검색 완료\n"
+                else:
+                    yield "RAG 검색 결과가 없습니다\n"
+            except Exception as e:
+                logger.error(f"RAG 처리 중 오류: {str(e)}")
+                yield f"RAG 처리 오류: {str(e)}\n"
+        
         # 멀티모달 메시지 설정 (이미지가 있는 경우)
         if pil_images:
             from transformers import AutoProcessor
@@ -303,10 +391,9 @@ async def test_prompt_streaming(
             )
             
             # 시스템 메시지와 사용자 메시지 구성
-            # 복수의 이미지를 포함하도록 수정
             message_content = [{"type": "text", "text": user_text}]
             
-            # 이미지 추가 (최대 10개로 제한해 모델이 처리할 수 있는 범위 내에서 유지)
+            # 이미지 추가 (최대 10개로 제한)
             max_images_for_model = min(10, len(pil_images))
             for i in range(max_images_for_model):
                 message_content.insert(0, {"type": "image", "url": pil_images[i]})
@@ -329,11 +416,25 @@ async def test_prompt_streaming(
                 add_generation_prompt=True,
             )
             
-            # 멀티모달 요청 구성 (모든 이미지 포함)
+            # ─── 토큰 수 로그 ────────────────────────────────
+            tok = processor.tokenizer  # 동일 토크나이저
+            sys_tok  = count_tokens(system_prompt, tok)
+            user_tok = count_tokens(user_text,     tok)
+            rag_tok  = count_tokens(docs,          tok) if 'docs' in locals() else 0
+            img_tok  = sum(_approx_image_tokens(img.size) for img in pil_images[:max_images_for_model])
+            total_tok= count_tokens(prompt_string, tok) + img_tok
+
+            logger.info(
+                f"[TOKENS] system={sys_tok}, user={user_tok}, rag={rag_tok}, "
+                f"images={img_tok}, total_prompt={total_tok}"
+            )
+            # ────────────────────────────────────────────────
+            
+            # 멀티모달 요청 구성
             generate_request = {
                 "prompt": prompt_string,
                 "multi_modal_data": {
-                    "image": pil_images[:max_images_for_model]  # 최대 10개 이미지로 제한
+                    "image": pil_images[:max_images_for_model]
                 }
             }
             
@@ -362,6 +463,17 @@ async def test_prompt_streaming(
                 add_generation_prompt=True
             )
             
+            # ─── 토큰 수 로그 ────────────────────────────────
+            sys_tok  = count_tokens(system_prompt, tokenizer)
+            user_tok = count_tokens(user_text,   tokenizer)
+            rag_tok  = count_tokens(docs,        tokenizer) if 'docs' in locals() else 0
+            total_tok= count_tokens(prompt_string, tokenizer)
+            logger.info(
+                f"[TOKENS] system={sys_tok}, user={user_tok}, rag={rag_tok}, "
+                f"total_prompt={total_tok}"
+            )
+            # ────────────────────────────────────────────────
+            
             # 일반 텍스트 요청
             generate_request = prompt_string
         
@@ -374,12 +486,8 @@ async def test_prompt_streaming(
             repetition_penalty=config.model.repetition_penalty,
         )
         
-        # 부분 결과를 누적하기 위한 변수
-        
-        # 가장 중요한 부분: 실제 스트리밍 로직
+        # 스트리밍 생성
         accumulated_text = ""
-        
-        # vLLM으로 스트리밍 생성
         async for output in model.generate(
             prompt=generate_request,
             sampling_params=sampling_params,

@@ -986,9 +986,9 @@ class InferenceActor:
         
         return result
 
-    async def test_prompt_stream(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
+    async def test_prompt_stream(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None, use_rag: bool = True) -> str:
         """
-        새 프롬프트를 스트리밍 방식으로 테스트합니다.
+        새 프롬프트 스트리밍 테스트 API
         
         Args:
             system_prompt: 테스트할 시스템 프롬프트
@@ -996,11 +996,12 @@ class InferenceActor:
             file_data: 파일 데이터 (선택)
             file_type: 파일 타입 ('image' 또는 'pdf')
             request_id: 요청 ID
+            use_rag: RAG 사용 여부 (기본값: true)
             
         Returns:
             str: 채팅 ID (스트리밍용)
         """
-        logger.info(f"스트리밍 프롬프트 테스트 시작: prompt_length={len(system_prompt)}, file_type={file_type}, request_id={request_id}")
+        logger.info(f"스트리밍 프롬프트 테스트 시작: prompt_length={len(system_prompt)}, file_type={file_type}, request_id={request_id}, use_rag={use_rag}")
         
         if not request_id:
             request_id = str(uuid.uuid4())
@@ -1016,7 +1017,8 @@ class InferenceActor:
                     model=self.model,
                     tokenizer=self.tokenizer,
                     config=self.config,
-                    request_id=request_id
+                    request_id=request_id,
+                    use_rag=use_rag
                 ):
                     # 응답 토큰 JSON 형식으로 포장하여 전송
                     answer_json = json.dumps({
@@ -1217,7 +1219,7 @@ class InferenceService:
         result = await self.actor.test_prompt.remote(system_prompt, user_text, file_data, file_type, request_id)
         return result
 
-    async def test_prompt_stream(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None) -> str:
+    async def test_prompt_stream(self, system_prompt: str, user_text: str, file_data: Optional[Any] = None, file_type: Optional[str] = None, request_id: str = None, use_rag: bool = True) -> str:
         """
         새 프롬프트 스트리밍 테스트 API
         
@@ -1227,11 +1229,12 @@ class InferenceService:
             file_data: 파일 데이터 (선택)
             file_type: 파일 타입 ('image' 또는 'pdf')
             request_id: 요청 ID
+            use_rag: RAG 사용 여부 (기본값: true)
             
         Returns:
             str: 채팅 ID (스트리밍용)
         """
-        req_id = await self.actor.test_prompt_stream.remote(system_prompt, user_text, file_data, file_type, request_id)
+        req_id = await self.actor.test_prompt_stream.remote(system_prompt, user_text, file_data, file_type, request_id, use_rag)
         return req_id
     
     async def metrics(self):

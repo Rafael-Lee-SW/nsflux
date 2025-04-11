@@ -36,7 +36,7 @@ vllm:
   # disable_sliding_window: True    # Gemma3 이식 작업에서 도입, 현재 미사용, sliding window 비활성화 - cascade attention과 충돌이 나서 이를 비활성화
   ### Gemma3 - Multi Modal 이미지 기능에 따른 새로운 인자값
   mm_processor_kwargs:            # 이미지 처리 시 사용되는 추가 인자 정의
-    do_pan_and_scan: True         # 이미지 내 객체 감지 및 영역 스캔 기능을 활성화
+    do_pan_and_scan: True         # 이미지 내 객체 감지 및 영역 스캔 기능을 활성화 - 아직 v1에서는 제대로 지원하지 않음
   disable_mm_preprocessor_cache: False # 이미지 전처리 캐시를 비활성화 할지 여부
   limit_mm_per_prompt:            # 프롬프트 당 허용되는 멀티모달(예, 이미지, 비디오 등) 입력의 최대 개수
     image: 10                      # 최대 image 처리 개수
@@ -64,6 +64,7 @@ data_path : '/workspace/data/0228_DB_.json'     # VectorDB Path - New one (계�
 metadata_path : '/workspace/data/Metadata.json' # Metadata.json Path
 metadata_unno : '/workspace/data/METADATA_OPRAIMDG.json'
 sql_data_path : '/workspace/data/poc.db'        # SQLite 데이터베이스 Path
+image_bash_path: '/globeai/IMAGE/result_3' # 이미지 경로
 
 ### Retrieve
 N : 10 # Retrieve top N chunks
