@@ -121,6 +121,10 @@ def extract_images(page):
             # PIL을 사용하여 이미지 열기
             pil_image = Image.open(io.BytesIO(image_bytes))
             
+            # RGBA 이미지를 RGB로 변환
+            if pil_image.mode == 'RGBA':
+                pil_image = pil_image.convert('RGB')
+            
             # 이미지를 base64로 변환
             buffered = io.BytesIO()
             pil_image.save(buffered, format="PNG")
