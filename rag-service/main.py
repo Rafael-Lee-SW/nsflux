@@ -5,7 +5,8 @@ import uvicorn
 import os
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import uuid                                # ★ NEW
 import numpy as np
 from dotenv import load_dotenv
 from loguru import logger
@@ -22,6 +23,39 @@ if settings.USE_ONNX:
     from optimized_model import ONNXEmbeddingModel as EmbeddingModel
 else:
     from model import EmbeddingModel
+
+# ──────────────────────────────────────────────────────────────────────────────
+# req_id 중복 방지용 전역 상태
+# ──────────────────────────────────────────────────────────────────────────────
+REQ_ID_TTL_SECONDS = 90                          # 중복 체크 유지 시간(초)
+_recent_req_ids: dict[str, float] = {}           # {req_id: last_seen_timestamp}
+_req_id_lock = asyncio.Lock()                    # 동시 요청 보호용 Lock
+
+
+async def _register_req_id(req_id: str) -> None:
+    """
+    중복 req_id가 들어오면 HTTPException(409) 발생.
+    TTL이 지난 req_id는 자동 제거.
+    """
+    now = datetime.now(timezone.utc).timestamp()
+    async with _req_id_lock:
+        # 만료된 항목 정리
+        expired = [
+            rid for rid, ts in _recent_req_ids.items()
+            if now - ts > REQ_ID_TTL_SECONDS
+        ]
+        for rid in expired:
+            _recent_req_ids.pop(rid, None)
+
+        # 중복 확인
+        if req_id in _recent_req_ids:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate req_id detected: {req_id}"
+            )
+        # 신규 등록
+        _recent_req_ids[req_id] = now
+# ──────────────────────────────────────────────────────────────────────────────
 
 # 환경 변수 로드
 load_dotenv()
@@ -129,11 +163,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Pydantic Models
+# ──────────────────────────────────────────────────────────────────────────────
 class RetrieveRequest(BaseModel):
     query: str
     top_n: int = 10
     time_bound: str = "all"
     min_docs: int = 50
+    req_id: Optional[str] = None               # ★ NEW : 클라이언트가 지정할 수도 있음
 
 class Document(BaseModel):
     file_name: str
@@ -146,7 +184,11 @@ class Document(BaseModel):
 class RetrieveResponse(BaseModel):
     documents: str
     documents_list: List[Document]
+    req_id: str                                # ★ NEW : 실제 사용된 req_id 반환
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Endpoints
+# ──────────────────────────────────────────────────────────────────────────────
 @app.get("/api/health")
 async def health_check():
     """서비스 상태 확인 엔드포인트"""
@@ -159,7 +201,7 @@ async def health_check():
 
 @app.post("/api/retrieve", response_model=RetrieveResponse)
 async def retrieve_documents(request: RetrieveRequest):
-    """문서 검색 엔드포인트"""
+    """문서 검색 엔드포인트 (req_id 중복 방지 포함)"""
     try:
         # 모델과 데이터 확인
         if model is None or data is None:
@@ -167,7 +209,12 @@ async def retrieve_documents(request: RetrieveRequest):
                 status_code=503,
                 detail="서비스가 아직 초기화되지 않았습니다"
             )
-        
+
+        # ───── req_id 중복 체크 ─────
+        # 클라이언트가 주지 않으면 새로 생성
+        req_id = request.req_id or uuid.uuid4().hex
+        await _register_req_id(req_id)
+
         # 시간 기반 필터링
         filtered_data = sort_by_time(request.time_bound, data)
         
@@ -198,7 +245,7 @@ async def retrieve_documents(request: RetrieveRequest):
                         title=doc["title"],
                         contents=doc["contents"],
                         chunk_id=doc["chunk_id"],
-                        file_path=doc.get("file_path"),  # file_path가 없으면 None으로 설정
+                        file_path=doc.get("file_path"),
                         text_short=doc.get("text_short"),
                     )
                 )
@@ -208,9 +255,13 @@ async def retrieve_documents(request: RetrieveRequest):
         
         return RetrieveResponse(
             documents=documents,
-            documents_list=formatted_documents
+            documents_list=formatted_documents,
+            req_id=req_id                         # 사용된 req_id 반환
         )
         
+    except HTTPException:
+        # HTTPException 그대로 전달
+        raise
     except Exception as e:
         logger.error(f"문서 검색 중 오류 발생: {str(e)}")
         raise HTTPException(

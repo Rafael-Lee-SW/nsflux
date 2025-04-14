@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
     
     # 데이터 설정
-    DATA_PATH: str = "data/processed_data.json"
+    DATA_PATH: str = "data/0414_Mistral_DB.json"
     IMAGE_BASE_PATH: str = '/globeai/IMAGE/result_3' # 이미지 경로
     
     # 캐시 설정
