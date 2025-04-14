@@ -27,6 +27,7 @@ def process_to_format(qry_contents, type):
                 "rsp_tit": f"{i+1}번째 검색데이터: {form['title']} (출처:{form['file_name']})",
                 "rsp_data": form["contents"],
                 "chunk_id": form.get("chunk_id"),
+                "file_path": form['file_path'],
             }
             tmp_format["rsp_data"].append(tmp_format_)
         return tmp_format
