@@ -71,7 +71,8 @@ async def retrieve(
                 "title": data["titles"][index],
                 "contents": data["texts_vis"][index],
                 "chunk_id": data["chunk_ids"][index],
-                "file_path": data["file_path"][index]
+                "file_path": data["file_path"][index],
+                "text_short": data["texts_short"][index]
             })
             logger.info(data["file_path"][index])
         

@@ -58,8 +58,8 @@ embed_model_id : 'BM-K/KoSimCSE-roberta-multitask'
 cache_dir : "/workspace/huggingface"  # Docker
 
 ### Data
-# data_path : '/workspace/data/0404_Mistral_DB.json'     # VectorDB Path - New one (계약서 데이터 포함)
-data_path : '/workspace/data/0228_DB_.json'     # VectorDB Path - New one (계약서 데이터 포함)
+data_path : '/workspace/data/0410_Mistral_DB.json'     # VectorDB Path - New one (계약서 데이터 포함)
+# data_path : '/workspace/data/0228_DB_.json'     # VectorDB Path - New one (계약서 데이터 포함)
 # data_path : 'data/1104_NS_DB_old.json' # VectorDB Path - Old one
 metadata_path : '/workspace/data/Metadata.json' # Metadata.json Path
 metadata_unno : '/workspace/data/METADATA_OPRAIMDG.json'

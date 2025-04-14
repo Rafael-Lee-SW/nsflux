@@ -141,6 +141,7 @@ class Document(BaseModel):
     contents: List[dict]
     chunk_id: int
     file_path: Optional[str] = None
+    text_short: Optional[str] = None
 
 class RetrieveResponse(BaseModel):
     documents: str
@@ -198,6 +199,7 @@ async def retrieve_documents(request: RetrieveRequest):
                         contents=doc["contents"],
                         chunk_id=doc["chunk_id"],
                         file_path=doc.get("file_path"),  # file_path가 없으면 None으로 설정
+                        text_short=doc.get("text_short"),
                     )
                 )
             except Exception as e:
