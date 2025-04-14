@@ -9,6 +9,8 @@ source/
 
 oracle/
 
+rag-front/
+
 # Next.js
 .next/
 out/
