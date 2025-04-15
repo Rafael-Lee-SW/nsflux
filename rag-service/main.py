@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import uvicorn
@@ -162,6 +163,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+@app.get("/")
+async def root():
+    """루트 경로 접근 시 데이터 관리 페이지로 리다이렉트"""
+    return RedirectResponse(url="/manager")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pydantic Models
