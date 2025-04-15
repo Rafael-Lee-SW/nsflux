@@ -118,13 +118,13 @@ async def execute_rag(
                 {
                     "file_name": "SQL_Result",
                     "title": title,
-                    "contents": [{"data": table_json}],
+                    "data": table_json,                 # ← 바로 data 로!
                     "chunk_id": 0,
                 },
                 {
                     "file_name": "B/L_Detail",
                     "title": "DG B/L 상세 정보",
-                    "contents": [{"data": detailed_result}],
+                    "data": detailed_result,            # ← 바로 data 로!
                     "chunk_id": 1,
                 },
             ]
