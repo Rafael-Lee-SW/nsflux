@@ -32,7 +32,6 @@ embedding_model.eval()
 
 data_control_bp = Blueprint("data_manager", __name__, template_folder="templates")
 
-
 # --------------------------------------------------------
 # HELPER FUNCTIONS
 # --------------------------------------------------------

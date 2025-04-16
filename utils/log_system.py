@@ -66,20 +66,28 @@ class MetricsManager:
 
         self._engine = engine_async
         self._stats_interval = stats_interval_sec
-        self._req: Dict[str, RequestMetrics] = {}
-        self._last50: Deque[RequestMetrics] = deque(maxlen=50)
 
+        # ───── 요청 데이터 ─────
+        self._req: Dict[str, RequestMetrics] = {}                # 현재 진행중인 요청 데이터
+        self._last50: Deque[RequestMetrics] = deque(maxlen=50)   # 마지막 50개 요청 데이터
+        self._finished: list[RequestMetrics] = []                # ★ 모든 완료 요청
+
+        # ───── “누적” 카운터 ─────
+        self._total_requests: int = 0
+        self._total_finished: int = 0
+        self._total_generated_tokens: int = 0
+
+        # ───── 로거 및 필터 설정 ─────
         self._logger = logging.getLogger("control_tower")
         self._logger.setLevel(logging.INFO)
-
         self._vllm_filter = _VllmIdleFilter(self)  # ← 필터 객체
         # >>> NEW : 모든 현존 logger 에 필터 부착
         self._attach_filter_to_all()
-
         # 이후 생길 logger 도 주기적으로 잡아주기 위해 set
         self._known_logger_ids = {id(l) for l in logging.root.manager.loggerDict.values()
                                   if isinstance(l, logging.Logger)}
-
+        
+        # ───── 기타 상태 ─────
         self._prev_stat: Optional[str] = None
         self._same_cnt = 0
         self._idle = False
@@ -99,8 +107,10 @@ class MetricsManager:
     def start_request(
         self, rid, q, *, prompt_tokens=0, rag=True, image=False, sql=False
     ):
+        """요청이 들어올 때 호출"""
         flags = f"rag:{'on' if rag else 'off'},image:{'on' if image else 'off'},sql:{'on' if sql else 'off'}"
         self._req[rid] = RequestMetrics(rid, q, flags, prompt_tokens=prompt_tokens)
+        self._total_requests += 1                                # ★ 누적 요청 수 증가
 
     def first_token(self, rid):
         self._req.get(rid) and self._req[rid].mark_first_token()
@@ -109,30 +119,38 @@ class MetricsManager:
         self._req.get(rid) and setattr(self._req[rid], "generated_tokens", n)
 
     def finish_request(self, rid, answer_text=""):
+        """응답이 끝났을 때 호출"""
         m = self._req.pop(rid, None)
         if not m:
             return
         m.mark_end()
         self._last50.append(m)
+        self._finished.append(m)          # ★ 전체 목록에도 저장
+
+        # ★ 누적 통계 업데이트
+        self._total_finished += 1
+        self._total_generated_tokens += m.generated_tokens
 
     # ---- dashboard 용 ----
     def dump_state(self) -> Dict[str, Any]:
         last50 = list(self._last50)
+        finished_list = self._finished
         return {
+            # ───────── 누적(global) 영역 ─────────
             "global": {
-                "total_generated_tokens": sum(m.generated_tokens for m in last50),
-                "avg_gen_tps_last50": sum((m.gen_tps or 0) for m in last50)
-                / (len(last50) or 1),
-                "avg_ttft_last50": sum((m.ttft or 0) for m in last50)
-                / (len(last50) or 1),
-                "avg_total_time_last50": sum((m.total_latency or 0) for m in last50)
-                / (len(last50) or 1),
-                "total_requests": len(last50) + len(self._req),
-                "finished_requests": len(last50),
-                "unfinished_requests": len(self._req),
+                "total_requests":          self._total_requests,
+                "finished_requests":       self._total_finished,
+                "unfinished_requests":     len(self._req),
+                "total_generated_tokens":  self._total_generated_tokens,
+                # ── 최근 50건 평균 ──
+                "avg_gen_tps_last50":   sum((m.gen_tps or 0) for m in last50) / (len(last50) or 1),
+                "avg_ttft_last50":      sum((m.ttft or 0) for m in last50) / (len(last50) or 1),
+                "avg_total_time_last50": sum((m.total_latency or 0) for m in last50) / (len(last50) or 1),
             },
-            "active_requests": {rid: m.__dict__ for rid, m in self._req.items()},
-            "recent_finished": [m.__dict__ for m in last50],
+            # ───────── 상세 목록 ─────────
+            "active_requests":   {rid: m.__dict__ for rid, m in self._req.items()},
+            "recent_finished":   [m.__dict__ for m in last50],     # 최근 50건 종료
+            "all_finished": [m.__dict__ for m in finished_list],   # 전체 종료
         }
 
     # ------------------------------------------------------------

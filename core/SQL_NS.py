@@ -1,5 +1,4 @@
 # core/SQL_NS.py
-
 import os
 import subprocess
 from utils.tracking import time_tracker
@@ -23,20 +22,18 @@ sqlplus_command = [
     "sqlplus", "-S", "LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR"
 ]
 
-'''
+"""
 ### ORACLE DB 정보 ###
 TABLE : ai_dg_check
     COLUMNS : CLS (위험물 클래스)
               UNNO (위험물 UN 번호)
               PORT (포트 번호)
               ALLOW_YN (취급 가능 여부)
-'''
+"""
 
 @time_tracker
 def check_sqlplus():
-    """
-    sqlplus 버전 정보 확인
-    """
+    """sqlplus 버전 정보 확인"""
     try:
         result = subprocess.run(['sqlplus', '-version'], capture_output=True, text=True, check=True)
         print(" SQL*Plus is working!")
@@ -47,9 +44,7 @@ def check_sqlplus():
 
 @time_tracker
 def check_db_connection():
-    """
-    DB 연결이 정상적인지 테스트
-    """
+    """DB 연결이 정상적인지 테스트"""
     try:
         sql_query = "SELECT 1 FROM dual;\nEXIT;\n"
         result = subprocess.run(
@@ -70,9 +65,7 @@ def check_db_connection():
 
 @time_tracker
 def get_all_schema_tables():
-    """
-    모든 스키마, 테이블 목록 조회
-    """
+    """모든 스키마, 테이블 목록 조회"""
     try:
         sqlplus_cmd = [
             'sqlplus', '-S', 'LLM/L9SD2TT9XJ0H@//210.113.16.230:1521/ORA11GDR'
@@ -116,9 +109,7 @@ def get_all_schema_tables():
 
 
 def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
-    """
-    예시 함수: OPRAIMDG 테이블로부터 UN, CLASS, DESCRIPTION 정보를 JSON으로 만드는 함수
-    """
+    """OPRAIMDG 테이블로부터 UN, CLASS, DESCRIPTION 정보를 JSON으로 만드는 함수"""
     sql_query = f"""
     SET LINESIZE 2000;
     SET PAGESIZE 0;
@@ -138,6 +129,7 @@ def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
         lines = output.strip().split("\n")
         print(f"  LINE: \n{str(lines)[:1000]}")
         metadata = []
+
 
         for line in lines[:-1]:
             values = line.split(None, 2)
@@ -163,32 +155,47 @@ def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
 
 @time_tracker
 def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
-    """
-    ai_dg_check 테이블에서 CLS, UNNO, PORT에 대한 DG 선적 가능 여부 조회
-    """
-    cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
-    unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
+    """DG 선적 가능 여부 + 선사/타선사 제한 조회"""
+    cls_val = "NULL" if cls is None else f"'{cls}'"
+    unno_val = "NULL" if unno is None else f"'{unno}'"
 
     sql_query = f"""
-    SET LINESIZE 150;
-    SET PAGESIZE 1000;
-    SET TRIMSPOOL ON;
-
+    WITH inp AS (
+        SELECT {cls_val} AS class,
+               {unno_val} AS unno,
+               '{pol_port}' AS POL,
+               '{pod_port}' AS POD
+        FROM dual
+    )
     SELECT 
-        p.cls  AS CLS,
-        p.unno AS UNNO,
-        p.port AS POL_PORT,
-        d.port AS POD_PORT,
-        DECODE(p.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Landing_STATUS,
-        DECODE(d.allow_yn,'Y','OK','N','Forbidden','Need to contact PIC of POL') AS Departure_STATUS
-    FROM icon.ai_dg_check p
-    JOIN icon.ai_dg_check d 
-        ON p.unno = d.unno 
-        AND p.cls = d.cls
-    WHERE (p.cls={cls_val} OR {cls_val} IS NULL) AND (p.unno={unno_val} OR {unno_val} IS NULL) 
-      AND p.port LIKE '{pol_port}'
-      AND (p.cls={cls_val} OR {cls_val} IS NULL) AND (d.unno={unno_val} OR {unno_val} IS NULL) 
-      AND d.port LIKE '{pod_port}';
+        NVL((
+            SELECT DECODE(allow_yn,'Y','POL OK','N','POL forbidden','Need to contact PIC of POL')
+            FROM icon.ai_dg_check a, inp
+            WHERE a.cls = inp.class
+              AND a.unno = inp.unno
+              AND a.port = inp.POL
+        ),'Need to contact PIC of POL') AS POL_CHECK,
+        NVL((
+            SELECT DECODE(allow_yn,'Y','POD OK','N','POD forbidden','Need to contact PIC of POD')
+            FROM icon.ai_dg_check a, inp
+            WHERE a.cls = inp.class
+              AND a.unno = inp.unno
+              AND a.port = inp.POD
+        ),'Need to contact PIC of POD') AS POD_CHECK,
+        NVL((
+            SELECT DECODE(MAX(IMDNPR),'X','Liner forbidden','R','Need to contact DG-DESK','OK')  
+            FROM ICON.OPRAIMDG B, inp    
+            WHERE B.IMDUNM = inp.unno 
+              AND B.IMDCLS = inp.class 
+        ),'OK') AS "NS-DY operation",
+        NVL((
+            SELECT WM_CONCAT( B.POPOPR || ':' || DECODE(B.poppnr,'P','Liner forbidden','R','Need to contact Operator','OK') )  
+            FROM ICON.OPRAOPR  B,  ICON.OPRAIMDG C , inp   
+            WHERE C.IMDNUM = B.POPNUM 
+              AND C.IMDUNM = inp.unno 
+              AND C.IMDCLS = inp.class
+        ),'OK') AS "Other carrier operation" 
+    FROM dual;
     EXIT;
     """
 
@@ -203,9 +210,7 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
 
 @time_tracker
 def run_sql_bl(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
-    """
-    B/L 상세 조회
-    """
+    """B/L 상세 조회"""
     cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
     unno_val = "NULL" if (unno is None or unno == "NULL") else f"'{unno}'"
 

@@ -63,7 +63,7 @@ async def retrieve(
         for i, index in enumerate(top_k):
             score_str = f"{score_values[index]:.4f}"
             # 문서 텍스트 컨텐츠 구성
-            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts_short'][index]}, , Score: {score_str}\n"
+            documents += f"{i+1}번째 검색자료 (출처:{data['file_names'][index]}) :\n{data['texts'][index]}, , Score: {score_str}\n"
             
             # 문서 메타데이터 구성
             documents_list.append({
@@ -71,7 +71,8 @@ async def retrieve(
                 "title": data["titles"][index],
                 "contents": data["texts_vis"][index],
                 "chunk_id": data["chunk_ids"][index],
-                "file_path": data["file_path"][index]
+                "file_path": data["file_path"][index],
+                "text_short": data["texts_short"][index]
             })
             logger.info(data["file_path"][index])
         

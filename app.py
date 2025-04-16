@@ -496,6 +496,107 @@ def query_stream_to_clt():
         error_format("수신양호", 200, qry_id), content_type="application/json"
     )
 
+# # --------------------- CLT Streaming new part in GPU ----------------------------
+# @app.route("/queryToSLLM", methods=["POST"])
+# def query_stream_to_clt():
+#     """
+#     POST 방식 SSE 스트리밍 엔드포인트.
+#     클라이언트가 {"qry_id": "...", "user_id": "...", "page_id": "...", "qry_contents": "...", "qry_time": "..." }
+#     형태의 JSON을 보내면, 내부 Ray Serve SSE 스트림을 통해 처리한 후 지정된 response_url로 SSE 청크를 전송합니다.
+#     """
+#     # POST 요청 파라미터 파싱
+#     body = request.json or {}
+#     qry_id = body.get("qry_id", "")
+#     user_id = body.get("user_id", "")
+#     page_id = body.get("page_id", "")
+#     auth_class = "admin"  # 모든 요청을 'admin'으로 처리
+#     user_input = body.get("qry_contents", "")
+#     qry_time = body.get("qry_time", "")
+    
+#     response_url = config.response_url
+
+#     print(f"[DEBUG] /queryToSLLM called with qry_id='{qry_id}', user_id='{user_id}', "
+#           f"page_id='{page_id}', qry_contents='{user_input}', qry_time='{qry_time}', url={response_url}")
+    
+#     # 내부 로직에서는 page_id를 채팅방 ID(또는 request_id)로 사용합니다.
+#     http_query = {
+#         "qry_id": qry_id,
+#         "user_id": user_id,
+#         "page_id": page_id if page_id else str(uuid.uuid4()),
+#         "auth_class": auth_class,
+#         "qry_contents": user_input,
+#         "qry_time": qry_time,
+#         "response_url": response_url
+#     }
+#     print(f"[DEBUG] Built http_query={http_query}")
+
+#     # Ray Serve에 SSE 스트리밍 요청 보내기
+#     response = inference_handle.process_query_stream.remote(http_query)
+#     obj_ref = response._to_object_ref_sync()
+#     request_id = ray.get(obj_ref)
+#     print(f"[DEBUG] streaming request_id={request_id}")
+    
+#     def sse_generator(request_id, response_url):
+#         token_buffer = []  # To collect tokens (for answer tokens only)
+#         last_sent_time = time.time()  # To track the last time data was sent
+#         answer_counter = 1  # 답변 업데이트 순번
+#         try:
+#             while True:
+#                 token = ray.get(sse_manager.get_token.remote(request_id, 120))
+#                 if token is None:
+#                     print("[DEBUG] 토큰이 None 반환됨. 종료합니다.")
+#                     break
+
+#                 # if isinstance(token, str):
+#                 #     token = token.strip()
+#                 if token == "[[STREAM_DONE]]":
+#                     print("[DEBUG] 종료 토큰([[STREAM_DONE]]) 수신됨. 스트림 종료.")
+#                     break
+
+#                 try:
+#                     token_dict = json.loads(token) if isinstance(token, str) else token
+#                 except Exception as e:
+#                     print(f"[ERROR] JSON 파싱 실패: {e}. 원시 토큰: '{token}'")
+#                     continue
+
+#                 # If token is a reference token, send it immediately
+#                 if token_dict.get("type") == "reference":
+#                     ref_format = process_format_to_response([token_dict], qry_id, continue_="C", update_index=answer_counter)
+#                     send_data_to_server(ref_format, response_url)
+#                     continue
+                
+#                 # Process regular tokens
+#                 if token_dict.get("continue") == "E":
+#                     buffer_format = process_format_to_response([token_dict], qry_id, continue_="E", update_index=answer_counter)
+#                     send_data_to_server(buffer_format, response_url)
+#                     token_buffer = []
+#                     break
+#                 else:
+#                     buffer_format = process_format_to_response([token_dict], qry_id, continue_="C", update_index=answer_counter)
+#                     send_data_to_server(buffer_format, response_url)
+#                     answer_counter += 1
+
+#             # # After loop: if tokens remain, flush them with termination flag
+#             # if len(token_buffer) > 0:
+#             #     print(f"[DEBUG] Final flush of remaining {len(token_buffer)} tokens with end flag.")
+#             #     buffer_format = process_format_to_response(token_buffer, qry_id, continue_="E", update_index=answer_counter)
+#             #     send_data_to_server(buffer_format, response_url)
+#         except Exception as e:
+#             print(f"[ERROR] sse_generator encountered an error: {e}")
+#         finally:
+#             try:
+#                 ray.get(sse_manager.delete_queue.remote(request_id))
+#             except Exception as ex:
+#                 print(f"[DEBUG] Error closing SSE queue for {request_id}: {str(ex)}")
+#             print("[DEBUG] SSE closed.")
+
+    
+#     # 별도의 스레드에서 SSE generator 실행
+#     job = threading.Thread(target=sse_generator, args=(request_id, response_url), daemon=False)
+#     job.start()
+
+#     # 클라이언트에는 즉시 "수신양호" 메시지를 JSON 형식으로 응답
+#     return Response(error_format("수신양호", 200, qry_id), content_type="application/json")
 
 # --------------------- History & Reference part ----------------------------
 

@@ -22,7 +22,7 @@ import uuid
 from typing import Dict, List, Tuple, Any, Optional, Union, Generator
 import httpx
 from config import config
-
+import textwrap
 # 내부 모듈 임포트
 from core.retrieval import retrieve, expand_time_range_if_needed # Ax100 API로 대체됨
 from core.generation import generate, collect_vllm_text, collect_vllm_text_stream
@@ -118,13 +118,13 @@ async def execute_rag(
                 {
                     "file_name": "SQL_Result",
                     "title": title,
-                    "contents": [{"data": table_json}],
+                    "data": table_json,                 # ← 바로 data 로!
                     "chunk_id": 0,
                 },
                 {
                     "file_name": "B/L_Detail",
                     "title": "DG B/L 상세 정보",
-                    "contents": [{"data": detailed_result}],
+                    "data": detailed_result,            # ← 바로 data 로!
                     "chunk_id": 1,
                 },
             ]
@@ -160,12 +160,32 @@ async def execute_rag(
                         response.text,
                     )
                     return "검색 서비스에 연결할 수 없습니다.", []
-
+                
+                # Here is the place of new function that delete the not related docs things from docs list
+                
                 result = response.json()
                 docs = result.get("documents", "")
                 docs_list = result.get("documents_list", [])
 
                 logger.info("RAG 서비스 API 응답: %d개 문서 검색됨", len(docs_list))
+                
+                # logger.info(f"[RAG_SERVICE_API_RESPONSE - docs_list]\n{docs_list}")
+                # logger.info(f"[RAG_SERVICE_API_RESPONSE - docs]\n{docs}")
+
+                # ------------------------------------------------------------------
+                # 🔥 NEW 🔥  docs_filter 로 필터링
+                # ------------------------------------------------------------------
+                docs_list = await docs_filter(query, docs_list, model, tokenizer, config)
+                logger.info("docs_sort 이후: %d개 문서로 축소", len(docs_list))
+                
+
+                # docs 문자열 재조합 (LLM 입력용)
+                # (교체)
+                docs = "\n\n".join(
+                    f"[{doc.get('title', '제목없음')}] {_get_doc_text(doc)}"
+                    for doc in docs_list
+                )
+                
                 return docs, docs_list
 
         except httpx.ReadTimeout as e:
@@ -321,6 +341,131 @@ async def specific_question(params: Dict[str, Any]) -> Tuple[str, str, str, str]
     """
     # query_sort와 동일한 로직 사용
     return await query_sort(params)
+
+@time_tracker
+async def docs_filter(
+    query: str,
+    docs_list: List[Dict],
+    model,
+    tokenizer,
+    config,
+    max_chars_per_doc: int = 4196,
+) -> List[Dict]:
+    """
+    검색된 문서들(docs_list) 중에서 **사용자 질문과 직접적으로 관련** 있는
+    문서만 추려서 반환합니다.
+
+    1) 각 문서를 간략히 요약(제목·일부 내용)해 프롬프트로 구성
+    2) LLM(collect_vllm_text)에게 '관련 있는 chunk_id만 콤마로 나열'하도록 지시
+    3) 응답에서 숫자(id)만 파싱 → docs_list 필터링
+    4) LLM 호출 실패·빈 결과 시에는 원본 docs_list 그대로 반환
+    """
+    if not docs_list:
+        return docs_list
+
+    # 필터링 전 문서 제목 로깅
+    logger.info("필터링 전 문서 제목:")
+    for doc in docs_list:
+        logger.info(f"- {doc.get('title', '제목없음')} (chunk_id: {doc['chunk_id']})")
+
+    # ----------------------------------------------------------------------
+    # (1) 문서 요약 → 프롬프트용 문자열 만들기
+    # ----------------------------------------------------------------------
+    formatted_docs = []
+    for doc in docs_list:
+        # contents[0]이 dict인 경우(예: {"data": ...})와 문자열인 경우 모두 처리
+        raw = ""
+        try:
+            raw = _get_doc_text(doc)
+        except Exception:
+            pass
+
+        formatted_docs.append(
+            f"{doc['chunk_id']}. 제목: {doc.get('title', '제목없음')}\n"
+            f"   내용: {textwrap.shorten(raw, width=max_chars_per_doc, placeholder='…')}"
+        )
+
+    prompt = (
+        "다음은 사용자의 질문과 검색된 문서 목록입니다. "
+        "각 문서는 chunk_id로 구분되어 있습니다.\n\n"
+        f"[사용자 질문]\n{query}\n\n"
+        "[문서 목록]\n"
+        + "\n".join(formatted_docs)
+        + "\n\n"
+        "위 문서 중 **사용자 질문에 직접적으로 답하는 데 도움이 되는** 문서의 chunk_id만을 "
+        "콤마(,)로 구분하여 한 줄로 출력하세요.\n"
+        "반드시 숫자와 콤마만 포함하고 다른 설명은 작성하지 마세요."
+    )
+
+    # ----------------------------------------------------------------------
+    # (2) LLM 호출
+    # ----------------------------------------------------------------------
+    sampling_params = SamplingParams(
+        max_tokens=32,        # id 목록만 뽑으면 32 토큰이면 충분
+        temperature=0.0,      # deterministic
+        top_k=1,
+        top_p=1.0,
+    )
+
+    try:
+        answer = await collect_vllm_text(
+            prompt, model, sampling_params, str(uuid.uuid4())
+        )
+        # ------------------------------------------------------------------
+        # (3) 숫자(id)만 파싱 → docs_list 필터링
+        # ------------------------------------------------------------------
+        keep_ids = set(map(int, re.findall(r"\d+", answer)))
+        filtered = [doc for doc in docs_list if doc["chunk_id"] in keep_ids]
+
+        # 필터링 후 문서 제목 로깅
+        logger.info("필터링 후 문서 제목:")
+        for doc in filtered:
+            logger.info(f"- {doc.get('title', '제목없음')} (chunk_id: {doc['chunk_id']})")
+
+        # LLM이 아무것도 고르지 않았으면 원본 유지
+        return filtered or docs_list
+
+    except Exception as e:
+        logger.error("docs_sort 실패, 원본 리스트 사용: %s", str(e), exc_info=True)
+        return docs_list
+
+
+# core/RAG.py ─ import 아래 아무 곳 (기존 _extract_plain_text 제거 후 ↓ 붙여넣기)
+@time_tracker
+def _get_doc_text(doc: Dict[str, Any]) -> str:
+    """
+    검색 서버가 내려준 단일 문서(dict)에서 사람이 읽을 텍스트를 추출한다.
+    ① doc["text_short"]가 있으면 → 그대로 반환
+    ② fallback: doc["contents"] 구조를 평탄화
+    ③ 그래도 없으면 빈 문자열
+    """
+    # 1) text_short 최우선
+    short = doc.get("text_short")
+    if short:
+        return str(short).strip()
+
+    # 2) 기존 contents 호환 (dict / list / str 어떤 형태든 OK)
+    contents = doc.get("contents")
+    if contents is None:
+        return ""
+
+    # 2‑1) str
+    if isinstance(contents, str):
+        return contents.strip()
+
+    # 2‑2) dict
+    if isinstance(contents, dict):
+        for key in ("data", "text", "page_content", "content", "body"):
+            if key in contents and contents[key]:
+                return str(contents[key]).strip()
+        return " ".join(str(v).strip() for v in contents.values())
+
+    # 2‑3) list (재귀)
+    if isinstance(contents, list):
+        return " ".join(_get_doc_text({"contents": c}) for c in contents).strip()
+
+    # 2‑4) 기타
+    return str(contents).strip()
 
 
 @time_tracker

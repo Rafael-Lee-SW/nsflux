@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Data Insights Hub - UMAP Visualization</title>
+  <!-- 외부 CSS 파일 링크 -->
+  <link rel="stylesheet" href="/static/data_styles.css" />
+  <!-- d3.js for pagination and legends -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <!-- PIXI.js for visualization -->
+  <script src="https://pixijs.download/release/pixi.min.js"></script>
+  <!-- Recharts for data visualization -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="container header-content">
+        <h1 class="app-title">Data Insights Hub</h1>
+        <div class="header-actions">
+          <button class="btn btn-outline btn-sm" id="refreshBtn">
+            <i data-lucide="filter" class="icon-sm"></i>
+            Refresh
+          </button>
+          <button class="btn btn-outline btn-sm" id="themeToggleBtn">
+            <span class="light-icon">üåô</span>
+            <span class="dark-icon">‚òÄÔ∏è</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="container main-content">
+      <div class="tabs-container">
+        <div class="tabs-header">
+          <div class="tabs-list">
+            <button class="tab-trigger active" data-tab="manage">Data Management</button>
+            <button class="tab-trigger" data-tab="visualize">UMAP Visualization</button>
+          </div>
+
+          <div class="tabs-meta">
+            <span class="badge badge-outline" id="filesCountBadge">0 Files</span>
+          </div>
+        </div>
+
+        <div class="tab-content active" id="manageTab">
+          <div class="grid-layout">
+            <div class="card search-card">
+              <div class="card-header">
+                <h2 class="card-title">
+                  <i data-lucide="search" class="icon-accent"></i>
+                  Search Data
+                </h2>
+              </div>
+              <div class="card-content">
+                <div class="search-form">
+                  <input type="text" id="searchInput" placeholder="Enter search query..." class="input" />
+                  <button id="searchBtn" class="btn btn-primary">Search</button>
+                </div>
+
+                <div id="searchResults" class="search-results"></div>
+              </div>
+            </div>
+
+            <div class="card upload-card">
+              <div class="card-header">
+                <h2 class="card-title">
+                  <i data-lucide="upload" class="icon-accent"></i>
+                  Upload Data
+                </h2>
+              </div>
+              <div class="card-content">
+                <div id="fileUploader" class="file-uploader">
+                  <div class="dropzone" id="dropzone">
+                    <input type="file" id="dataFile" multiple accept=".txt,.json,.pptx,.pdf" class="file-input" />
+                    <div class="dropzone-content">
+                      <i data-lucide="upload" class="icon-lg icon-muted"></i>
+                      <p class="dropzone-text">
+                        Drag files here or
+                        <button type="button" class="text-link" id="browseBtn">browse</button>
+                      </p>
+                      <p class="dropzone-hint">Supports .txt, .json, .pptx, .pdf</p>
+                    </div>
+                  </div>
+
+                  <div id="selectedFiles" class="selected-files hidden">
+                    <p class="selected-files-title">Selected Files (<span id="fileCount">0</span>)</p>
+                    <div id="filesList" class="files-list"></div>
+                  </div>
+
+                  <div id="uploadProgress" class="upload-progress hidden">
+                    <p class="progress-text">Uploading and vectorizing...</p>
+                    <div class="progress-bar">
+                      <div class="progress-fill" style="width: 45%"></div>
+                    </div>
+                  </div>
+
+                  <button id="uploadBtn" class="btn btn-primary btn-block" disabled>
+                    <i data-lucide="upload" class="icon-sm"></i>
+                    Upload & Vectorize
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card data-table-card">
+            <div class="card-header">
+              <h2 class="card-title">
+                <i data-lucide="download" class="icon-accent"></i>
+                Data Inventory
+              </h2>
+            </div>
+            <div class="card-content">
+              <div id="dataTableContainer" class="data-table-container">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th class="col-index">Index</th>
+                      <th class="col-filename">File Name</th>
+                      <th class="col-title">Title</th>
+                      <th class="col-date">Modified Date</th>
+                      <th class="col-actions">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dataTableBody">
+                    <!-- Table rows will be inserted here -->
+                  </tbody>
+                </table>
+              </div>
+              <!-- Pagination: 추가된 페이지번호 및 첫/마지막 버튼 -->
+              <div class="pagination-controls">
+                <div class="pagination-info">
+                  Page <span id="currentPage">1</span> of <span id="totalPages">1</span>
+                </div>
+                <div class="pagination-buttons">
+                  <button id="prevPageBtn" class="btn btn-outline btn-sm" disabled>
+                    <i data-lucide="chevron-left" class="icon-sm"></i>
+                    Previous
+                  </button>
+                  <div id="pageNumbers" class="pagination-page-numbers"></div>
+                  <button id="nextPageBtn" class="btn btn-outline btn-sm" disabled>
+                    Next
+                    <i data-lucide="chevron-right" class="icon-sm"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card stats-card">
+            <div class="card-header">
+              <h2 class="card-title">
+                <i data-lucide="bar-chart-2" class="icon-accent"></i>
+                Data Analytics
+              </h2>
+            </div>
+            <div class="card-content">
+              <div class="stats-tabs">
+                <div class="stats-tabs-list">
+                  <button class="stats-tab-trigger active" data-stats-tab="distribution">
+                    <i data-lucide="pie-chart" class="icon-sm"></i>
+                    <span>File Distribution</span>
+                  </button>
+                  <button class="stats-tab-trigger" data-stats-tab="trends">
+                    <i data-lucide="bar-chart-2" class="icon-sm"></i>
+                    <span>Upload Trends</span>
+                  </button>
+                </div>
+
+                <div class="stats-tab-content active" id="distributionTab">
+                  <div id="distributionChart" class="chart-container">
+                    <!-- Chart will be rendered here -->
+                  </div>
+                </div>
+
+                <div class="stats-tab-content" id="trendsTab">
+                  <div id="trendsChart" class="chart-container">
+                    <!-- Chart will be rendered here -->
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-content" id="visualizeTab">
+          <div class="card visualization-card">
+            <div class="card-header">
+              <h2 class="card-title">UMAP Vector Visualization</h2>
+            </div>
+            <div class="card-content no-padding">
+              <div id="pixiVisualization" class="pixi-container">
+                <!-- PIXI visualization will be rendered here -->
+                <div id="pixiLoadingOverlay" class="loading-overlay">
+                  <div class="loading-content">
+                    <div class="spinner"></div>
+                    <p class="loading-text">Loading visualization data...</p>
+                  </div>
+                </div>
+
+                <div class="visualization-controls">
+                  <div class="control-panel">
+                    <button id="zoomOutBtn" class="btn btn-icon" title="Zoom Out">
+                      <i data-lucide="zoom-out" class="icon-sm"></i>
+                    </button>
+
+                    <div class="zoom-slider-container">
+                      <input type="range" id="zoomSlider" min="10" max="200" step="10" value="100" class="zoom-slider" />
+                    </div>
+
+                    <button id="zoomInBtn" class="btn btn-icon" title="Zoom In">
+                      <i data-lucide="zoom-in" class="icon-sm"></i>
+                    </button>
+
+                    <button id="resetViewBtn" class="btn btn-icon" title="Reset View">
+                      <i data-lucide="refresh-cw" class="icon-sm"></i>
+                    </button>
+
+                    <button id="fullscreenBtn" class="btn btn-icon" title="Toggle Fullscreen">
+                      <i data-lucide="maximize-2" class="icon-sm"></i>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="visualization-help">
+                  <div class="help-content">
+                    <i data-lucide="move" class="icon-sm"></i>
+                    <span>Drag to pan · Scroll to zoom</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <footer class="app-footer">
+      <div class="container">
+        <p class="footer-text">Data Management & UMAP Visualization Dashboard ¬© <span id="currentYear"></span></p>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    // Initialize Lucide icons
+    lucide.createIcons();
+
+    // Set current year in footer
+    document.getElementById('currentYear').textContent = new Date().getFullYear();
+
+    // Theme toggle functionality
+    const themeToggleBtn = document.getElementById('themeToggleBtn');
+    themeToggleBtn.addEventListener('click', () => {
+      document.body.classList.toggle('dark');
+    });
+
+    // Tab switching functionality
+    const tabTriggers = document.querySelectorAll('.tab-trigger');
+    const tabContents = document.querySelectorAll('.tab-content');
+
+    tabTriggers.forEach(trigger => {
+      trigger.addEventListener('click', () => {
+        tabTriggers.forEach(t => t.classList.remove('active'));
+        tabContents.forEach(c => c.classList.remove('active'));
+        trigger.classList.add('active');
+        const tabId = trigger.getAttribute('data-tab');
+        document.getElementById(`${tabId}Tab`).classList.add('active');
+      });
+    });
+
+    // Stats tabs functionality
+    const statsTabTriggers = document.querySelectorAll('.stats-tab-trigger');
+    const statsTabContents = document.querySelectorAll('.stats-tab-content');
+
+    statsTabTriggers.forEach(trigger => {
+      trigger.addEventListener('click', () => {
+        statsTabTriggers.forEach(t => t.classList.remove('active'));
+        statsTabContents.forEach(c => c.classList.remove('active'));
+        trigger.classList.add('active');
+        const tabId = trigger.getAttribute('data-stats-tab');
+        document.getElementById(`${tabId}Tab`).classList.add('active');
+      });
+    });
+
+    // File uploader functionality
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('dataFile');
+    const browseBtn = document.getElementById('browseBtn');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const selectedFilesContainer = document.getElementById('selectedFiles');
+    const filesList = document.getElementById('filesList');
+    const fileCount = document.getElementById('fileCount');
+    const uploadProgress = document.getElementById('uploadProgress');
+
+    let selectedFiles = [];
+
+    fileInput.addEventListener('change', handleFileSelection);
+    browseBtn.addEventListener('click', () => { fileInput.click(); });
+    dropzone.addEventListener('dragenter', handleDrag);
+    dropzone.addEventListener('dragover', handleDrag);
+    dropzone.addEventListener('dragleave', handleDrag);
+    dropzone.addEventListener('drop', handleDrop);
+
+    function handleDrag(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.type === 'dragenter' || e.type === 'dragover') {
+        dropzone.classList.add('dropzone-active');
+      } else if (e.type === 'dragleave') {
+        dropzone.classList.remove('dropzone-active');
+      }
+    }
+
+    function handleDrop(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      dropzone.classList.remove('dropzone-active');
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        fileInput.files = e.dataTransfer.files;
+        handleFileSelection();
+      }
+    }
+
+    function handleFileSelection() {
+      if (fileInput.files && fileInput.files.length > 0) {
+        selectedFiles = Array.from(fileInput.files);
+        renderSelectedFiles();
+        uploadBtn.disabled = false;
+      }
+    }
+
+    function renderSelectedFiles() {
+      selectedFilesContainer.classList.remove('hidden');
+      fileCount.textContent = selectedFiles.length;
+      filesList.innerHTML = '';
+      selectedFiles.forEach((file, index) => {
+        const fileItem = document.createElement('div');
+        fileItem.className = 'file-item';
+        fileItem.innerHTML = `
+          <div class="file-info">
+            <i data-lucide="file-text" class="icon-sm icon-muted"></i>
+            <span class="file-name">${file.name}</span>
+            ${getFileTypeLabel(file.name) ? `<span class="file-type-label">${getFileTypeLabel(file.name)}</span>` : ''}
+          </div>
+          <button class="btn-icon-sm remove-file" data-index="${index}">
+            <i data-lucide="x" class="icon-xs"></i>
+          </button>
+        `;
+        filesList.appendChild(fileItem);
+      });
+      lucide.createIcons();
+      document.querySelectorAll('.remove-file').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const index = parseInt(btn.getAttribute('data-index'));
+          removeFile(index);
+        });
+      });
+    }
+
+    function getFileTypeLabel(fileName) {
+      const parts = fileName.split('.');
+      if(parts.length < 2) return "";
+      const ext = parts.pop().toLowerCase();
+      switch(ext) {
+        case 'pptx':
+          return 'PPTX';
+        case 'text':
+          return 'Text';
+        case 'json':
+          return 'JSON';
+        case 'pdf':
+          return 'PDF';
+        default:
+          return "";
+      }
+    }
+
+    function removeFile(index) {
+      selectedFiles = selectedFiles.filter((_, i) => i !== index);
+      renderSelectedFiles();
+      uploadBtn.disabled = selectedFiles.length === 0;
+      if (selectedFiles.length === 0) {
+        selectedFilesContainer.classList.add('hidden');
+      }
+    }
+
+    // --- File upload using real API ---
+    uploadBtn.addEventListener('click', async () => {
+      if (selectedFiles.length === 0) return;
+      uploadProgress.classList.remove('hidden');
+      uploadBtn.disabled = true;
+      const formData = new FormData();
+      selectedFiles.forEach(file => formData.append('files', file));
+      try {
+        const response = await fetch('/upload', { method: 'POST', body: formData });
+        const result = await response.json();
+        alert(result.message);
+        selectedFiles = [];
+        fileInput.value = '';
+        selectedFilesContainer.classList.add('hidden');
+        uploadProgress.classList.add('hidden');
+        loadDataList(1);
+        initPixiVisualization();
+      } catch (error) {
+        console.error('Upload failed:', error);
+        alert('Upload failed');
+        uploadProgress.classList.add('hidden');
+        uploadBtn.disabled = false;
+      }
+    });
+
+    // Data table functionality
+    let currentPage = 1;
+    let totalPages = 1;
+    const dataTableBody = document.getElementById('dataTableBody');
+    const currentPageSpan = document.getElementById('currentPage');
+    const totalPagesSpan = document.getElementById('totalPages');
+    const prevPageBtn = document.getElementById('prevPageBtn');
+    const nextPageBtn = document.getElementById('nextPageBtn');
+    const filesCountBadge = document.getElementById('filesCountBadge');
+
+    async function loadDataList(page = 1) {
+      currentPage = page;
+      currentPageSpan.textContent = page;
+      dataTableBody.innerHTML = '';
+      try {
+        const response = await fetch(`/list?page=${page}`);
+        if (!response.ok) throw new Error('Failed to load data list');
+        const result = await response.json();
+        renderDataTable(result.data);
+        totalPages = Math.ceil(result.total / result.per_page);
+        totalPagesSpan.textContent = totalPages;
+        prevPageBtn.disabled = currentPage === 1;
+        nextPageBtn.disabled = currentPage === totalPages;
+        filesCountBadge.textContent = `${result.total} Files`;
+        renderPagination(currentPage, totalPages);
+      } catch (error) {
+        console.error('Error loading data list:', error);
+        dataTableBody.innerHTML = `<tr><td colspan="5">Failed to load data list</td></tr>`;
+      }
+    }
+
+    function renderDataTable(data) {
+      dataTableBody.innerHTML = '';
+      if (data.length === 0) {
+        dataTableBody.innerHTML = `
+          <tr>
+            <td colspan="5" class="empty-table">
+              No data available. Upload some files to get started.
+            </td>
+          </tr>
+        `;
+        return;
+      }
+      data.forEach(item => {
+        const row = document.createElement('tr');
+        row.className = 'data-row';
+        row.onclick = () => showDetail(item.index);
+        row.innerHTML = `
+          <td class="col-index">${item.index}</td>
+          <td class="col-filename">
+            ${item.file_name}
+            ${getFileTypeLabel(item.file_name) ? `<span class="file-type-label">${getFileTypeLabel(item.file_name)}</span>` : ''}
+          </td>
+          <td class="col-title">${item.title}</td>
+          <td class="col-date">${item.date}</td>
+          <td class="col-actions">
+            <div class="action-buttons">
+              <button class="btn btn-icon-sm detail-btn" data-index="${item.index}">
+                <i data-lucide="info" class="icon-xs"></i>
+              </button>
+              <button class="btn btn-icon-sm delete-btn" data-index="${item.index}">
+                <i data-lucide="trash-2" class="icon-xs"></i>
+              </button>
+            </div>
+          </td>
+        `;
+        dataTableBody.appendChild(row);
+      });
+      lucide.createIcons();
+      document.querySelectorAll('.detail-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const index = parseInt(btn.getAttribute('data-index'));
+          showDetail(index);
+        });
+      });
+      document.querySelectorAll('.delete-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const index = parseInt(btn.getAttribute('data-index'));
+          deleteData(index);
+        });
+      });
+    }
+
+    async function showDetail(index) {
+      try {
+        const response = await fetch(`/detail/${index}`);
+        if (!response.ok) throw new Error('Failed to load detail');
+        const data = await response.json();
+        alert(JSON.stringify(data, null, 2));
+      } catch (error) {
+        console.error('Error loading detail:', error);
+        alert('Failed to load detail');
+      }
+    }
+
+    async function deleteData(index) {
+      if (!confirm(`Are you sure you want to delete document #${index}?`)) return;
+      try {
+        const response = await fetch('/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ index: index })
+        });
+        if (!response.ok) throw new Error('Delete API failed');
+        const result = await response.json();
+        alert(result.message);
+        loadDataList(currentPage);
+        initPixiVisualization();
+      } catch (error) {
+        console.error('Error deleting data:', error);
+        alert('Failed to delete document');
+      }
+    }
+
+    // Pagination button handlers for Prev/Next
+    prevPageBtn.addEventListener('click', () => {
+      if (currentPage > 1) loadDataList(currentPage - 1);
+    });
+    nextPageBtn.addEventListener('click', () => {
+      if (currentPage < totalPages) loadDataList(currentPage + 1);
+    });
+
+    // Render pagination page numbers including First/Last buttons and up to 5 pages
+    function renderPagination(current, total) {
+      const pageNumbersDiv = document.getElementById('pageNumbers');
+      pageNumbersDiv.innerHTML = "";
+      let startPage = Math.max(1, current - 2);
+      let endPage = Math.min(total, startPage + 4);
+      if (endPage - startPage < 4) {
+        startPage = Math.max(1, endPage - 4);
+      }
+      // First button
+      const firstBtn = document.createElement('button');
+      firstBtn.className = 'btn btn-outline btn-sm';
+      firstBtn.textContent = 'First';
+      firstBtn.disabled = current === 1;
+      firstBtn.addEventListener('click', () => loadDataList(1));
+      pageNumbersDiv.appendChild(firstBtn);
+      // Page numbers
+      for (let i = startPage; i <= endPage; i++) {
+        const pageBtn = document.createElement('button');
+        pageBtn.className = 'btn btn-outline btn-sm';
+        pageBtn.textContent = i;
+        if (i === current) pageBtn.classList.add('active');
+        pageBtn.addEventListener('click', () => loadDataList(i));
+        pageNumbersDiv.appendChild(pageBtn);
+      }
+      // Last button
+      const lastBtn = document.createElement('button');
+      lastBtn.className = 'btn btn-outline btn-sm';
+      lastBtn.textContent = 'Last';
+      lastBtn.disabled = current === total;
+      lastBtn.addEventListener('click', () => loadDataList(total));
+      pageNumbersDiv.appendChild(lastBtn);
+    }
+
+    // Search functionality using real API
+    const searchInput = document.getElementById('searchInput');
+    const searchBtn = document.getElementById('searchBtn');
+
+    async function performSearch() {
+      const query = searchInput.value.trim();
+      if (!query) return;
+      const searchResults = document.getElementById('searchResults');
+      searchResults.innerHTML = `
+        <div class="search-loading">
+          <div class="skeleton skeleton-lg"></div>
+          <div class="skeleton skeleton-md"></div>
+          <div class="skeleton skeleton-lg"></div>
+          <div class="skeleton skeleton-md"></div>
+        </div>
+      `;
+      try {
+        const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
+        if (!response.ok) throw new Error('Search API failed');
+        const results = await response.json();
+        displaySearchResults(results);
+      } catch (error) {
+        console.error('Search failed:', error);
+        searchResults.innerHTML = '<p class="no-results">Search failed</p>';
+      }
+    }
+    searchBtn.addEventListener('click', performSearch);
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') performSearch();
+    });
+
+    function displaySearchResults(results) {
+      const searchResults = document.getElementById('searchResults');
+      if (results.length === 0) {
+        searchResults.innerHTML = '<p class="no-results">No results found.</p>';
+        return;
+      }
+      searchResults.innerHTML = `
+        <h3 class="results-count">${results.length} results found</h3>
+        <div class="results-list"></div>
+      `;
+      const resultsList = searchResults.querySelector('.results-list');
+      results.forEach(result => {
+        const resultItem = document.createElement('div');
+        resultItem.className = 'result-item';
+        resultItem.onclick = () => showDetail(result.index);
+        resultItem.innerHTML = `
+          <div class="result-icon">
+            <i data-lucide="file-text" class="icon-accent"></i>
+          </div>
+          <div class="result-content">
+            <h4 class="result-title">${result.title}</h4>
+            <p class="result-filename">${result.file_name}</p>
+          </div>
+        `;
+        resultsList.appendChild(resultItem);
+      });
+      lucide.createIcons();
+    }
+
+    // UMAP visualization using real API
+    async function loadVisualizationData() {
+      try {
+        const response = await fetch('/api/umap_data');
+        if (!response.ok) throw new Error('Failed to load visualization data');
+        return await response.json();
+      } catch (error) {
+        console.error('Error loading visualization data:', error);
+        throw error;
+      }
+    }
+
+    let pixiApp;
+    let vizContainer;
+    let isFullscreen = false;
+
+    function initPixiVisualization() {
+      const pixiContainer = document.getElementById('pixiVisualization');
+      const loadingOverlay = document.getElementById('pixiLoadingOverlay');
+      loadingOverlay.style.display = 'flex';
+      if (pixiApp) {
+        pixiApp.destroy(true);
+        pixiContainer.querySelector('canvas')?.remove();
+      }
+      pixiApp = new PIXI.Application({
+        width: pixiContainer.clientWidth,
+        height: 700,
+        backgroundColor: 0xffffff,
+        antialias: true,
+        resolution: window.devicePixelRatio || 1,
+      });
+      pixiContainer.appendChild(pixiApp.view);
+      vizContainer = new PIXI.Container();
+      pixiApp.stage.addChild(vizContainer);
+      loadVisualizationData()
+        .then(data => {
+          drawVisualization(data);
+          loadingOverlay.style.display = 'none';
+        })
+        .catch(error => {
+          console.error('Failed to load visualization data:', error);
+          loadingOverlay.innerHTML = '<div class="loading-error">Failed to load data</div>';
+        });
+      setupInteractions();
+    }
+
+    function drawVisualization(data) {
+      vizContainer.removeChildren();
+      const maxNodes = 10000;
+      const nodes = data.nodes.length > maxNodes ? data.nodes.slice(0, maxNodes) : data.nodes;
+      const nodeIds = new Set(nodes.map(n => n.id));
+      const edges = data.edges.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+      const edgeGraphics = new PIXI.Graphics();
+      edgeGraphics.lineStyle(1, 0xdddddd, 0.3);
+      edges.forEach(edge => {
+        const source = data.nodes.find(n => n.id === edge.source);
+        const target = data.nodes.find(n => n.id === edge.target);
+        if (source && target) {
+          edgeGraphics.moveTo(source.x, source.y);
+          edgeGraphics.lineTo(target.x, target.y);
+        }
+      });
+      vizContainer.addChild(edgeGraphics);
+      const clusterColors = [0x4f46e5, 0xec4899, 0x10b981, 0xf59e0b, 0xef4444];
+      nodes.forEach((node, index) => {
+        const colorIndex = node.cluster || index % clusterColors.length;
+        const circle = new PIXI.Graphics();
+        circle.beginFill(clusterColors[colorIndex % clusterColors.length]);
+        circle.drawCircle(0, 0, node.r || 4);
+        circle.endFill();
+        circle.x = node.x;
+        circle.y = node.y;
+        circle.eventMode = 'static';
+        circle.cursor = 'pointer';
+        circle.on('mouseover', () => {
+          circle.clear();
+          circle.beginFill(0xffffff);
+          circle.lineStyle(2, clusterColors[colorIndex % clusterColors.length]);
+          circle.drawCircle(0, 0, (node.r || 4) + 2);
+          circle.endFill();
+        });
+        circle.on('mouseout', () => {
+          circle.clear();
+          circle.beginFill(clusterColors[colorIndex % clusterColors.length]);
+          circle.drawCircle(0, 0, node.r || 4);
+          circle.endFill();
+        });
+        vizContainer.addChild(circle);
+      });
+    }
+
+    function setupInteractions() {
+      const view = pixiApp.view;
+      let isDragging = false;
+      let dragStart = { x: 0, y: 0 };
+      let containerStart = { x: vizContainer.x, y: vizContainer.y };
+      view.addEventListener('mousedown', (event) => {
+        isDragging = true;
+        dragStart = { x: event.clientX, y: event.clientY };
+        containerStart = { x: vizContainer.x, y: vizContainer.y };
+      });
+      view.addEventListener('mousemove', (event) => {
+        if (isDragging) {
+          const dx = event.clientX - dragStart.x;
+          const dy = event.clientY - dragStart.y;
+          vizContainer.x = containerStart.x + dx;
+          vizContainer.y = containerStart.y + dy;
+        }
+      });
+      view.addEventListener('mouseup', () => { isDragging = false; });
+      view.addEventListener('mouseleave', () => { isDragging = false; });
+      view.addEventListener('wheel', (event) => {
+        event.preventDefault();
+        const scaleFactor = event.deltaY > 0 ? 0.9 : 1.1;
+        vizContainer.scale.x *= scaleFactor;
+        vizContainer.scale.y *= scaleFactor;
+      });
+      const zoomSlider = document.getElementById('zoomSlider');
+      const zoomInBtn = document.getElementById('zoomInBtn');
+      const zoomOutBtn = document.getElementById('zoomOutBtn');
+      const resetViewBtn = document.getElementById('resetViewBtn');
+      const fullscreenBtn = document.getElementById('fullscreenBtn');
+      zoomSlider.addEventListener('input', () => {
+        const newZoom = parseInt(zoomSlider.value) / 100;
+        vizContainer.scale.x = newZoom;
+        vizContainer.scale.y = newZoom;
+      });
+      zoomInBtn.addEventListener('click', () => {
+        vizContainer.scale.x *= 1.2;
+        vizContainer.scale.y *= 1.2;
+      });
+      zoomOutBtn.addEventListener('click', () => {
+        vizContainer.scale.x *= 0.8;
+        vizContainer.scale.y *= 0.8;
+      });
+      resetViewBtn.addEventListener('click', () => {
+        vizContainer.x = 0;
+        vizContainer.y = 0;
+        vizContainer.scale.x = 1;
+        vizContainer.scale.y = 1;
+      });
+      fullscreenBtn.addEventListener('click', toggleFullscreen);
+    }
+
+    function toggleFullscreen() {
+      const pixiContainer = document.getElementById('pixiVisualization');
+      const isFull = pixiContainer.classList.toggle('fullscreen');
+      setTimeout(() => {
+        pixiApp.renderer.resize(
+          pixiContainer.clientWidth,
+          isFull ? window.innerHeight : 700
+        );
+      }, 100);
+    }
+
+    window.addEventListener('resize', () => {
+      if (pixiApp) {
+        const pixiContainer = document.getElementById('pixiVisualization');
+        pixiApp.renderer.resize(
+          pixiContainer.clientWidth,
+          pixiContainer.classList.contains('fullscreen') ? window.innerHeight : 700
+        );
+      }
+    });
+
+    document.addEventListener('DOMContentLoaded', () => {
+      loadDataList();
+      initPixiVisualization();
+    });
+  </script>
+</body>
+</html>
