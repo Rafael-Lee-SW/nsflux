@@ -18,7 +18,7 @@ try:
     VLLM_AVAILABLE = True
 except ImportError:
     logger.warning("vLLM not available, using standard transformers API instead")
-    VLLM_AVAILABLE = False
+    VLLM_AVAILABLE = True
 
 class EmbeddingModel:
     """vLLM 기반 임베딩 모델 관리 클래스"""

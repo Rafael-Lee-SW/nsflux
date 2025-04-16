@@ -27,10 +27,10 @@ class Settings(BaseSettings):
     BATCH_SIZE: int = 32
     
     # Ray 설정
-    USE_RAY: bool = False  # Ray 사용 여부
+    USE_RAY: bool = True  # Ray 사용 여부
     RAY_ADDRESS: str = "local"  # 로컬 모드로 변경
-    RAY_NUM_CPUS: int = 4
-    RAY_NUM_GPUS: int = 0
+    RAY_NUM_CPUS: int = 8
+    RAY_NUM_GPUS: int = 1
     
     # 로깅 설정
     LOG_LEVEL: str = "INFO"

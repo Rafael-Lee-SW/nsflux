@@ -164,10 +164,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-@app.get("/")
-async def root():
-    """루트 경로 접근 시 데이터 관리 페이지로 리다이렉트"""
-    return RedirectResponse(url="/manager")
+# @app.get("/")
+# async def root():
+#     """루트 경로 접근 시 데이터 관리 페이지로 리다이렉트"""
+#     return RedirectResponse(url="/manager")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pydantic Models

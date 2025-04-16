@@ -55,6 +55,8 @@ async def retrieve(
         
         logger.info(f"상위 {top_n}개 문서 인덱스: {top_k}")
         logger.info(f"상위 {top_n}개 문서 스코어: {[score[:, 0, 0][i] for i in top_k]}")
+        # 제목도 같이 출력
+        logger.info(f"상위 {top_n}개 문서 제목: {[data['titles'][i] for i in top_k]}")
         
         # 문서 컨텐츠와 메타데이터 구성
         documents = ""
