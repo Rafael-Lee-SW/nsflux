@@ -403,9 +403,21 @@ def query_stream_to_clt():
                     print("[DEBUG] 토큰이 None 반환됨. 종료합니다.")
                     break
 
-                if isinstance(token, str):
-                    token = token.strip()
+                # if isinstance(token, str):
+                #     token = token.strip()
                 if token == "[[STREAM_DONE]]":
+                    end_string = json.dumps({
+                            "type": "answer",
+                            "answer": ""
+                        }, ensure_ascii=False)
+                    end_json = json.loads(end_string)
+                    end_format = process_format_to_response(
+                            [end_json],
+                            qry_id,
+                            continue_="E",
+                            update_index=answer_counter,
+                        )
+                    send_data_to_server(end_format, response_url)
                     print("[DEBUG] 종료 토큰([[STREAM_DONE]]) 수신됨. 스트림 종료.")
                     break
 
@@ -430,8 +442,8 @@ def query_stream_to_clt():
                 # Otherwise, accumulate answer tokens
                 token_buffer.append(token_dict)
                 current_time = time.time()
-                # If 1 second has passed, flush the accumulated answer tokens
-                if current_time - last_sent_time >= 1:
+                # If 0.1 second has passed, flush the accumulated answer tokens
+                if current_time - last_sent_time >= 0.1:
                     if len(token_buffer) > 0:
                         # Check if any token in the buffer signals termination.
                         final_continue = (
