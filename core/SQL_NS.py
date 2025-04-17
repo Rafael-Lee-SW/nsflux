@@ -1,7 +1,7 @@
 # core/SQL_NS.py
 import os
 import subprocess
-from utils.tracking import time_tracker
+# from utils.tracking import time_tracker
 import json
 import yaml
 from box import Box
@@ -31,7 +31,7 @@ TABLE : ai_dg_check
               ALLOW_YN (취급 가능 여부)
 """
 
-@time_tracker
+##@time_tracker
 def check_sqlplus():
     """sqlplus 버전 정보 확인"""
     try:
@@ -42,7 +42,7 @@ def check_sqlplus():
         print(f"Error: {e.stderr}")
 
 
-@time_tracker
+##@time_tracker
 def check_db_connection():
     """DB 연결이 정상적인지 테스트"""
     try:
@@ -63,7 +63,7 @@ def check_db_connection():
         print(f" Error: {e.stderr}")
 
 
-@time_tracker
+##@time_tracker
 def get_all_schema_tables():
     """모든 스키마, 테이블 목록 조회"""
     try:
@@ -153,7 +153,7 @@ def make_metadata_from_table(schema_name="ICON", table_name="OPRAIMDG"):
         print(f" SQL Execution Error: {e.stderr}")
 
 
-@time_tracker
+##@time_tracker
 def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     """DG 선적 가능 여부 + 선사/타선사 제한 조회"""
     cls_val = "NULL" if cls is None else f"'{cls}'"
@@ -212,7 +212,14 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
               AND C.IMDUNM = inp.unno 
               AND C.IMDCLS = inp.class
         ),'OK') AS "Other carrier operation" 
-    FROM inp i;
+    FROM inp i
+    WHERE EXISTS (
+        SELECT 1
+        FROM ICON.OPRAIMDG B
+        WHERE B.IMDUNM = i.unno
+        AND B.IMDCLS = i.class
+        AND ROWNUM = 1
+    );
     EXIT;
     """
 
@@ -225,7 +232,7 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     return sql_query, result.stdout
 
 
-@time_tracker
+##@time_tracker
 def run_sql_bl(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     """B/L 상세 조회"""
     cls_val = "NULL" if (cls is None or cls == "NULL") else f"'{cls}'"
@@ -306,7 +313,7 @@ if __name__ == "__main__":
     # print("Schema info:", schema_info)
     # make_metadata_from_table()  # 특정 테이블로부터 메타데이터 생성하는 예시
     # 예시 SQL 실행
-    sql_q, sql_res = run_sql_unno(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
+    sql_q, sql_res = run_sql_unno(cls=2.1, unno=1933, pol_port="KRPUS", pod_port="JPUKB")
     # print("[TEST] run_sql_unno result:", sql_q, sql_res)
-    sql_q2, sql_res2 = run_sql_bl(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
+    sql_q2, sql_res2 = run_sql_bl(cls=2.1, unno=1933, pol_port="KRPUS", pod_port="JPUKB")
     # print("[TEST] run_sql_bl result:", sql_q2, sql_res2)
