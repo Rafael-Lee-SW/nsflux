@@ -9,6 +9,7 @@ from loguru import logger
 import os
 import time
 from functools import wraps
+from transformers import AutoModel, AutoTokenizer
 
 # 로깅 설정
 logger.remove()
@@ -141,4 +142,40 @@ def debug_vector_format(data):
                 logger.debug(f"file={file_name}, chunk_index={c_i} → shape={shape}")
             except Exception as e:
                 logger.debug(f"file={file_name}, chunk_index={c_i} → vector 변환 실패: {str(e)}")
-    logger.debug("===== 벡터 형식 검사 종료 =====") 
+    logger.debug("===== 벡터 형식 검사 종료 =====")
+
+def vectorize_content(text: str) -> List[float]:
+    """
+    텍스트를 벡터로 변환합니다.
+    """
+    try:
+        # 임베딩 모델 로드
+        model = AutoModel.from_pretrained("BM-K/KoSimCSE-roberta-multitask")
+        tokenizer = AutoTokenizer.from_pretrained("BM-K/KoSimCSE-roberta-multitask")
+        model.eval()
+        
+        # 텍스트 토큰화 및 벡터화
+        inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+        with torch.no_grad():
+            outputs = model(**inputs)
+            embeddings = outputs.last_hidden_state.mean(dim=1).squeeze().numpy()
+        
+        return embeddings.tolist()
+    except Exception as e:
+        logger.error(f"벡터화 중 오류 발생: {str(e)}")
+        return [0.0] * 768  # 기본 벡터 반환
+
+def normalize_text_vis(text: str) -> str:
+    """
+    텍스트를 시각화용으로 정규화합니다.
+    """
+    # HTML 특수문자 이스케이프
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    
+    # 줄바꿈 처리
+    text = text.replace("\n", "<br>")
+    
+    # 공백 처리
+    text = " ".join(text.split())
+    
+    return text 

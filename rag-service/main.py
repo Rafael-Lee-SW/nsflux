@@ -1,5 +1,7 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import List, Optional
 import uvicorn
@@ -18,6 +20,7 @@ from contextlib import asynccontextmanager
 from config import settings
 from utils import load_data, random_seed
 from retrieval import retrieve, sort_by_time, expand_time_range_if_needed
+from data_control import data_upload, data_list, data_detail, data_delete, search_data
 
 # Conditional imports based on settings
 if settings.USE_ONNX:
@@ -164,10 +167,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# @app.get("/")
-# async def root():
-#     """루트 경로 접근 시 데이터 관리 페이지로 리다이렉트"""
-#     return RedirectResponse(url="/manager")
+# 정적 파일 및 템플릿 설정
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+
+@app.get("/")
+async def root():
+    """루트 경로 접근 시 데이터 관리 페이지로 리다이렉트"""
+    return RedirectResponse(url="/manager")
+
+@app.get("/manager", response_class=HTMLResponse)
+async def data_control_page(request: Request):
+    """데이터 관리 페이지"""
+    return templates.TemplateResponse("data_manager.html", {"request": request})
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pydantic Models
@@ -274,6 +287,13 @@ async def retrieve_documents(request: RetrieveRequest):
             status_code=500,
             detail=f"문서 검색 중 오류가 발생했습니다: {str(e)}"
         )
+
+# 데이터 관리 관련 라우트 추가
+app.post("/upload")(data_upload)
+app.get("/list")(data_list)
+app.get("/detail/{index}")(data_detail)
+app.post("/delete")(data_delete)
+app.get("/search")(search_data)
 
 if __name__ == "__main__":
     uvicorn.run(

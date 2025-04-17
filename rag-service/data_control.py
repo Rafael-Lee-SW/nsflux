@@ -11,6 +11,7 @@ import numpy as np
 from pptx import Presentation
 import PyPDF2
 from pathlib import Path
+from config import settings
 
 # 임베딩 모델 로드
 from transformers import AutoModel, AutoTokenizer
@@ -24,7 +25,7 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # 데이터 경로 설정
-DATA_PATH = BASE_DIR / "data" / "data.json"
+DATA_PATH = Path(settings.DATA_PATH)
 DATA_PATH.parent.mkdir(exist_ok=True)
 
 # 임베딩 모델 로드
