@@ -160,6 +160,19 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
     unno_val = "NULL" if unno is None else f"'{unno}'"
 
     sql_query = f"""
+    SET LINESIZE 350; 
+    SET PAGESIZE 100; 
+    SET TRIMSPOOL ON;
+    
+    COLUMN CLASS FORMAT A10
+    COLUMN UNNO FORMAT A10
+    COLUMN POL FORMAT A10
+    COLUMN POD FORMAT A10
+    COLUMN POL_CHECK FORMAT A30
+    COLUMN POD_CHECK FORMAT A30
+    COLUMN "NS-DY operation" FORMAT A25
+    COLUMN "Other carrier operation" FORMAT A60
+
     WITH inp AS (
         SELECT {cls_val} AS class,
                {unno_val} AS unno,
@@ -168,6 +181,10 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
         FROM dual
     )
     SELECT 
+        i.class AS CLASS,
+        i.unno AS UNNO,
+        i.POL AS POL,
+        i.POD AS POD,
         NVL((
             SELECT DECODE(allow_yn,'Y','POL OK','N','POL forbidden','Need to contact PIC of POL')
             FROM icon.ai_dg_check a, inp
@@ -195,7 +212,7 @@ def run_sql_unno(cls=None, unno=None, pol_port='KR%', pod_port='JP%'):
               AND C.IMDUNM = inp.unno 
               AND C.IMDCLS = inp.class
         ),'OK') AS "Other carrier operation" 
-    FROM dual;
+    FROM inp i;
     EXIT;
     """
 
@@ -283,13 +300,13 @@ if __name__ == "__main__":
     # 아래는 테스트/디버깅용 코드
     # 필요한 경우에만 사용 가능. 실제 운영 시엔 제거할 수도 있음.
 
-    check_sqlplus()             # sqlplus가 잘 동작하는지 확인
-    check_db_connection()       # 데이터베이스 접속 여부 확인
-    schema_info = get_all_schema_tables()
-    print("Schema info:", schema_info)
+    # check_sqlplus()             # sqlplus가 잘 동작하는지 확인
+    # check_db_connection()       # 데이터베이스 접속 여부 확인
+    # schema_info = get_all_schema_tables()
+    # print("Schema info:", schema_info)
     # make_metadata_from_table()  # 특정 테이블로부터 메타데이터 생성하는 예시
     # 예시 SQL 실행
     sql_q, sql_res = run_sql_unno(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
-    print("[TEST] run_sql_unno result:", sql_q, sql_res)
+    # print("[TEST] run_sql_unno result:", sql_q, sql_res)
     sql_q2, sql_res2 = run_sql_bl(cls=4.1, unno=1033, pol_port="KRPUS", pod_port="JPKOB")
-    print("[TEST] run_sql_bl result:", sql_q2, sql_res2)
+    # print("[TEST] run_sql_bl result:", sql_q2, sql_res2)
