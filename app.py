@@ -406,18 +406,6 @@ def query_stream_to_clt():
                 # if isinstance(token, str):
                 #     token = token.strip()
                 if token == "[[STREAM_DONE]]":
-                    end_string = json.dumps({
-                            "type": "answer",
-                            "answer": ""
-                        }, ensure_ascii=False)
-                    end_json = json.loads(end_string)
-                    end_format = process_format_to_response(
-                            [end_json],
-                            qry_id,
-                            continue_="E",
-                            update_index=answer_counter,
-                        )
-                    send_data_to_server(end_format, response_url)
                     print("[DEBUG] 종료 토큰([[STREAM_DONE]]) 수신됨. 스트림 종료.")
                     break
 
@@ -473,7 +461,7 @@ def query_stream_to_clt():
                         buffer_format = process_format_to_response(
                             token_buffer,
                             qry_id,
-                            continue_="E",
+                            continue_="C",
                             update_index=answer_counter,
                         )
                         send_data_to_server(buffer_format, response_url)
@@ -484,10 +472,20 @@ def query_stream_to_clt():
                 print(
                     f"[DEBUG] Final flush of remaining {len(token_buffer)} tokens with end flag."
                 )
-                buffer_format = process_format_to_response(
+                buffer_format = process_format_to_responsne(
                     token_buffer, qry_id, continue_="E", update_index=answer_counter
                 )
                 send_data_to_server(buffer_format, response_url)
+            # if tokens not remain, termination flag with empty string.
+            else:
+                print(
+                    f"[DEBUG] Final flush of remaining empty tokens with end flag."
+                )
+                buffer_format = process_format_to_responsne(
+                    [""], qry_id, continue_="E", update_index=answer_counter
+                )
+                send_data_to_server(buffer_format, response_url)
+
         except Exception as e:
             print(f"[ERROR] sse_generator encountered an error: {e}")
         finally:
