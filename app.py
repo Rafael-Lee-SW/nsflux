@@ -481,8 +481,13 @@ def query_stream_to_clt():
                 print(
                     f"[DEBUG] Final flush of remaining empty tokens with end flag."
                 )
+                empty_str = json.dumps({
+                    "type": "answer",
+                    "answer": ""
+                }, ensure_ascii=False)
+                empty_json = json.loads(empty_str)
                 buffer_format = process_format_to_response(
-                    [""], qry_id, continue_="E", update_index=answer_counter
+                    [empty_json], qry_id, continue_="E", update_index=answer_counter
                 )
                 send_data_to_server(buffer_format, response_url)
 
