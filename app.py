@@ -472,7 +472,7 @@ def query_stream_to_clt():
                 print(
                     f"[DEBUG] Final flush of remaining {len(token_buffer)} tokens with end flag."
                 )
-                buffer_format = process_format_to_responsne(
+                buffer_format = process_format_to_response(
                     token_buffer, qry_id, continue_="E", update_index=answer_counter
                 )
                 send_data_to_server(buffer_format, response_url)
@@ -481,7 +481,7 @@ def query_stream_to_clt():
                 print(
                     f"[DEBUG] Final flush of remaining empty tokens with end flag."
                 )
-                buffer_format = process_format_to_responsne(
+                buffer_format = process_format_to_response(
                     [""], qry_id, continue_="E", update_index=answer_counter
                 )
                 send_data_to_server(buffer_format, response_url)
