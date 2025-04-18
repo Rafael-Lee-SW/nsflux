@@ -161,6 +161,38 @@
         <label for="testUserInput">사용자 입력</label>
         <textarea id="testUserInput" placeholder="사용자 메시지를 입력하세요..." rows="3"></textarea>
       </div>
+      
+      <!-- Add RAG toggle checkbox -->
+      <div class="form-group">
+        <div class="toggle-option">
+          <input type="checkbox" id="testUseRag" checked>
+          <label for="testUseRag">RAG 사용</label>
+        </div>
+      </div>
+      
+      <!-- Add sampling parameters -->
+      <div class="form-group">
+        <label for="testSamplingParams">생성 파라미터</label>
+        <div class="sampling-params-container">
+          <div class="param-group">
+            <label for="testTemperature">Temperature</label>
+            <input type="number" id="testTemperature" min="0" max="2" step="0.1" value="0.7">
+          </div>
+          <div class="param-group">
+            <label for="testTopK">Top K</label>
+            <input type="number" id="testTopK" min="1" max="100" step="1" value="40">
+          </div>
+          <div class="param-group">
+            <label for="testTopP">Top P</label>
+            <input type="number" id="testTopP" min="0" max="1" step="0.05" value="0.9">
+          </div>
+          <div class="param-group">
+            <label for="testMaxTokens">Max Tokens</label>
+            <input type="number" id="testMaxTokens" min="10" max="4096" step="10" value="2048">
+          </div>
+        </div>
+      </div>
+      
       <!-- 프롬프트 테스트 패널의 파일 업로드 부분 수정 -->
       <div class="form-group">
         <label>파일 업로드 (선택사항)</label>
@@ -2084,6 +2116,13 @@
       const fileInput = document.getElementById('testFileUpload');
       const filePreview = document.getElementById('testFilePreview');
       
+      // Get RAG setting and sampling parameters
+      const useRagTest = document.getElementById('testUseRag').checked;
+      const temperature = parseFloat(document.getElementById('testTemperature').value) || 0.7;
+      const topK = parseInt(document.getElementById('testTopK').value) || 40;
+      const topP = parseFloat(document.getElementById('testTopP').value) || 0.9;
+      const maxTokens = parseInt(document.getElementById('testMaxTokens').value) || 2048;
+      
       if (!systemPrompt) {
         alert("시스템 프롬프트를 입력해주세요.");
         return;
@@ -2131,6 +2170,13 @@
       const payload = {
         prompt: systemPrompt,
         user_input: userInput,
+        use_rag: useRagTest,
+        sampling_params: {
+          temperature: temperature,
+          top_k: topK,
+          top_p: topP,
+          max_tokens: maxTokens
+        }
       };
       
       if (fileData && fileType) {

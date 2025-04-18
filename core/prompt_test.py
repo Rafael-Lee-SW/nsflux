@@ -269,7 +269,11 @@ async def test_prompt_streaming(
     tokenizer: Any = None,
     config: Any = None,
     request_id: str = None,
-    use_rag: bool = False  # RAG 사용 여부 추가
+    use_rag: bool = False,  # RAG 사용 여부 추가
+    temperature: float = None,
+    top_k: int = None,
+    top_p: float = None,
+    max_tokens: int = None
 ):
     """
     프롬프트 테스트를 스트리밍 방식으로 수행합니다.
@@ -284,6 +288,10 @@ async def test_prompt_streaming(
         config: 설정
         request_id: 요청 ID
         use_rag: RAG 사용 여부
+        temperature: 생성 온도 (0.0 ~ 2.0)
+        top_k: Top-K 샘플링 값
+        top_p: Top-P 샘플링 값
+        max_tokens: 최대 생성 토큰 수
         
     Yields:
         str: 생성된 부분 텍스트
@@ -477,14 +485,18 @@ async def test_prompt_streaming(
             # 일반 텍스트 요청
             generate_request = prompt_string
         
-        # 샘플링 파라미터 설정
+        # 샘플링 파라미터 설정 (사용자 지정 파라미터가 있으면 사용, 없으면 config 값 사용)
         sampling_params = SamplingParams(
-            max_tokens=config.model.max_new_tokens,
-            temperature=config.model.temperature,
-            top_k=config.model.top_k,
-            top_p=config.model.top_p,
+            max_tokens=max_tokens if max_tokens is not None else config.model.max_new_tokens,
+            temperature=temperature if temperature is not None else config.model.temperature,
+            top_k=top_k if top_k is not None else config.model.top_k,
+            top_p=top_p if top_p is not None else config.model.top_p,
             repetition_penalty=config.model.repetition_penalty,
         )
+        
+        # 샘플링 파라미터 로깅
+        logger.info(f"샘플링 파라미터: temperature={sampling_params.temperature}, top_k={sampling_params.top_k}, "
+                   f"top_p={sampling_params.top_p}, max_tokens={sampling_params.max_tokens}")
         
         # 스트리밍 생성
         accumulated_text = ""

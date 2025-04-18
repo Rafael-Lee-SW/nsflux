@@ -762,6 +762,7 @@ def test_prompt_stream():
     - file_data: (선택) 파일 데이터 (base64 인코딩)
     - file_type: (선택) 파일 타입 ('image' 또는 'pdf')
     - use_rag: (선택) RAG 사용 여부 (기본값: true)
+    - sampling_params: (선택) 생성 파라미터 (temperature, top_k, top_p, max_tokens)
     """
     try:
         # 요청 파라미터 추출
@@ -771,6 +772,13 @@ def test_prompt_stream():
         file_data = body.get("file_data")
         file_type = body.get("file_type", "image")  # 기본값은 이미지
         use_rag = body.get("use_rag", True)  # RAG 사용 여부 (기본값: true)
+        
+        # 샘플링 파라미터 추출
+        sampling_params = body.get("sampling_params", {})
+        temperature = sampling_params.get("temperature", config.model.temperature)
+        top_k = sampling_params.get("top_k", config.model.top_k)
+        top_p = sampling_params.get("top_p", config.model.top_p)
+        max_tokens = sampling_params.get("max_tokens", config.model.max_new_tokens)
 
         if not system_prompt:
             return Response(
@@ -778,7 +786,9 @@ def test_prompt_stream():
             )
 
         print(
-            f"[DEBUG] /test_prompt_stream called with prompt length={len(system_prompt)}, user_input='{user_input[:50]}...', file_type={file_type}, use_rag={use_rag}"
+            f"[DEBUG] /test_prompt_stream called with prompt length={len(system_prompt)}, "
+            f"user_input='{user_input[:50]}...', file_type={file_type}, use_rag={use_rag}, "
+            f"temp={temperature}, top_k={top_k}, top_p={top_p}, max_tokens={max_tokens}"
         )
 
         # 요청 ID 생성 (SSE 큐 ID로 사용)
@@ -789,7 +799,8 @@ def test_prompt_stream():
 
         # Ray Serve를 통한 스트리밍 프롬프트 테스트 호출
         response = inference_handle.test_prompt_stream.remote(
-            system_prompt, user_input, file_data, file_type, request_id, use_rag
+            system_prompt, user_input, file_data, file_type, request_id, use_rag,
+            temperature=temperature, top_k=top_k, top_p=top_p, max_tokens=max_tokens
         )
         obj_ref = response._to_object_ref_sync()
         chat_id = ray.get(obj_ref)
@@ -844,4 +855,4 @@ def global_metrics():
 
 # Flask app 실행
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)

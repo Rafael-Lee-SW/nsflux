@@ -1744,3 +1744,56 @@ body {
         color: #d1d5db;
     }
 }
+
+/* Add styles for the sampling parameters and toggle in the prompt test panel */
+.toggle-option {
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.toggle-option input[type="checkbox"] {
+    margin-right: 8px;
+}
+
+.sampling-params-container {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-top: 5px;
+}
+
+.param-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.param-group label {
+    margin-bottom: 4px;
+    font-size: 0.85rem;
+    color: #666;
+}
+
+.param-group input {
+    padding: 6px 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+/* Dark mode styles for new elements */
+@media (prefers-color-scheme: dark) {
+    .param-group label {
+        color: #aaa;
+    }
+    
+    .param-group input {
+        background-color: #2a2a2a;
+        border-color: #444;
+        color: #eee;
+    }
+    
+    .toggle-option label {
+        color: #eee;
+    }
+}
