@@ -405,6 +405,7 @@ def query_stream_to_clt():
 
                 if isinstance(token, str):
                     token = token.strip()
+                    
                 if token == "[[STREAM_DONE]]":
                     print("[DEBUG] 종료 토큰([[STREAM_DONE]]) 수신됨. 스트림 종료.")
                     break
@@ -843,4 +844,4 @@ def global_metrics():
 
 # Flask app 실행
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=True)
