@@ -31,7 +31,7 @@ logger = logging.getLogger("RAG.Generation")
 
 
 @time_tracker
-async def generate(docs: str, query: str, model, tokenizer, config) -> str:
+async def generate(docs: str, query: str, model, tokenizer, config, http_query=None) -> str:
     """
     검색된 문서와 질문을 바탕으로 응답 생성
 
@@ -41,13 +41,30 @@ async def generate(docs: str, query: str, model, tokenizer, config) -> str:
         model: 언어 모델
         tokenizer: 토크나이저
         config: 설정
+        http_query: HTTP 요청 정보 (선택적)
 
     Returns:
         str: 생성된 텍스트
     """
+    # 테이블 데이터 사용 여부 확인
+    use_table = False
+    if http_query and "use_table" in http_query:
+        use_table = http_query.get("use_table", False)
+    
     # 프롬프트 구성
-    prompt = GENERATE_PROMPT_TEMPLATE.format(docs=docs, query=query)
-    logger.info("텍스트 생성 시작: prompt_length=%d", len(prompt))
+    if use_table:
+        # 테이블 데이터 기반 프롬프트 (SQL 결과 포함)
+        prompt = TABLE_PROMPT_TEMPLATE.format(
+            table_data=docs, 
+            docs="", 
+            query=query
+        )
+        logger.info("SQL 테이블 데이터 기반 프롬프트 사용")
+    else:
+        # 일반 문서 기반 프롬프트
+        prompt = GENERATE_PROMPT_TEMPLATE.format(docs=docs, query=query)
+    
+    logger.info("텍스트 생성 시작: prompt_length=%d, use_table=%s", len(prompt), use_table)
 
     # vLLM 모드인 경우
     if config.use_vllm:

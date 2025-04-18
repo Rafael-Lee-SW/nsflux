@@ -405,6 +405,9 @@ class InferenceActor:
             http_query: 원본 요청 데이터
         """
         try:
+            # http_query에 use_table=True 추가
+            http_query["use_table"] = True
+            
             # SQL 실행 및 데이터 추출
             docs, docs_list = await execute_rag(
                 QU, KE, TA, TI,
@@ -428,7 +431,7 @@ class InferenceActor:
                 await self._stream_partial_answer(QU, docs, retrieval, chart, request_id, future, user_input, http_query)
             else:
                 # 일반 최종 결과 생성
-                output = await generate_answer(QU, docs, model=self.model, tokenizer=self.tokenizer, config=self.config)
+                output = await generate_answer(QU, docs, model=self.model, tokenizer=self.tokenizer, config=self.config, http_query=http_query)
                 answer = process_to_format([output, chart], type="Answer")
                 final_data = [retrieval, answer]
                 outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
@@ -463,6 +466,9 @@ class InferenceActor:
             http_query: 원본 요청 데이터
         """
         try:
+            # http_query에 use_table=False 추가
+            http_query["use_table"] = False
+            
             # 대화 이력 기반 질문 구체화
             QU, KE, TA, TI = await specific_question({
                 "user_input": user_input,
@@ -494,7 +500,7 @@ class InferenceActor:
                 await self._stream_partial_answer(QU, docs, retrieval, None, request_id, future, user_input, http_query)
             else:
                 # 최종 답변 생성
-                output = await generate_answer(QU, docs, model=self.model, tokenizer=self.tokenizer, config=self.config)
+                output = await generate_answer(QU, docs, model=self.model, tokenizer=self.tokenizer, config=self.config, http_query=http_query)
                 answer = process_to_format([output], type="Answer")
                 final_data = [retrieval, answer]
                 outputs = process_format_to_response(final_data, qry_id=None, continue_="C")
@@ -525,6 +531,9 @@ class InferenceActor:
             http_query: 원본 요청 데이터
         """
         try:
+            # RAG를 사용하지 않기 때문에 use_table=False 설정
+            http_query["use_table"] = False
+            
             # 이 함수는 RAG를 사용하지 않고 직접 응답을 생성합니다
             docs = None
             retrieval = None

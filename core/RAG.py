@@ -250,7 +250,7 @@ async def generate_answer(query: str, docs: str, **kwargs) -> str:
     Args:
         query: 사용자 질문
         docs: 검색된 문서 내용
-        **kwargs: 추가 파라미터 (model, tokenizer, config)
+        **kwargs: 추가 파라미터 (model, tokenizer, config, http_query)
 
     Returns:
         str: 생성된 답변
@@ -258,8 +258,9 @@ async def generate_answer(query: str, docs: str, **kwargs) -> str:
     model = kwargs.get("model")
     tokenizer = kwargs.get("tokenizer")
     config = kwargs.get("config")
+    http_query = kwargs.get("http_query")
 
-    answer = await generate(docs, query, model, tokenizer, config)
+    answer = await generate(docs, query, model, tokenizer, config, http_query)
     return answer
 
 
@@ -637,11 +638,22 @@ async def generate_answer_stream(
 
     # RAG 사용 여부
     use_rag = http_query.get("use_rag", True)
+    
+    # 테이블 데이터 사용 여부 (SQL 기반 쿼리인 경우)
+    use_table = http_query.get("use_table", False)
 
     # -------------------------------------------------------------------------
     # 2) 분기 로직에 따른 프롬프트 선택
     # -------------------------------------------------------------------------
-    if is_image and not use_rag:
+    if use_table:
+        # 테이블 데이터 기반 프롬프트 (SQL 결과 포함)
+        prompt = TABLE_PROMPT_TEMPLATE.format(
+            table_data=docs, 
+            docs="", 
+            query=query
+        )
+        logger.info("[PROMPT SELECTION] SQL 테이블 데이터 기반 프롬프트 사용")
+    elif is_image and not use_rag:
         # 이미지 있음 + RAG 미사용
         prompt = IMAGE_PROMPT_TEMPLATE.format(query=query)
     elif is_image and use_rag:
@@ -654,7 +666,7 @@ async def generate_answer_stream(
         # 이미지 없음 + RAG 미사용
         prompt = NON_RAG_PROMPT_TEMPLATE.format(query=query)
 
-    logger.info(f"[PROMPT SELECTION] is_image={is_image}, use_rag={use_rag}")
+    logger.info(f"[PROMPT SELECTION] is_image={is_image}, use_rag={use_rag}, use_table={use_table}")
     logger.debug(f"[PROMPT CONTENT]\n{prompt}")
 
     # -------------------------------------------------------------------------
