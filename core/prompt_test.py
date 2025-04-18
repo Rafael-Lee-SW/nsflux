@@ -1,4 +1,4 @@
-# prompt_testing.py (수정된 부분만)
+# core/prompt_test.py
 import asyncio
 import logging
 import uuid

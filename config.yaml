@@ -2,11 +2,11 @@
 # Server : 2x H100 (80 GB SXM5), 52 CPU cores, 483.2 GB RAM, 6 TB SSD
 ### Model
 model_id : 'google/gemma-3-27b-it'
-response_url : "http://202.20.84.16:8083/responseToUI"
+response_url : "http://172.28.127.118:5555/responseToUI"
 # response_url : "https://eo5smhcazmp1bqe.m.pipedream.net"
 
 ### RAG Service
-rag_service_url : "http://150.136.90.210:8000"  # RAG 서비스 URL
+rag_service_url : "http://129.213.20.116:8000"  # RAG 서비스 URL
 
 ### ray
 ray:
@@ -67,7 +67,7 @@ sql_data_path : '/workspace/data/poc.db'        # SQLite 데이터베이스 Path
 image_bash_path: '/globeai/IMAGE/result_3' # 이미지 경로
 
 ### Retrieve
-N : 10 # Retrieve top N chunks
+N : 8 # Retrieve top N chunks
 
 ### Others
 beep : '-------------------------------------------------------------------------------------------------------------------------------------------------------------------------'

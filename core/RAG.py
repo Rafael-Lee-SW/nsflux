@@ -107,7 +107,7 @@ async def execute_rag(
 
             # LLM 입력용 프롬프트 구성
             prompt = (
-                f"실제 사용된 SQL문: {final_sql_query}\n\n"
+                # f"실제 사용된 SQL문: {final_sql_query}\n\n"
                 f"추가 설명: {explain}\n\n"
                 f"실제 SQL 추출된 데이터: {str(table_json)}\n\n"
                 f"실제 선적된 B/L 데이터: {str(detailed_result)}\n\n"
@@ -142,8 +142,10 @@ async def execute_rag(
 
         try:
             async with httpx.AsyncClient(timeout=RAG_API_TIMEOUT) as client:
-                logger.info("RAG 서비스 API 단일 호출")
-                response = await client.post(
+                # Dual Query Retrieval 전략 구현
+                # 1. 첫 번째 쿼리: keywords로 검색 (query_sort가 생성한 구조화된 키워드)
+                logger.info("RAG 서비스 API 1차 호출 (keywords)")
+                response1 = await client.post(
                     f"{config.rag_service_url}/api/retrieve",
                     json={
                         "query": keywords,
@@ -152,35 +154,80 @@ async def execute_rag(
                         "min_docs": 50,
                     },
                 )
-
-                if response.status_code != 200:
+                
+                if response1.status_code != 200:
                     logger.error(
-                        "RAG 서비스 API 오류: %s - %s",
-                        response.status_code,
-                        response.text,
+                        "RAG 서비스 API 1차 호출 오류: %s - %s",
+                        response1.status_code,
+                        response1.text,
                     )
                     return "검색 서비스에 연결할 수 없습니다.", []
                 
+                result1 = response1.json()
+                docs_list1 = result1.get("documents_list", [])
+                
+                # 2. 두 번째 쿼리: 원본 query로 검색 (사용자의 원래 질문)
+                logger.info("RAG 서비스 API 2차 호출 (원본 query)")
+                response2 = await client.post(
+                    f"{config.rag_service_url}/api/retrieve",
+                    json={
+                        "query": query,
+                        "top_n": config.N,
+                        "time_bound": time_range,
+                        "min_docs": 50,
+                    },
+                )
+                
+                if response2.status_code != 200:
+                    logger.error(
+                        "RAG 서비스 API 2차 호출 오류: %s - %s",
+                        response2.status_code,
+                        response2.text,
+                    )
+                    # 첫 번째 결과라도 사용
+                    docs = result1.get("documents", "")
+                    logger.info("1차 호출 결과만 사용: %d개 문서", len(docs_list1))
+                    return docs, docs_list1
+                
+                result2 = response2.json()
+                docs_list2 = result2.get("documents_list", [])
+                
+                # 3. 결과 통합 (chunk_id 기준으로 중복 제거)
+                all_docs_list = docs_list1 + docs_list2
+                unique_docs_list = []
+                seen_chunk_ids = set()
+                
+                for doc in all_docs_list:
+                    chunk_id = doc.get("chunk_id")
+                    if chunk_id not in seen_chunk_ids:
+                        seen_chunk_ids.add(chunk_id)
+                        unique_docs_list.append(doc)
+                
+                # 두 쿼리 결과의 통계 로깅
+                logger.info("Dual Query 결과: keywords=%d개, query=%d개, 통합=%d개 문서", 
+                           len(docs_list1), len(docs_list2), len(unique_docs_list))
+                
+                # keyword 결과와 query 결과의 chunk_id 비교
+                keyword_chunk_ids = {doc.get("chunk_id") for doc in docs_list1}
+                query_chunk_ids = {doc.get("chunk_id") for doc in docs_list2}
+                common_chunks = keyword_chunk_ids.intersection(query_chunk_ids)
+                keyword_only = keyword_chunk_ids - query_chunk_ids
+                query_only = query_chunk_ids - keyword_chunk_ids
+                
+                logger.info("공통 chunk_id: %s", common_chunks)
+                logger.info("keywords만의 chunk_id: %s", keyword_only)
+                logger.info("query만의 chunk_id: %s", query_only)
+                
                 # Here is the place of new function that delete the not related docs things from docs list
                 
-                result = response.json()
-                docs = result.get("documents", "")
-                docs_list = result.get("documents_list", [])
-
-                logger.info("RAG 서비스 API 응답: %d개 문서 검색됨", len(docs_list))
+                # 통합된 문서 목록을 사용하여 docs 문자열 생성
+                docs_list = unique_docs_list
                 
-                # logger.info(f"[RAG_SERVICE_API_RESPONSE - docs_list]\n{docs_list}")
-                # logger.info(f"[RAG_SERVICE_API_RESPONSE - docs]\n{docs}")
-
-                # ------------------------------------------------------------------
-                # 🔥 NEW 🔥  docs_filter 로 필터링
-                # ------------------------------------------------------------------
+                # docs_filter 함수로 필터링
                 docs_list = await docs_filter(query, docs_list, model, tokenizer, config)
-                logger.info("docs_sort 이후: %d개 문서로 축소", len(docs_list))
+                logger.info("docs_filter 이후: %d개 문서로 축소", len(docs_list))
                 
-
                 # docs 문자열 재조합 (LLM 입력용)
-                # (교체)
                 docs = "\n\n".join(
                     f"[{doc.get('title', '제목없음')}] {_get_doc_text(doc)}"
                     for doc in docs_list
@@ -349,89 +396,180 @@ async def docs_filter(
     model,
     tokenizer,
     config,
-    max_chars_per_doc: int = 4196,
+    max_chars_per_doc: int = 100000,
 ) -> List[Dict]:
     """
-    검색된 문서들(docs_list) 중에서 **사용자 질문과 직접적으로 관련** 있는
-    문서만 추려서 반환합니다.
-
-    1) 각 문서를 간략히 요약(제목·일부 내용)해 프롬프트로 구성
-    2) LLM(collect_vllm_text)에게 '관련 있는 chunk_id만 콤마로 나열'하도록 지시
-    3) 응답에서 숫자(id)만 파싱 → docs_list 필터링
-    4) LLM 호출 실패·빈 결과 시에는 원본 docs_list 그대로 반환
+    검색된 문서들 중에서 **사용자 질문과 직접적으로 관련** 있는 문서의 chunk_id만 필터링합니다.
+    1) 각 문서를 요약해 리스트 생성
+    2) Transformer의 apply_chat_template로 대화형 프롬프트 구성
+    3) LLM 호출해 관련 chunk_id만 반환하도록 지시
+    4) 응답에서 숫자(id) 파싱 → 필터링
+    5) 실패 시 원본 리스트 반환
     """
     if not docs_list:
         return docs_list
 
-    # 필터링 전 문서 제목 로깅
-    logger.info("필터링 전 문서 제목:")
-    for doc in docs_list:
-        logger.info(f"- {doc.get('title', '제목없음')} (chunk_id: {doc['chunk_id']})")
-
-    # ----------------------------------------------------------------------
-    # (1) 문서 요약 → 프롬프트용 문자열 만들기
-    # ----------------------------------------------------------------------
+    # (1) 문서 요약
     formatted_docs = []
     for doc in docs_list:
-        # contents[0]이 dict인 경우(예: {"data": ...})와 문자열인 경우 모두 처리
         raw = ""
         try:
             raw = _get_doc_text(doc)
         except Exception:
             pass
-
+        summary = textwrap.shorten(raw, width=max_chars_per_doc, placeholder="…")
         formatted_docs.append(
-            f"{doc['chunk_id']}. 제목: {doc.get('title', '제목없음')}\n"
-            f"   내용: {textwrap.shorten(raw, width=max_chars_per_doc, placeholder='…')}"
+            f"{doc['chunk_id']}. 제목: {doc.get('title', '제목없음')}\n   내용: {summary}"
         )
 
-    prompt = (
-        "다음은 사용자의 질문과 검색된 문서 목록입니다. "
-        "각 문서는 chunk_id로 구분되어 있습니다.\n\n"
-        f"[사용자 질문]\n{query}\n\n"
-        "[문서 목록]\n"
-        + "\n".join(formatted_docs)
-        + "\n\n"
-        "위 문서 중 **사용자 질문에 직접적으로 답하는 데 도움이 되는** 문서의 chunk_id만을 "
-        "콤마(,)로 구분하여 한 줄로 출력하세요.\n"
-        "반드시 숫자와 콤마만 포함하고 다른 설명은 작성하지 마세요."
+    # (2) chat 형식 프롬프트 생성
+    from transformers import AutoTokenizer
+    chat_tokenizer = AutoTokenizer.from_pretrained(
+        config.model_id,
+        use_fast=True,
+        trust_remote_code=True,
     )
+    
+    # 시스템 프롬프트 정의
+    SYSTEM_PROMPT = """
+아래 용어 설명과 유의 사항을 참고하여
+**사용자 질문에 직접적으로 필요한 문서**의 chunk_id만 고르십시오.
 
-    # ----------------------------------------------------------------------
-    # (2) LLM 호출
-    # ----------------------------------------------------------------------
+────────────────────────────────────────
+# 용어 설명
+- Commission (커미션): 에이전트(대리점)에게 지급되는 모든 금전적 항목
+  · 예: Booking Commission, Husbanding Fee, Documentation Fee
+- SLC (Container Seal Charge, Tariff of Seal charge):
+  • 컨테이너 봉인 요금이면서 **Commission 항목** 중 하나임
+  • 남성해운과의 맺은 계약을 맺은 대리점의 커미션 및 요율 포함됨
+- D/O (Delivery Order): 화물 인도 지시 수수료
+- HK agent: Namsung Shipping Hongkong Ltd, 홍콩 대리점과 동등어
+
+# 유의 사항
+1. 질문에 특정 대리점이 언급된 경우, **오직 그 대리점과 관련된 문서만** 선택하세요.
+   예: "홍콩 대리점" 질문에는 싱가폴, 타이완 등 다른 대리점 문서를 제외해야 합니다.
+2. 질문에 언급된 대리점과 일치하지 않는 문서는 어떤 경우에도 선택하지 마세요.
+3. *어떤 문서*도 커미션 표 변경·중단 내역이라면 반드시 포함하되, 언급된 대리점과 관련된 것만 선택하세요.
+4. 문서가 여러 개 중복되면 하나만 선택하세요.
+
+# 출력 형식
+`35,974,2852` 처럼 **숫자와 콤마만** 한 줄로 출력한다.
+"""
+
+    system_content = SYSTEM_PROMPT
+    
+    # 실제 반환용 문서 목록 생성을 위한 프롬프트 생성
+    messages = [
+        {
+            "role": "system",
+            "content": system_content,
+        },
+        {
+            "role": "user",
+            "content": (
+                f"[사용자 질문]\n{query}\n\n[문서 목록]\n" + "\n".join(formatted_docs)
+            ),
+        },
+    ]
+    prompt = chat_tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    
+    # (3) LLM 호출
     sampling_params = SamplingParams(
-        max_tokens=32,        # id 목록만 뽑으면 32 토큰이면 충분
-        temperature=0.0,      # deterministic
-        top_k=1,
-        top_p=1.0,
+        max_tokens = 64,
+        temperature = 0.1,  # 더 결정론적인 결과를 위해 낮춤
+        top_k = 5,         # 후보군을 더 제한
+        top_p = 0.9,       # 확률 분포 제한
+        repetition_penalty = 1.1  # 반복 방지
     )
-
     try:
         answer = await collect_vllm_text(
-            prompt, model, sampling_params, str(uuid.uuid4())
+            prompt,
+            model,
+            sampling_params,
+            str(uuid.uuid4()),
         )
-        # ------------------------------------------------------------------
-        # (3) 숫자(id)만 파싱 → docs_list 필터링
-        # ------------------------------------------------------------------
+        # (4) 숫자 추출 및 필터링
         keep_ids = set(map(int, re.findall(r"\d+", answer)))
         filtered = [doc for doc in docs_list if doc["chunk_id"] in keep_ids]
-
-        # 필터링 후 문서 제목 로깅
-        logger.info("필터링 후 문서 제목:")
-        for doc in filtered:
-            logger.info(f"- {doc.get('title', '제목없음')} (chunk_id: {doc['chunk_id']})")
-
-        # LLM이 아무것도 고르지 않았으면 원본 유지
+        
+        # # 원래 선택된 문서와 필터링된 문서의 ID를 로깅
+        # original_ids = [doc["chunk_id"] for doc in docs_list]
+        # filtered_ids = [doc["chunk_id"] for doc in filtered]
+        # logger.info(f"원래 선택된 문서 ID: {original_ids}")
+        # logger.info(f"필터링 후 문서 ID: {filtered_ids}")
+        
+        # # 왜 선택했는지 이유를 알기 위해 쓰는 프롬프트
+        # messages_reason = [
+        #     {
+        #         "role": "system",
+        #         "content": (
+        #             "당신은 문서 선택의 전문가입니다. 다음 지시사항을 따라 각 문서가 선택된 이유를 상세히 설명해주세요.\n\n"
+        #             "1. 원래 선택된 모든 문서와 필터링된 문서를 비교 분석하세요.\n"
+        #             "2. 각 문서(chunk_id)가 선택되거나 제외된 구체적인 이유를 설명하세요.\n"
+        #             "3. 문서의 내용과 사용자 질문 간의 연관성을 명확히 설명하세요.\n"
+        #             "4. 특히 다음 용어와 관련된 내용이 있다면 반드시 언급하세요:\n"
+        #             "   - SLC (Container Seal Charge): 컨테이너 봉인 요금이면서 커미션 항목\n"
+        #             "   - D/O (Delivery Order): 화물인도지시서\n"
+        #             "   - HK agent: 홍콩 대리점\n\n"
+        #             "5. 대리점 관련 질문인 경우, 해당 대리점과의 연관성을 특별히 강조하세요.\n\n"
+        #             "출력 형식:\n"
+        #             "1. 원래 선택된 문서 분석:\n"
+        #             "   문서 ID: [chunk_id]\n"
+        #             "   선택 이유: [상세한 설명]\n"
+        #             "   ---\n"
+        #             "2. 필터링 결과 분석:\n"
+        #             "   최종 선택된 문서 ID: [chunk_id]\n"
+        #             "   선택 이유: [상세한 설명]\n"
+        #             "   제외된 문서 ID: [chunk_id]\n"
+        #             "   제외 이유: [상세한 설명]\n"
+        #             "   ---\n"
+        #         ),
+        #     },
+        #     {
+        #         "role": "user",
+        #         "content": (
+        #             f"[사용자 질문]\n{query}\n\n"
+        #             f"[원래 선택된 문서 목록]\n" + "\n".join(formatted_docs) + "\n\n"
+        #             f"[필터링된 문서 목록]\n" + "\n".join([f"{doc['chunk_id']}. {doc.get('title', '제목없음')}" for doc in filtered])
+        #         ),
+        #     },
+        # ]
+        
+        # prompt_reason = chat_tokenizer.apply_chat_template(
+        #     messages_reason,
+        #     tokenize=False,
+        #     add_generation_prompt=True,
+        # )
+        
+        # sampling_params_reason = SamplingParams(
+        #     max_tokens = 4096,
+        #     temperature = 1.0,
+        #     top_k = 30,
+        #     top_p = 1.0
+        # )
+        
+        # try:
+        #     answer_reason = await collect_vllm_text(
+        #         prompt_reason,
+        #         model,
+        #         sampling_params_reason,
+        #         str(uuid.uuid4()),
+        #     )
+        #     logger.info(f"문서 선택 이유 분석: {answer_reason}")
+        # except Exception as e:
+        #     logger.error("문서 선택 이유 분석 중 오류 발생: %s", e, exc_info=True)
+        #     return docs_list
+        
         return filtered or docs_list
-
     except Exception as e:
-        logger.error("docs_sort 실패, 원본 리스트 사용: %s", str(e), exc_info=True)
+        logger.error("docs_filter failed, returning original list: %s", e, exc_info=True)
         return docs_list
 
-
 # core/RAG.py ─ import 아래 아무 곳 (기존 _extract_plain_text 제거 후 ↓ 붙여넣기)
-@time_tracker
 def _get_doc_text(doc: Dict[str, Any]) -> str:
     """
     검색 서버가 내려준 단일 문서(dict)에서 사람이 읽을 텍스트를 추출한다.
